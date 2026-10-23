@@ -21,6 +21,7 @@ from PyQt6.QtGui import QDrag
 from PyQt6.QtWidgets import (QApplication, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton,
                              QScrollArea, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
+from .browse import is_answer_page
 from .models import FAVORITES, PINNED, TODAY, Folder, display_host, walk_folders, walk_tabs
 from .theme import dot_icon, letter_icon
 
@@ -32,6 +33,8 @@ INDENT = 16  # per folder level
 def tab_icon(tab, theme):
     if tab.url.startswith("note:"):
         return qta.icon("ph.note-pencil", color=theme.accent)
+    if is_answer_page(tab.url):
+        return qta.icon("ph.compass", color=theme.accent)
     return tab.icon or letter_icon(display_host(tab.url) or tab.label, theme.accent)
 
 
@@ -664,6 +667,10 @@ class Sidebar(QWidget):
         if tab and tab.url.startswith("note:"):
             self.url_pill.setIcon(qta.icon("ph.note-pencil", color=_with_alpha(theme.text, 0.55)))
             self.url_pill.setText("Note")
+            self.url_pill.setToolTip("")
+        elif tab and is_answer_page(tab.url):
+            self.url_pill.setIcon(qta.icon("ph.compass", color=_with_alpha(theme.text, 0.55)))
+            self.url_pill.setText("Browse for Me")
             self.url_pill.setToolTip("")
         elif tab and tab.url:
             secure = tab.url.startswith("https://")

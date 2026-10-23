@@ -99,7 +99,8 @@ These use the `claude` command-line tool (Claude Code) that's already logged in 
 | **Tidy Tab Titles** | Pin a tab and Claude renames it to something short, like "Arc Browser". To redo it, pick *Tabs → Tidy Tab Title*. |
 | **Ask on Page** | ⌘F, type a question ("who owns this?" or "summarize"), then press Return. The answer is based on the page's text. |
 | **Command bar answers** | ⌘T, type a question. Ending it with "?" makes "Ask Claude" the top result. The answer streams in right there. |
-| **5-second Previews** | Hover a link and press Shift. A card summarizes the linked page; click the card to open it. |
+| **Browse for Me** | In ⌘T, type a question and press ⌘↩ (or pick *Browse for Me*). It searches DuckDuckGo, reads the top results one at a time in the background, and opens a tab with one answer that cites its sources as numbered links. The answer is saved, so it survives restarts. |
+| **5-second Previews** | Hover a link and tap Shift. A card summarizes the linked page; click the card to open it. |
 
 To turn them all off, use *View → Claude Features*. When they're off, nothing is ever sent to Claude.
 
@@ -127,6 +128,24 @@ How it works (`browser/ai.py`):
 
 ---
 
+## Testing
+
+```bash
+venv/bin/pip install -r requirements-dev.txt
+venv/bin/python -m pytest tests
+```
+
+The tests cover:
+- the tab, folder and Split View model, plus save/load
+- URL detection
+- ad-block matching
+- yt-dlp arguments
+- the Arc importer, against a fake Arc folder (never your real one)
+- Boosts, Notes, themes
+- Browse for Me's Markdown rendering, including an HTML-injection check
+
+They run headless and use a throwaway data folder.
+
 ## Code layout (`browser/`)
 
 | File | Responsibility |
@@ -149,6 +168,7 @@ How it works (`browser/ai.py`):
 | `adblock.py` | The request interceptor, block lists, and cosmetic/YouTube scripts. |
 | `downloads.py` | The Downloads panel, yt-dlp integration and download settings. |
 | `ai.py` | The Claude CLI worker pool. |
+| `browse.py` | Browse for Me, plus `PageReader` (reads a page's text off-screen without waiting for its ads). |
 | `arc_import.py` | Importing from Arc. |
 | `macos.py` | Native macOS tweaks via the Objective-C runtime (hides the title text). |
 
@@ -162,7 +182,6 @@ How it works (`browser/ai.py`):
 ### Ideas for next steps
 
 - **Extensions**, once a PyQt6 update fixes enabling them (uBlock Origin, password managers)
-- **Browse for Me:** Claude reads the top search results and writes one answer page
 - **Tidy Tabs / Tidy Downloads** with Claude
 - **A real Mac app bundle** with its own Dock icon
 - **Tests** for `models.py` (moves, folders, splits)

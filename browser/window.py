@@ -1,6 +1,7 @@
 # The main window doubles as the controller: it owns the Store (data), the
 # web views, and every user action. Sidebar/command bar widgets call into it.
 
+import html
 import re
 import sys
 import time
@@ -16,6 +17,7 @@ from PyQt6.QtWidgets import (QApplication, QColorDialog, QGraphicsDropShadowEffe
 from . import arc_import, macos, storage
 from .adblock import AdBlocker
 from .ai import Claude, page_block
+from .browse import BrowseForMe, PageReader, answer_path, js_set, new_run_id, render_page
 from .boosts import ZAP_DONE, ZAP_MESSAGE, ZAP_SCRIPT, Boost, BoostEditor, BoostManager, site_of
 from .command_bar import CommandBar
 from .content import ContentFrame
@@ -54,6 +56,7 @@ class MainWindow(QMainWindow):
         self.claude = Claude(self)
         self.claude.enabled = store.settings.get("claude_enabled", True)
         self._hovered_link = ""
+        self._shift_alone = False
         self._preview_page = None
         self._preview_request = None
         self._preview_cache: dict[str, tuple[str, str]] = {}
@@ -64,6 +67,7 @@ class MainWindow(QMainWindow):
         self.boosts = BoostManager(store, self)
         self._downloads: DownloadsWindow | None = None
         self._zap_tab: Tab | None = None
+        self._browse_runs: set = set()
         self._sidebar_floating = False
 
         # One browser profile per name; Spaces can pick their own (separate logins)
@@ -854,19 +858,28 @@ class MainWindow(QMainWindow):
         card = self.content.preview_card
         if url and url == card.url:
             card.keep()
-        elif url and QGuiApplication.queryKeyboardModifiers() & Qt.KeyboardModifier.ShiftModifier:
-            self.preview_link(url)
         else:
             card.schedule_hide()
 
     def eventFilter(self, obj, event):
         kind = event.type()
-        if kind == QEvent.Type.KeyPress:
-            if event.key() == Qt.Key.Key_Shift and not event.isAutoRepeat() and self._hovered_link:
-                self.preview_link(self._hovered_link)
-            elif event.key() == Qt.Key.Key_Escape and self.peek.isVisible() and self._zap_tab is None:
+        if kind == QEvent.Type.KeyPress and not event.isAutoRepeat():
+            # A preview needs Shift tapped on its own, so typing a capital letter while
+            # the mouse happens to rest on a link doesn't trigger one
+            self._shift_alone = event.key() == Qt.Key.Key_Shift
+            if event.key() == Qt.Key.Key_Escape and self.peek.isVisible() and self._zap_tab is None:
                 self.peek.close_peek()
                 return True
+        elif kind == QEvent.Type.KeyRelease and event.key() == Qt.Key.Key_Shift and not event.isAutoRepeat():
+            if self._shift_alone and self._hovered_link:
+                self.preview_link(self._hovered_link)
+            self._shift_alone = False
+        elif kind == QEvent.Type.MouseButtonPress and self.content.splitting and isinstance(obj, QWidget):
+            # A click anywhere in a Split View pane makes that tab current (focus alone isn't
+            # reliable: it doesn't move when the window isn't the active one)
+            pane = self.content.split_view.pane_containing(obj)
+            if pane is not None and pane.tab is not self.current_tab:
+                QTimer.singleShot(0, lambda: self.activate_tab(pane.tab))
         elif kind == QEvent.Type.MouseMove and not self.sidebar.isVisible() and not self._fullscreen:
             # Arc: with the sidebar hidden, touching the left edge slides it out
             pos = self.mapFromGlobal(QCursor.pos())
@@ -954,6 +967,58 @@ class MainWindow(QMainWindow):
         if pane is not None and pane.tab is not self.current_tab:
             self.activate_tab(pane.tab)
 
+    # --- Browse for Me -----------------------------------------------------------------------------
+
+    def browse_for_me(self, query):
+        """Arc Max's "Browse for Me": read the top search results and open one answer page."""
+        query = query.strip()
+        if not query:
+            return
+        if not self.claude.available:
+            self.toast("Browse for Me needs Claude features turned on (View menu)")
+            return
+        path = answer_path(new_run_id())
+        state = {"sources": [], "status": "Searching…", "body": ""}
+
+        def write():
+            path.write_text(render_page(query, state["sources"], state["body"], state["status"],
+                                        self.theme.accent.name()))
+        write()
+        tab = Tab(QUrl.fromLocalFile(str(path)).toString(), "✦ " + query)
+        self.store.add_tab(tab, TODAY, self.store.active_space, 0)
+        self.activate_tab(tab)
+
+        def update(element, content):
+            view = tab.view
+            if isinstance(view, QWebEngineView) and view.url().toLocalFile() == str(path):
+                view.page().runJavaScript(js_set(element, content))
+
+        def set_status(text):
+            state["status"] = text
+            update("status", html.escape(text))
+
+        def got_sources(sources):
+            state["sources"] = sources
+            write()
+            if isinstance(tab.view, QWebEngineView):
+                tab.view.reload()  # show the source cards
+
+        def finish(body, status=""):
+            state["body"], state["status"] = body, status
+            write()  # the saved page has the final answer, for reloads and restarts
+            update("answer", body)
+            update("status", html.escape(status))
+            self._browse_runs.discard(run)
+
+        run = BrowseForMe(self.claude, self.profile_for_tab(tab), query, self)
+        self._browse_runs.add(run)
+        run.status.connect(set_status)
+        run.sources_found.connect(got_sources)
+        run.partial.connect(lambda body: (state.__setitem__("body", body), update("answer", body)))
+        run.finished.connect(finish)
+        run.failed.connect(lambda message: finish(state["body"], f"Couldn't finish: {message}"))
+        run.start()
+
     # --- Notes ------------------------------------------------------------------------------------
 
     def new_note(self):
@@ -1009,7 +1074,7 @@ class MainWindow(QMainWindow):
         self.toast("Peek on: links from pinned tabs open in a preview" if enabled else "Peek off")
 
     def preview_link(self, url):
-        """Arc's "5-second previews": Shift + hover a link to see a summary of where it goes."""
+        """Arc's "5-second previews": hover a link and tap Shift to see a summary of where it goes."""
         card = self.content.preview_card
         if not url.startswith(("http://", "https://")) or not self.claude.available:
             return
@@ -1024,23 +1089,11 @@ class MainWindow(QMainWindow):
             card.set_content(*self._preview_cache[url])
             return
 
-        # Load the page off-screen (same cookies as your tabs), then hand its text to Claude
+        # Read the page off-screen (same cookies as your tabs), then hand its text to Claude
         if self._preview_page is not None:
-            self._preview_page.deleteLater()
-        page = QWebEnginePage(self.profile, self)
-        page.setAudioMuted(True)
-        self._preview_page = page
-        state = {"done": False}
-
-        def extract(*_):
-            if page is not self._preview_page or state["done"]:
-                return
-            state["done"] = True
-            page.toPlainText(lambda text: self._summarize_preview(url, page.title() or display_host(url), text))
-
-        page.loadFinished.connect(extract)
-        QTimer.singleShot(10_000, extract)  # slow pages: summarize whatever has loaded
-        page.load(QUrl(url))
+            self._preview_page.cancel()
+        reader = self._preview_page = PageReader(self.profile, url, self, timeout_ms=8_000, enough_chars=800)
+        reader.done.connect(lambda title, text: self._summarize_preview(url, title or display_host(url), text))
 
     def _summarize_preview(self, url, title, text):
         card = self.content.preview_card
@@ -1384,7 +1437,8 @@ class MainWindow(QMainWindow):
         self.adblock.detach_all()
         # Pages must be destroyed before their profile, or Qt warns and may leak the profile
         if self._preview_page is not None:
-            sip.delete(self._preview_page)
+            self._preview_page.cancel()
+            sip.delete(self._preview_page.page)
         if self.peek.view is not None:
             sip.delete(self.peek.view)
         for window in list(self._extra_windows):

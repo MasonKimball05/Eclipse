@@ -183,7 +183,7 @@ class FindBar(QFrame):
 
 
 class PreviewCard(QFrame):
-    """Shift + hover a link: a floating summary of the linked page (Arc's "5-second previews")."""
+    """Hover a link and tap Shift: a floating summary of the linked page (Arc's "5-second previews")."""
 
     def __init__(self, browser, parent):
         super().__init__(parent)

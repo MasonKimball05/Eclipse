@@ -69,6 +69,16 @@ def _site(host: str) -> str:
     return ".".join(labels[-2:])
 
 
+def should_block(host: str, first_party_host: str, domains: set[str], allowed_sites=()) -> bool:
+    """Block third-party requests to listed domains (or their subdomains), unless the site is allowed."""
+    host = host.lower()
+    first_party = _site(first_party_host)
+    if not host or _site(host) == first_party or first_party in allowed_sites:
+        return False
+    labels = host.split(".")
+    return any(".".join(labels[i:]) in domains for i in range(len(labels) - 1))
+
+
 def parse_list(text: str) -> set[str]:
     """Reads both plain domain lists and hosts files ("0.0.0.0 ads.example.com")."""
     domains = set()
@@ -144,13 +154,10 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
     def interceptRequest(self, info):
         if not self.enabled or info.resourceType() in _SKIPPED_TYPES:
             return
-        host = info.requestUrl().host().lower()
-        first_party = _site(info.firstPartyUrl().host())
-        if not host or _site(host) == first_party or first_party in self.allowed_sites:
-            return
-        labels = host.split(".")
-        if any(".".join(labels[i:]) in self.domains for i in range(len(labels) - 1)):
+        first_party_host = info.firstPartyUrl().host()
+        if should_block(info.requestUrl().host(), first_party_host, self.domains, self.allowed_sites):
             info.block(True)
+            first_party = _site(first_party_host)
             self.counts[first_party] = self.counts.get(first_party, 0) + 1
             self.blocked.emit(first_party)
 

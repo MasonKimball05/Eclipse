@@ -217,6 +217,13 @@ class CommandBar(QWidget):
                 if self.list.count():
                     self.list.setCurrentRow((self.list.currentRow() + step) % self.list.count())
                 return True
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                # ⌘↩: Browse for Me with whatever is typed
+                query = self.input.text().strip()
+                if query and self.browser.claude.available:
+                    self.close_bar()
+                    self.browser.browse_for_me(query)
+                return True
             if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 item = self.list.currentItem()
                 if item:
@@ -285,6 +292,9 @@ class CommandBar(QWidget):
                              lambda: self.ask(query), keep_open=True)
                 # A question goes straight to Claude on Return; anything else still searches first
                 results.insert(0 if looks_like_question(query) else 1, ask)
+                browse = Result(query, "Browse for Me · reads the top results", "⌘↩",
+                                qta.icon("ph.compass", color=theme.accent), lambda: self.browser.browse_for_me(query))
+                results.insert(results.index(ask) + 1, browse)
 
         # Commands are only offered once the query clearly names one
         if len(q) >= 2:
