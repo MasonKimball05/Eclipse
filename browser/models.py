@@ -1,0 +1,403 @@
+# The data side of the browser, kept free of any widgets.
+#
+# Arc's model, which we copy:
+#   - Favorites: a small grid of tabs shared by every Space
+#   - Spaces: each has its own name, colour, pinned tabs and "Today" tabs
+#   - Pinned tabs remember a home URL; closing one just unloads it
+#   - Today tabs are ephemeral and get archived after sitting unused for a while
+#   - Pinned tabs can be grouped into (nested) folders
+
+import time
+import uuid
+
+from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtSignal
+
+from . import storage
+from .theme import PALETTE
+
+FAVORITES, PINNED, TODAY = "favorites", "pinned", "today"
+
+HISTORY_LIMIT = 5000
+ARCHIVE_LIMIT = 300
+
+
+def new_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+DEFAULT_FAVORITES = [
+    ("https://www.google.com/", "Google"),
+    ("https://github.com/", "GitHub"),
+    ("https://www.youtube.com/", "YouTube"),
+    ("https://en.wikipedia.org/", "Wikipedia"),
+]
+
+
+def display_host(url: str) -> str:
+    return QUrl(url).host().removeprefix("www.")
+
+
+class Tab(QObject):
+    # Emitted whenever anything the sidebar draws (title, icon, loaded state) changes
+    changed = pyqtSignal()
+
+    def __init__(self, url="", title="", home_url=None, custom_title=None, tab_id=None, last_active=None):
+        super().__init__()
+        self.id = tab_id or new_id()
+        self.url = url
+        self.title = title
+        self.home_url = home_url          # only pinned tabs and favorites have one
+        self.custom_title = custom_title  # set when the user renames a pinned tab
+        self.last_active = last_active or time.time()
+        self.view = None                  # the WebView, created lazily on first activation
+        self.loading = False
+
+    @property
+    def label(self) -> str:
+        return self.custom_title or self.title or display_host(self.url) or "New Tab"
+
+    @property
+    def icon(self):
+        return storage.favicon(self.url)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id, "url": self.url, "title": self.title, "home_url": self.home_url,
+            "custom_title": self.custom_title, "last_active": self.last_active,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Tab":
+        return cls(d.get("url", ""), d.get("title", ""), d.get("home_url"), d.get("custom_title"),
+                   d.get("id"), d.get("last_active"))
+
+
+class Folder:
+    """A group of pinned tabs (and other folders). Lives only in a Space's pinned list."""
+
+    def __init__(self, name="New Folder", children=None, folder_id=None, expanded=True):
+        self.id = folder_id or new_id()
+        self.name = name
+        self.children: list = children or []
+        self.expanded = expanded
+
+    def to_dict(self) -> dict:
+        return {"type": "folder", "id": self.id, "name": self.name, "expanded": self.expanded,
+                "children": [n.to_dict() for n in self.children]}
+
+
+def node_from_dict(d: dict):
+    if d.get("type") == "folder":
+        return Folder(d.get("name", "Folder"), [node_from_dict(c) for c in d.get("children", [])],
+                      d.get("id"), d.get("expanded", True))
+    return Tab.from_dict(d)
+
+
+def walk_tabs(nodes):
+    for node in nodes:
+        if isinstance(node, Folder):
+            yield from walk_tabs(node.children)
+        else:
+            yield node
+
+
+def walk_folders(nodes):
+    for node in nodes:
+        if isinstance(node, Folder):
+            yield node
+            yield from walk_folders(node.children)
+
+
+def _containing_list(nodes, node):
+    # The list (top-level or a folder's children) that directly holds `node`
+    if any(n is node for n in nodes):
+        return nodes
+    for n in nodes:
+        if isinstance(n, Folder):
+            found = _containing_list(n.children, node)
+            if found is not None:
+                return found
+    return None
+
+
+class Space:
+    def __init__(self, name, color, emoji="", space_id=None, pinned=None, today=None, active_tab_id=None,
+                 profile="default", theme=None):
+        self.id = space_id or new_id()
+        self.theme: dict = theme or {}  # extra colours, intensity, light/dark, grain (see theme.py)
+        self.profile = profile  # which browser profile (cookies, logins) this Space's tabs use
+        self.name = name
+        self.color = color
+        self.emoji = emoji
+        self.pinned: list = pinned or []  # Tabs and Folders
+        self.today: list[Tab] = today or []
+        self.active_tab_id = active_tab_id
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id, "name": self.name, "color": self.color, "emoji": self.emoji,
+            "active_tab_id": self.active_tab_id, "profile": self.profile, "theme": self.theme,
+            "pinned": [t.to_dict() for t in self.pinned],
+            "today": [t.to_dict() for t in self.today],
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Space":
+        return cls(d.get("name", "Space"), d.get("color", PALETTE[0][1]), d.get("emoji", ""), d.get("id"),
+                   [node_from_dict(t) for t in d.get("pinned", [])],
+                   [Tab.from_dict(t) for t in d.get("today", [])],
+                   d.get("active_tab_id"), d.get("profile", "default"), d.get("theme"))
+
+
+class Store(QObject):
+    # Tabs/spaces were added, removed or reordered: the sidebar needs a rebuild
+    structure_changed = pyqtSignal()
+
+    def __init__(self, path):
+        super().__init__()
+        self.path = path
+        self._save_timer = QTimer(self, singleShot=True, interval=500, timeout=self.save)
+
+        data = storage.read_json(path) or {}
+        self.is_new = not data  # first launch: nothing saved yet
+        if data.get("spaces"):
+            self.spaces = [Space.from_dict(s) for s in data["spaces"]]
+            self.favorites = [Tab.from_dict(t) for t in data.get("favorites", [])]
+        else:
+            self._seed_defaults()
+        self.active_space_id = data.get("active_space_id", self.spaces[0].id)
+        if not self.space(self.active_space_id):
+            self.active_space_id = self.spaces[0].id
+        self.archive: list[dict] = data.get("archive", [])
+        self.history: list[dict] = data.get("history", [])
+        self.settings: dict = {"archive_after_hours": 12, "sidebar_visible": True, "sidebar_width": 250,
+                               **data.get("settings", {})}
+        self.window_geometry: str | None = data.get("window_geometry")
+        self.splits: list[list[str]] = data.get("splits", [])  # Split View groups of tab ids
+
+    def _seed_defaults(self):
+        self.spaces = [Space("Personal", PALETTE[0][1]), Space("Work", PALETTE[1][1])]
+        self.favorites = [
+Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
+
+    # --- Persistence ---------------------------------------------------------
+
+    def schedule_save(self):
+        # Coalesce bursts of changes (e.g. a page updating its title repeatedly) into one write
+        self._save_timer.start()
+
+    def save(self):
+        self._save_timer.stop()
+        storage.write_json(self.path, {
+            "version": 1,
+            "active_space_id": self.active_space_id,
+            "favorites": [t.to_dict() for t in self.favorites],
+            "spaces": [s.to_dict() for s in self.spaces],
+            "archive": self.archive[:ARCHIVE_LIMIT],
+            "history": self.history[:HISTORY_LIMIT],
+            "settings": self.settings,
+            "window_geometry": self.window_geometry,
+            "splits": [g for g in ([i for i in g if self.find_tab(i)] for g in self.splits) if len(g) >= 2],
+        })
+
+    def _changed(self):
+        self.structure_changed.emit()
+        self.schedule_save()
+
+    # --- Lookups ---------------------------------------------------------------
+
+    @property
+    def active_space(self) -> Space:
+        return self.space(self.active_space_id)
+
+    def space(self, space_id) -> Space | None:
+        return next((s for s in self.spaces if s.id == space_id), None)
+
+    def tab_list(self, kind, space=None) -> list[Tab]:
+        return self.favorites if kind == FAVORITES else getattr(space, kind)
+
+    def _parent(self, node) -> tuple[list, str, Space | None] | None:
+        """(the list holding node, which section it's in, its Space)."""
+        if any(n is node for n in self.favorites):
+            return self.favorites, FAVORITES, None
+        for space in self.spaces:
+            parent = _containing_list(space.pinned, node)
+            if parent is not None:
+                return parent, PINNED, space
+            if any(n is node for n in space.today):
+                return space.today, TODAY, space
+        return None
+
+    def locate(self, node) -> tuple[str, Space | None] | None:
+        found = self._parent(node)
+        return found[1:] if found else None
+
+    def all_tabs(self):
+        yield from self.favorites
+        for space in self.spaces:
+            yield from walk_tabs(space.pinned)
+            yield from space.today
+
+    def find_tab(self, tab_id) -> Tab | None:
+        return next((t for t in self.all_tabs() if t.id == tab_id), None)
+
+    def find_node(self, node_id):
+        """A Tab or a Folder by id."""
+        for space in self.spaces:
+            for folder in walk_folders(space.pinned):
+                if folder.id == node_id:
+                    return folder
+        return self.find_tab(node_id)
+
+    def folder_of(self, node) -> Folder | None:
+        for space in self.spaces:
+            for folder in walk_folders(space.pinned):
+                if any(n is node for n in folder.children):
+                    return folder
+        return None
+
+    def visible_tabs(self) -> list[Tab]:
+        space = self.active_space
+        return self.favorites + list(walk_tabs(space.pinned)) + space.today
+
+    # --- Mutations -------------------------------------------------------------
+
+    def add_tab(self, tab, kind=TODAY, space=None, index=0):
+        if kind != TODAY and tab.home_url is None:
+            tab.home_url = tab.url
+        self.tab_list(kind, space or self.active_space).insert(index, tab)
+        self._changed()
+
+    def move_tab(self, node, kind, space=None, index=None, folder=None):
+        """Move a Tab or Folder. `folder` (pinned only) puts it inside that folder."""
+        space = space or self.active_space
+        if isinstance(node, Folder):
+            # Folders only live in Pinned, and never inside themselves
+            if kind != PINNED or (folder is not None and (folder is node or folder in walk_folders(node.children))):
+                return
+        dest = folder.children if folder is not None and kind == PINNED else self.tab_list(kind, space)
+        found = self._parent(node)
+        if found:
+            src = found[0]
+            old = next(i for i, n in enumerate(src) if n is node)
+            del src[old]
+            if src is dest and index is not None and old < index:
+                index -= 1
+        index = len(dest) if index is None else max(0, min(index, len(dest)))
+        dest.insert(index, node)
+        if isinstance(node, Tab):
+            if kind == TODAY:
+                node.home_url = None
+                node.custom_title = None
+            elif node.home_url is None:
+                node.home_url = node.url
+        if folder is not None:
+            folder.expanded = True
+        self._changed()
+
+    def remove_tab(self, node):
+        """Remove a Tab or a Folder (with everything inside it)."""
+        found = self._parent(node)
+        if found:
+            found[0][:] = [n for n in found[0] if n is not node]
+            self._changed()
+
+    def add_folder(self, space, name, index=None) -> Folder:
+        folder = Folder(name)
+        space.pinned.insert(len(space.pinned) if index is None else index, folder)
+        self._changed()
+        return folder
+
+    def ungroup_folder(self, folder):
+        found = self._parent(folder)
+        if found:
+            parent = found[0]
+            i = next(i for i, n in enumerate(parent) if n is folder)
+            parent[i:i + 1] = folder.children
+            self._changed()
+
+    def set_folder_expanded(self, folder, expanded):
+        folder.expanded = expanded
+        self._changed()
+
+    def archive_tab(self, tab, space):
+        if tab.url:
+            self.archive.insert(0, {"url": tab.url, "title": tab.label, "space_id": space.id,
+                                    "archived_at": time.time()})
+            del self.archive[ARCHIVE_LIMIT:]
+        self.remove_tab(tab)
+
+    def stale_today_tabs(self, exclude=None) -> list[tuple[Tab, Space]]:
+        hours = self.settings.get("archive_after_hours", 12)
+        if not hours:
+            return []
+        cutoff = time.time() - hours * 3600
+        return [(t, s) for s in self.spaces for t in s.today if t is not exclude and t.last_active < cutoff]
+
+    def add_space(self, name, color, emoji="") -> Space:
+        space = Space(name, color, emoji)
+        self.spaces.append(space)
+        self._changed()
+        return space
+
+    def remove_space(self, space):
+        self.spaces.remove(space)
+        if self.active_space_id == space.id:
+            self.active_space_id = self.spaces[0].id
+        self._changed()
+
+    # --- Split View ----------------------------------------------------------------------
+
+    def split_of(self, tab) -> list[Tab] | None:
+        """The tabs shown side by side with `tab`, in order, or None if it isn't split."""
+        for group in self.splits:
+            if tab.id in group:
+                tabs = [t for t in map(self.find_tab, group) if t is not None]
+                return tabs if len(tabs) >= 2 else None
+        return None
+
+    def add_to_split(self, base, tab, limit=4) -> bool:
+        group = next((g for g in self.splits if base.id in g), None)
+        if group is not None and tab.id in group:
+            return True
+        if group is not None and len(group) >= limit:
+            return False
+        self._drop_from_splits(tab)
+        if group is None:
+            group = [base.id]
+            self.splits.append(group)
+        group.append(tab.id)
+        self._changed()
+        return True
+
+    def remove_from_split(self, tab):
+        self._drop_from_splits(tab)
+        self._changed()
+
+    def separate_split(self, tab):
+        self.splits = [g for g in self.splits if tab.id not in g]
+        self._changed()
+
+    def _drop_from_splits(self, tab):
+        for group in self.splits:
+            if tab.id in group:
+                group.remove(tab.id)
+        self.splits = [g for g in self.splits if len(g) >= 2]
+
+    def merge_history(self, entries):
+        """Add entries ({url, title, ts}) from elsewhere, keeping the newest per URL."""
+        newest = {}
+        for entry in self.history + entries:
+            if entry["url"] not in newest or entry["ts"] > newest[entry["url"]]["ts"]:
+                newest[entry["url"]] = entry
+        self.history = sorted(newest.values(), key=lambda e: e["ts"], reverse=True)[:HISTORY_LIMIT]
+        self.schedule_save()
+
+    def record_history(self, url, title):
+        if not url.startswith(("http://", "https://")):
+            return
+        # Most recent first, one entry per URL
+        self.history = [h for h in self.history if h["url"] != url]
+        self.history.insert(0, {"url": url, "title": title, "ts": time.time()})
+        del self.history[HISTORY_LIMIT:]
+        self.schedule_save()

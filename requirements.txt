@@ -1,4 +1,4 @@
-# Python Web Engine
-PyQt5==5.15.11
-PyQtWebEngine==5.15.7
-qtawesome==1.4.2
+# Python Web Engine (Qt 6 — native on Apple Silicon)
+PyQt6>=6.9
+PyQt6-WebEngine>=6.9
+qtawesome>=1.4
