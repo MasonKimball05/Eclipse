@@ -116,3 +116,60 @@ def test_themes():
     pale = make_theme("#ff0000", dark=False, intensity=0.1).bottom
     vivid = make_theme("#ff0000", dark=False, intensity=0.9).bottom
     assert vivid.green() < pale.green()
+
+
+def test_site_search_shortcuts():
+    from browser.command_bar import parse_site_search, site_for_tab, site_url
+    assert parse_site_search("yt lofi beats") == ("youtube", "lofi beats")
+    assert parse_site_search("GH pyqt6") == ("github", "pyqt6")
+    assert parse_site_search("x factor") is None       # one-letter keywords need Tab
+    assert parse_site_search("so what happened") is None  # everyday words need Tab too
+    assert parse_site_search("yt") is None
+    assert site_for_tab("you") == "youtube" and site_for_tab("w") == "wikipedia"
+    assert site_for_tab("zzz") is None
+    assert site_url("youtube", "a&b c") == "https://www.youtube.com/results?search_query=a%26b%20c"
+
+
+def test_inline_completion():
+    from browser.command_bar import inline_completion, matches_query, url_key
+    c = [("https://github.com/pyqt/pyqt6", "PyQt6", 50), ("https://github.com/", "GitHub", 30),
+         ("https://gitlab.com/", "GitLab", 10), ("https://www.google.com/", "Google", 500)]
+    assert inline_completion("git", c) == ("github.com", "https://github.com/", "GitHub")  # the most-used site
+    assert inline_completion("Git", c)[0] == "Github.com"  # your typing keeps its case
+    assert inline_completion("goo", c)[:2] == ("google.com", "https://www.google.com/")  # "www." ignored, kept
+    assert inline_completion("github.com/py", c)[:2] == ("github.com/pyqt/pyqt6", "https://github.com/pyqt/pyqt6")
+    assert inline_completion("git hub", c) is None and inline_completion("zzz", c) is None
+    assert inline_completion("github.com", c) is None  # already complete
+    assert url_key("https://www.x.com/a") == "x.com/a"
+    assert matches_query("python docs", "Qt for Python docs", "https://doc.qt.io/qtforpython/")
+    assert not matches_query("pyqt rust", "Qt for Python docs", "https://doc.qt.io/")
+
+
+def test_frecency_and_visits(store):
+    import time
+    from browser.models import frecency
+    now = time.time()
+    assert frecency({"ts": now, "visits": 3}, now) > frecency({"ts": now - 100 * 86400, "visits": 20}, now)
+    assert frecency({"ts": now}, now) == 100  # older entries without a count count once
+    store.record_history("https://a.example/", "A")
+    store.record_history("https://a.example/", "A")
+    assert store.history[0]["visits"] == 2
+    store.merge_history([{"url": "https://a.example/", "title": "A", "ts": 1, "visits": 9}])
+    assert store.history[0]["visits"] == 9
+
+
+def test_page_action_helpers():
+    from browser.page_actions import markdown_link, safe_filename
+    assert safe_filename("Q3: Budget / Forecast?") == "Q3 Budget Forecast"
+    assert safe_filename("   ") == "Page" and len(safe_filename("x" * 300)) == 120
+    assert markdown_link("Arrays [MDN]", "https://x.dev/a_(b)") == "[Arrays \\[MDN\\]](https://x.dev/a_%28b%29)"
+
+
+def test_recent_tabs_order():
+    from browser.models import Tab
+    from browser.tab_switcher import recent_tabs
+    a, b, c, d = (Tab(f"https://{n}.example/") for n in "abcd")
+    a.last_active, b.last_active, c.last_active, d.last_active = 1, 4, 3, 2
+    assert recent_tabs([a, b, c, d], [c.id, a.id]) == [c, a, b, d]  # used recently first, then by last use
+    assert recent_tabs([a, b], [c.id]) == [b, a]  # tabs from other Spaces are left out
+    assert len(recent_tabs([a, b, c, d], [], limit=2)) == 2

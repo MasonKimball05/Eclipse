@@ -49,9 +49,10 @@ def _arc_folder(tmp_path):
     (arc / "StorableSidebar.json").write_text(json.dumps(sidebar))
 
     with sqlite3.connect(profile / "History") as db:
-        db.execute("CREATE TABLE urls (url TEXT, title TEXT, last_visit_time INTEGER, hidden INTEGER)")
+        db.execute("CREATE TABLE urls (url TEXT, title TEXT, last_visit_time INTEGER, hidden INTEGER, "
+                   "visit_count INTEGER DEFAULT 1)")
         chrome_now = (1_700_000_000 + arc_import.CHROME_EPOCH_OFFSET) * 1_000_000
-        db.executemany("INSERT INTO urls VALUES (?, ?, ?, 0)", [
+        db.executemany("INSERT INTO urls (url, title, last_visit_time, hidden) VALUES (?, ?, ?, 0)", [
             ("https://visited.com/", "Visited", chrome_now), ("chrome://settings", "x", chrome_now)])
     png = storage.Path(__file__).parent / "fixtures" / "dot.png"
     with sqlite3.connect(profile / "Favicons") as db:
@@ -73,8 +74,8 @@ def fake_arc(tmp_path, monkeypatch):
 def test_arc_import_reads_everything(fake_arc):
     arc = arc_import.read_arc()
     home, other = arc.spaces
-    assert (home.name, home.emoji, home.color) == ("Home", "🏠", "#ff0080")
-    assert other.name == "Space 2" and other.emoji == "🪐"  # SF Symbol mapped to an emoji
+    assert (home.name, home.icon, home.color) == ("Home", "🏠", "#ff0080")
+    assert other.name == "Space 2" and other.icon == "ph.planet"  # SF Symbol mapped to a line icon
     code, projects = home.pinned
     assert code.custom_title == "Code" and code.home_url == "https://github.com/"
     assert isinstance(projects, Folder) and projects.name == "Projects" and not projects.expanded
@@ -117,11 +118,21 @@ def test_note_saves_markdown_and_titles_itself(data_dir):
     url = new_note_url()
     editor = NoteEditor(url)
     assert editor.title == "Untitled Note"
-    editor.setPlainText("# Trip plan\n\nPack bags")
+    editor.insertPlainText("# Trip plan\n\nPack bags")  # like typing
     assert editor.title == "Trip plan"
     editor.save()
     reopened = NoteEditor(url)
     assert "Pack bags" in reopened.toPlainText()
+
+
+def test_stale_note_editor_does_not_overwrite_newer_text(data_dir):
+    from browser.notes import NoteEditor, new_note_url
+    url = new_note_url()
+    stale, fresh = NoteEditor(url), NoteEditor(url)  # e.g. the same note opened twice
+    fresh.insertPlainText("Newer text")
+    fresh.save()
+    stale.save()  # never edited, so it must not write its empty copy over the file
+    assert "Newer text" in NoteEditor(url).toPlainText()
 
 
 def test_write_json_is_atomic(data_dir):

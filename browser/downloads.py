@@ -14,11 +14,12 @@ from pathlib import Path
 
 import qtawesome as qta
 from PyQt6.QtCore import QObject, QProcess, QProcessEnvironment, QSize, QStandardPaths, Qt, pyqtSignal
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
                              QFrame, QHBoxLayout, QLabel, QLineEdit, QProgressBar, QPushButton, QScrollArea,
                              QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
-from .theme import stylesheet
+from .theme import quiet_scrollbars, stylesheet
 
 HOMEBREW_BIN = "/opt/homebrew/bin"
 PROGRESS_MARKER = "MPDL|"
@@ -393,6 +394,8 @@ def _quality_label(h):
 
 
 class FolderButton(QPushButton):
+    changed = pyqtSignal(str)
+
     def __init__(self, folder):
         super().__init__()
         self.setObjectName("FolderButton")
@@ -419,28 +422,33 @@ class FolderButton(QPushButton):
         folder = QFileDialog.getExistingDirectory(self, "Save Downloads To", self.folder)
         if folder:
             self.set_folder(folder)
+            self.changed.emit(folder)
 
 
-class DownloadSettings(QDialog):
-    """Your defaults: where downloads go, how files are named, and the usual format choices."""
+class DownloadSettingsForm(QWidget):
+    """Your defaults: where downloads go, how files are named, and the usual format choices.
 
-    def __init__(self, store, theme, parent):
+    Used inside the Settings window (saving as you change things) and in the standalone
+    Download Settings dialog (saving on Save).
+    """
+
+    def __init__(self, store, autosave=False, parent=None):
         super().__init__(parent)
         self.store = store
-        self.setObjectName("DownloadSettings")
-        self.setWindowTitle("Download Settings")
-        self.setStyleSheet(stylesheet(theme))
         opts = ytdlp_settings(store)
         form = QFormLayout(self)
+        form.setContentsMargins(0, 0, 0, 0)
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
 
         self.folder = FolderButton(opts["folder"])
         self.template = QLineEdit(opts["template"])
-        template_help = QLabel("yt-dlp output template, e.g. <code>%(uploader)s/%(title)s.%(ext)s</code> "
+        template_help = QLabel("yt-dlp output template. For example <code>%(uploader)s/%(title)s.%(ext)s</code> "
                                "makes a folder per channel.")
         template_help.setObjectName("Hint")
         template_help.setWordWrap(True)
+        # Without this a wrapped hint in a form takes its narrowest width, a word or two per line
+        template_help.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.kind = _combo([("video", "Video"), ("audio", "Audio only")], opts["kind"])
         self.video_format = _combo(VIDEO_FORMATS, opts["video_format"])
         self.max_height = _combo([(h, _quality_label(h)) for h in QUALITIES], opts["max_height"])
@@ -458,6 +466,7 @@ class DownloadSettings(QDialog):
                               "videos. Safari needs Full Disk Access for this.")
         cookies_help.setObjectName("Hint")
         cookies_help.setWordWrap(True)
+        cookies_help.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         self.rate = QLineEdit(opts["rate_limit"])
         self.rate.setPlaceholderText("e.g. 5M (blank for no limit)")
 
@@ -475,13 +484,17 @@ class DownloadSettings(QDialog):
         form.addRow("Cookies from", self.cookies)
         form.addRow("", cookies_help)
         form.addRow("Speed limit", self.rate)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self._save)
-        buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
-        self.setFixedWidth(600)
 
-    def _save(self):
+        if autosave:
+            self.folder.changed.connect(self.save)
+            for edit in (self.template, self.subs, self.rate):
+                edit.editingFinished.connect(self.save)
+            for combo in (self.kind, self.video_format, self.max_height, self.audio_format, self.cookies):
+                combo.currentIndexChanged.connect(self.save)
+            for box in (self.embed_subs, self.embed_metadata, self.embed_thumbnail):
+                box.toggled.connect(self.save)
+
+    def save(self, *_):
         self.store.settings["ytdlp"] = {
             "folder": self.folder.folder,
             "template": self.template.text().strip() or DEFAULT_SETTINGS["template"],
@@ -497,7 +510,23 @@ class DownloadSettings(QDialog):
             "rate_limit": self.rate.text().strip(),
         }
         self.store.schedule_save()
-        self.accept()
+
+
+class DownloadSettings(QDialog):
+    def __init__(self, store, theme, parent):
+        super().__init__(parent)
+        self.setObjectName("DownloadSettings")
+        self.setProperty("panel", True)
+        self.setWindowTitle("Download Settings")
+        self.setStyleSheet(stylesheet(theme))
+        layout = QVBoxLayout(self)
+        self.form = DownloadSettingsForm(store)
+        layout.addWidget(self.form)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(lambda: (self.form.save(), self.accept()))
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.setFixedWidth(600)
 
 
 # --- The panel ---------------------------------------------------------------------------------
@@ -512,8 +541,9 @@ class DownloadsWindow(QWidget):
         self.info: dict | None = None
         self._fetch: InfoFetch | None = None
         self.setObjectName("DownloadsWindow")
+        self.setProperty("panel", True)
         self.setWindowTitle("Downloads")
-        self.resize(600, 720)
+        self.resize(560, 560)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 16)
@@ -566,12 +596,30 @@ class DownloadsWindow(QWidget):
         self.list_layout = QVBoxLayout(self.list_body)
         self.list_layout.setContentsMargins(0, 0, 0, 0)
         self.list_layout.setSpacing(6)
-        self.empty = QLabel("Nothing downloaded yet")
-        self.empty.setObjectName("Hint")
+        # Empty: a quiet picture and a line of help, centred, instead of a bare sentence
+        self.empty = QWidget()
+        ev = QVBoxLayout(self.empty)
+        ev.setContentsMargins(0, 48, 0, 0)
+        ev.setSpacing(6)
+        art = QLabel()
+        faded = QColor(browser.theme.panel_text)
+        faded.setAlphaF(0.3)
+        art.setPixmap(qta.icon("ph.download-simple", color=faded).pixmap(44, 44))
+        art.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        headline = QLabel("No downloads yet")
+        headline.setObjectName("PanelEmptyTitle")
+        headline.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hint = QLabel("Files you download appear here. Paste a video link above to save it with yt-dlp.")
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        for widget in (art, headline, hint):
+            ev.addWidget(widget)
         self.list_layout.addWidget(self.empty)
         self.list_layout.addStretch(1)
         scroll = QScrollArea()
         scroll.setWidget(self.list_body)
+        quiet_scrollbars(scroll)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         layout.addWidget(scroll, 1)

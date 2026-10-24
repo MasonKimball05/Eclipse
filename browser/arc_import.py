@@ -27,16 +27,20 @@ ARC_DIR = Path.home() / "Library" / "Application Support" / "Arc"
 CHROME_EPOCH_OFFSET = 11_644_473_600  # seconds between 1601-01-01 and 1970-01-01
 HISTORY_IMPORT_LIMIT = 5000
 
-# Arc's built-in Space icons are SF Symbols, which Qt can't draw; use a close emoji instead
-SF_SYMBOL_EMOJI = {
-    "planet": "🪐", "star": "⭐️", "construction": "🚧", "heart": "❤️", "house": "🏠", "briefcase": "💼",
-    "book": "📚", "books": "📚", "gamecontroller": "🎮", "graduationcap": "🎓", "music": "🎵",
-    "bolt": "⚡️", "leaf": "🍃", "flame": "🔥", "globe": "🌐", "moon": "🌙", "sun": "☀️", "cloud": "☁️",
-    "camera": "📷", "cart": "🛒", "code": "💻", "terminal": "💻", "paintbrush": "🎨", "paintpalette": "🎨",
-    "airplane": "✈️", "car": "🚗", "dollarsign": "💲", "building": "🏢", "person": "👤", "flag": "🚩",
-    "bookmark": "🔖", "folder": "📁", "sparkles": "✨", "cup": "☕️", "fork": "🍴", "tv": "📺",
-    "film": "🎬", "pencil": "✏️", "lightbulb": "💡", "trophy": "🏆", "gift": "🎁", "bag": "👜",
-    "hammer": "🔨", "wrench": "🔧", "chart": "📈", "newspaper": "📰", "mail": "✉️", "phone": "📱",
+# Arc's built-in Space icons are SF Symbols, which Qt can't draw; use the closest line icon
+SF_SYMBOLS = {
+    "planet": "ph.planet", "globe": "ph.globe", "star": "ph.star", "sparkles": "ph.sparkle", "heart": "ph.heart",
+    "house": "ph.house", "briefcase": "ph.briefcase", "book": "ph.book-open", "books": "ph.book-open",
+    "graduationcap": "ph.graduation-cap", "gamecontroller": "ph.game-controller", "music": "ph.music-notes",
+    "headphones": "ph.headphones", "bolt": "ph.lightning", "leaf": "ph.leaf", "flame": "ph.fire", "sun": "ph.sun",
+    "moon": "ph.moon", "camera": "ph.camera", "cart": "ph.shopping-cart", "bag": "ph.shopping-cart",
+    "chevron.left.forwardslash.chevron.right": "ph.code", "terminal": "ph.terminal-window", "paintbrush": "ph.palette",
+    "paintpalette": "ph.palette", "pencil": "ph.pencil", "airplane": "ph.airplane", "car": "ph.car",
+    "dollarsign": "ph.currency-dollar", "building": "ph.buildings", "person": "ph.user", "flag": "ph.flag",
+    "cup": "ph.coffee", "fork": "ph.pizza", "tv": "ph.film-strip", "film": "ph.film-strip", "lightbulb": "ph.lightning",
+    "trophy": "ph.trophy", "gift": "ph.gift", "hammer": "ph.wrench", "wrench": "ph.wrench", "construction": "ph.wrench",
+    "chart": "ph.chart-line", "newspaper": "ph.newspaper", "mail": "ph.envelope", "phone": "ph.chat-circle",
+    "folder": "ph.notebook", "bookmark": "ph.flag", "rocket": "ph.rocket", "cloud": "ph.planet",
 }
 
 
@@ -91,13 +95,14 @@ def _color(space: dict, index: int) -> str:
     return "#{:02x}{:02x}{:02x}".format(channel(rgb["red"]), channel(rgb["green"]), channel(rgb["blue"]))
 
 
-def _emoji(space: dict) -> str:
+def _icon(space: dict) -> str:
     icon = space.get("customInfo", {}).get("iconType", {})
     if isinstance(icon.get("emoji_v2"), str):
         return icon["emoji_v2"]
     if isinstance(icon.get("emoji"), int):
         return chr(icon["emoji"])
-    return SF_SYMBOL_EMOJI.get(str(icon.get("icon", "")).split(".")[0], "")
+    name = str(icon.get("icon", ""))
+    return SF_SYMBOLS.get(name, SF_SYMBOLS.get(name.split(".")[0], ""))
 
 
 def _read_sidebar(result: ArcImport):
@@ -133,7 +138,7 @@ def _read_sidebar(result: ArcImport):
     for index, (space_id, space) in enumerate(_pairs(container.get("spaces", [])).items()):
         containers = _pairs(space.get("containerIDs", []))
         result.spaces.append(Space(
-            space.get("title") or f"Space {index + 1}", _color(space, index), _emoji(space),
+            space.get("title") or f"Space {index + 1}", _color(space, index), _icon(space),
             space_id=f"arc-{space_id}",
             pinned=build(containers.get("pinned"), pinned=True),
             today=build(containers.get("unpinned"), pinned=False),
@@ -157,10 +162,11 @@ def _query(db: Path, tmp: Path, sql: str, params=()) -> list:
 
 
 def _read_history(db: Path, tmp: Path) -> list[dict]:
-    rows = _query(db, tmp, "SELECT url, title, last_visit_time FROM urls WHERE hidden = 0 "
+    rows = _query(db, tmp, "SELECT url, title, last_visit_time, visit_count FROM urls WHERE hidden = 0 "
                            "ORDER BY last_visit_time DESC LIMIT ?", (HISTORY_IMPORT_LIMIT,))
-    return [{"url": url, "title": title or "", "ts": t / 1_000_000 - CHROME_EPOCH_OFFSET}
-            for url, title, t in rows if url.startswith(("http://", "https://"))]
+    # Visit counts come too, so the command bar ranks your usual sites well from day one
+    return [{"url": url, "title": title or "", "ts": t / 1_000_000 - CHROME_EPOCH_OFFSET, "visits": max(count or 1, 1)}
+            for url, title, t, count in rows if url.startswith(("http://", "https://"))]
 
 
 def _read_favicons(db: Path, tmp: Path, urls: set[str]) -> dict[str, bytes]:

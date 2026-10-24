@@ -78,7 +78,9 @@ class SplitView(QSplitter):
         self.panes: list[Pane] = []
 
     def show_tabs(self, tabs, focused, stack):
-        same = [p.tab for p in self.panes] == tabs and all(p.view is t.view for p, t in zip(self.panes, tabs))
+        # The same tabs, each page still in its pane (not taken by the mini player or the page stack)
+        same = [p.tab for p in self.panes] == tabs and all(
+            p.view is t.view and p.view is not None and p.view.parentWidget() is p for p, t in zip(self.panes, tabs))
         if not same:
             self.release(stack)
             self.panes = [Pane(self.browser, t) for t in tabs]

@@ -40,6 +40,7 @@ class NoteEditor(QTextEdit):
         self.setPlaceholderText("Untitled Note\n\nStart writing…  (⌘B bold, ⌘I italic, ⌘U underline, \"* \" for a list)")
         if self.path.exists():
             self.setMarkdown(self.path.read_text())
+        self.document().setModified(False)  # setup (margins, loading the file) isn't an edit
         self._save_timer = QTimer(self, singleShot=True, interval=600, timeout=self.save)
         self.textChanged.connect(self._edited)
 
@@ -60,8 +61,12 @@ class NoteEditor(QTextEdit):
         self.title_changed.emit(self.title)
 
     def save(self):
+        # Only an edited editor writes, so a second, stale editor on the same note can't
+        # overwrite newer text when it closes
         self._save_timer.stop()
-        self.path.write_text(self.toMarkdown())
+        if self.document().isModified():
+            self.path.write_text(self.toMarkdown())
+            self.document().setModified(False)
 
     def _merge(self, fmt):
         cursor = self.textCursor()

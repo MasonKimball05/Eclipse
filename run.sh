@@ -5,6 +5,9 @@
 #   ./run.sh           run with your normal profile
 #   ./run.sh --fresh   run with a throwaway profile (wiped each launch)
 #   ./run.sh --reset   rebuild the virtualenv from scratch, then run
+#   ./run.sh --build-app   build PythonBrowser.app into ~/Applications (Dock icon, default browser);
+#                          add --sign "<identity>" [--notarize PROFILE] for a properly signed app
+#   ./run.sh <url>     open a link (in the already-running browser, if there is one)
 
 set -e
 SCRIPT_DIR="${0:A:h}"
@@ -13,6 +16,8 @@ SCRIPT_DIR="${0:A:h}"
 # plugin from any path containing a hidden folder (.venv, .claude/worktrees, …)
 VENV="$HOME/Library/Application Support/PythonBrowser/venv"
 PYTHON="${PYTHON:-python3}"
+BUILD_APP=0
+PASS=()
 
 for arg in "$@"; do
   case "$arg" in
@@ -22,6 +27,12 @@ for arg in "$@"; do
       ;;
     --reset)
       rm -rf "$VENV"
+      ;;
+    --build-app)
+      BUILD_APP=1
+      ;;
+    *)
+      PASS+=("$arg")
       ;;
   esac
 done
@@ -40,4 +51,7 @@ if [[ "$(cat "$VENV/.requirements-hash" 2>/dev/null)" != "$REQ_HASH" ]]; then
 fi
 
 cd "$SCRIPT_DIR"
-exec "$VENV/bin/python" main.py
+if (( BUILD_APP )); then
+  exec "$VENV/bin/python" tools/build_app.py "${PASS[@]}"  # e.g. --sign "Developer ID Application: …"
+fi
+exec "$VENV/bin/python" main.py "${PASS[@]}"

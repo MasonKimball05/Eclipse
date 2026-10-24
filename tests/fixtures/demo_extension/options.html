@@ -1,0 +1,6 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Demo Options</title>
+<h1>Demo Extension options</h1>
+<p>Last page: <span id="last">…</span></p>
+<script>chrome.storage.local.get('last').then(({ last }) => (document.getElementById('last').textContent = last || 'none'));</script>

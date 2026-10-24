@@ -7,6 +7,7 @@ from PyQt6.QtGui import QColor, QPainter, QPainterPath
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QStackedWidget, QTextBrowser,
                              QToolButton, QVBoxLayout, QWidget)
 
+from . import motion
 from .ai import looks_like_question
 from .models import display_host
 
@@ -263,17 +264,37 @@ class PreviewCard(QFrame):
 
 
 class EmptyState(QWidget):
+    """What an empty page area shows: the few keys that get you anywhere, quietly."""
+
+    HINTS = (("⌘T", "Search or open a site"), ("⌘L", "Change this tab's address"),
+             ("⇧⌘P", "New private window"), ("⌘/", "All keyboard shortcuts"))
+
     def __init__(self):
         super().__init__()
         self.setObjectName("EmptyState")
         layout = QVBoxLayout(self)
         layout.addStretch(1)
-        title = QLabel("Nothing open")
-        title.setObjectName("EmptyTitle")
-        hint = QLabel("Press ⌘T to search, enter a URL, or ask Claude")
-        for label in (title, hint):
-            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            layout.addWidget(label)
+        grid = QWidget()
+        rows = QVBoxLayout(grid)
+        rows.setSpacing(10)
+        rows.setContentsMargins(0, 0, 0, 0)
+        for keys, text in self.HINTS:
+            row = QHBoxLayout()
+            row.setSpacing(12)
+            cap = QLabel(keys)
+            cap.setObjectName("EmptyKey")
+            cap.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            cap.setFixedWidth(56)
+            label = QLabel(text)
+            row.addWidget(cap)
+            row.addWidget(label)
+            row.addStretch(1)
+            rows.addLayout(row)
+        center = QHBoxLayout()
+        center.addStretch(1)
+        center.addWidget(grid)
+        center.addStretch(1)
+        layout.addLayout(center)
         layout.addStretch(1)
 
 
@@ -301,13 +322,15 @@ class ContentFrame(QFrame):
         self.toast.setObjectName("Toast")
         self.toast.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.toast.hide()
-        self._toast_timer = QTimer(self, singleShot=True, interval=1800, timeout=self.toast.hide)
+        self._toast_timer = QTimer(self, singleShot=True, interval=1800,
+                                   timeout=lambda: motion.fade(self.toast, False, motion.NORMAL))
 
         self.find_bar = FindBar(browser, self)
         self.preview_card = PreviewCard(browser, self)
         self.split_drop = SplitDropZone(browser, self)
         self.corners = [Corner(browser, w, self) for w in ("tl", "tr", "bl", "br")]
         self._rounded = True
+        self.drawer = None  # Developer Mode's console, under the page when open
 
         from .split import SplitView  # split.py builds on this module's Corner
         self.split_view = SplitView(browser)
@@ -381,12 +404,26 @@ class ContentFrame(QFrame):
         self.toast.setText(text)
         self.toast.adjustSize()
         self.toast.move((self.width() - self.toast.width()) // 2, self.height() - self.toast.height() - 20)
-        self.toast.show()
         self.toast.raise_()
+        motion.fade(self.toast, True)
         self._toast_timer.start()
 
+    def set_drawer(self, drawer):
+        if drawer is self.drawer:
+            return
+        if self.drawer is not None:
+            self.drawer.hide()
+        self.drawer = drawer
+        if drawer is not None:
+            drawer.show()
+            drawer.raise_()
+        self.resizeEvent(None)
+
     def resizeEvent(self, event):
-        self.stack.setGeometry(self.rect())
+        drawer_h = self.drawer.height() if self.drawer is not None else 0
+        self.stack.setGeometry(0, 0, self.width(), self.height() - drawer_h)
+        if self.drawer is not None:
+            self.drawer.setGeometry(0, self.height() - drawer_h, self.width(), drawer_h)
         w, h = self.width(), self.height()
         self.find_bar.move(w - self.find_bar.width() - 12, 12)
         if self.preview_card.isVisible():

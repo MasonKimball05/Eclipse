@@ -43,10 +43,17 @@ def read_json(path: Path) -> dict | None:
         return None
 
 
-def write_json(path: Path, data: dict) -> None:
-    # Write to a temp file and swap it in, so a crash mid-write can't corrupt the session
+def previous_copy(path: Path) -> Path:
+    return path.with_suffix(".prev.json")
+
+
+def write_json(path: Path, data: dict, keep_previous=False) -> None:
+    # Write to a temp file and swap it in, so a crash mid-write can't corrupt the session.
+    # keep_previous: the last good version stays next to it, in case this one turns out unreadable
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=1))
+    if keep_previous and path.exists():
+        os.replace(path, previous_copy(path))
     os.replace(tmp, path)
 
 

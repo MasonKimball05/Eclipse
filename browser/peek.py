@@ -3,7 +3,7 @@
 # close it (Esc or click outside) or keep it with "Open as Tab".
 
 import qtawesome as qta
-from PyQt6.QtCore import QSize, Qt, QUrl
+from PyQt6.QtCore import QObject, QSize, Qt, QUrl
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QToolButton, QVBoxLayout,
                              QWidget)
@@ -57,9 +57,12 @@ class PeekOverlay(QWidget):
         for btn in (self.open_btn, self.close_btn):
             btn.setIcon(qta.icon(btn.property("icon_name"), color=self.browser.theme.panel_text))
         view = self.view = self.browser.create_view(profile)
-        view.urlChanged.connect(lambda u: self.host.setText("Peek  ·  " + (display_host(u.toString()) or u.toString())))
-        view.page().windowCloseRequested.connect(self.close_peek)
-        view.page().newWindowRequested.connect(lambda req: self.browser.handle_new_window(None, req, profile))
+        self._links = [  # cut when the page is promoted to a tab (see promote)
+            view.urlChanged.connect(lambda u: self.host.setText("Peek  ·  " + (display_host(u.toString())
+                                                                                or u.toString()))),
+            view.page().windowCloseRequested.connect(self.close_peek),
+            view.page().newWindowRequested.connect(lambda req: self.browser.handle_new_window(None, req, profile)),
+        ]
         self.card_layout.addWidget(view, 1)
         if request is not None:
             request.openIn(view.page())
@@ -82,6 +85,8 @@ class PeekOverlay(QWidget):
         view, self.view = self.view, None
         self.hide()
         if view is not None:
+            for link in self._links:
+                QObject.disconnect(link)
             self.card_layout.removeWidget(view)
             self.browser.adopt_view(view)
 

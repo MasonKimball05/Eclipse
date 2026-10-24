@@ -5,7 +5,7 @@
 #   - Spaces: each has its own name, colour, pinned tabs and "Today" tabs
 #   - Pinned tabs remember a home URL; closing one just unloads it
 #   - Today tabs are ephemeral and get archived after sitting unused for a while
-#   - Pinned tabs can be grouped into (nested) folders
+#   - Pinned and Today tabs can be grouped into (nested) folders (Tidy Tabs makes Today ones)
 
 import time
 import uuid
@@ -19,6 +19,13 @@ FAVORITES, PINNED, TODAY = "favorites", "pinned", "today"
 
 HISTORY_LIMIT = 5000
 ARCHIVE_LIMIT = 300
+
+
+def frecency(entry: dict, now: float | None = None) -> float:
+    """How likely you want this history entry: visits, weighted by how recently (like Firefox's frecency)."""
+    age_days = ((now or time.time()) - entry.get("ts", 0)) / 86400
+    weight = 100 if age_days <= 4 else 70 if age_days <= 14 else 50 if age_days <= 31 else 30 if age_days <= 90 else 10
+    return entry.get("visits", 1) * weight
 
 
 def new_id() -> str:
@@ -51,6 +58,10 @@ class Tab(QObject):
         self.last_active = last_active or time.time()
         self.view = None                  # the WebView, created lazily on first activation
         self.loading = False
+        self.fresh = False                # new in a Live Folder, not opened yet (shows a dot)
+        self.unread = None                # unread count from the page title ("3", "99+", "•"), not saved
+        self.app_unread = None            # the same, from the site's own API (Parliament), not saved
+        self.notified = False             # sent a notification you haven't looked at yet
 
     @property
     def label(self) -> str:
@@ -73,23 +84,34 @@ class Tab(QObject):
 
 
 class Folder:
-    """A group of pinned tabs (and other folders). Lives only in a Space's pinned list."""
+    """A group of tabs (and other folders), in a Space's Pinned or Today section."""
 
-    def __init__(self, name="New Folder", children=None, folder_id=None, expanded=True):
+    def __init__(self, name="New Folder", children=None, folder_id=None, expanded=True, live=None):
         self.id = folder_id or new_id()
         self.name = name
         self.children: list = children or []
         self.expanded = expanded
+        # A Live Folder's source, e.g. {"kind": "feed", "url": …} or {"kind": "github", "query": "review"},
+        # plus what's been seen (see live_folders.py). None for an ordinary folder.
+        self.live: dict | None = live
+        if live:
+            seen = set(live.get("seen", []))
+            for child in self.children:
+                if isinstance(child, Tab):
+                    child.fresh = (child.home_url or child.url) not in seen
 
     def to_dict(self) -> dict:
-        return {"type": "folder", "id": self.id, "name": self.name, "expanded": self.expanded,
-                "children": [n.to_dict() for n in self.children]}
+        d = {"type": "folder", "id": self.id, "name": self.name, "expanded": self.expanded,
+             "children": [n.to_dict() for n in self.children]}
+        if self.live:
+            d["live"] = self.live
+        return d
 
 
 def node_from_dict(d: dict):
     if d.get("type") == "folder":
         return Folder(d.get("name", "Folder"), [node_from_dict(c) for c in d.get("children", [])],
-                      d.get("id"), d.get("expanded", True))
+                      d.get("id"), d.get("expanded", True), d.get("live"))
     return Tab.from_dict(d)
 
 
@@ -121,21 +143,21 @@ def _containing_list(nodes, node):
 
 
 class Space:
-    def __init__(self, name, color, emoji="", space_id=None, pinned=None, today=None, active_tab_id=None,
+    def __init__(self, name, color, icon="", space_id=None, pinned=None, today=None, active_tab_id=None,
                  profile="default", theme=None):
         self.id = space_id or new_id()
         self.theme: dict = theme or {}  # extra colours, intensity, light/dark, grain (see theme.py)
         self.profile = profile  # which browser profile (cookies, logins) this Space's tabs use
         self.name = name
         self.color = color
-        self.emoji = emoji
+        self.icon = icon  # an emoji, or a line-icon name like "ph.planet" (see icons.py)
         self.pinned: list = pinned or []  # Tabs and Folders
-        self.today: list[Tab] = today or []
+        self.today: list = today or []  # Tabs and Folders
         self.active_tab_id = active_tab_id
 
     def to_dict(self) -> dict:
         return {
-            "id": self.id, "name": self.name, "color": self.color, "emoji": self.emoji,
+            "id": self.id, "name": self.name, "color": self.color, "icon": self.icon,
             "active_tab_id": self.active_tab_id, "profile": self.profile, "theme": self.theme,
             "pinned": [t.to_dict() for t in self.pinned],
             "today": [t.to_dict() for t in self.today],
@@ -143,9 +165,9 @@ class Space:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Space":
-        return cls(d.get("name", "Space"), d.get("color", PALETTE[0][1]), d.get("emoji", ""), d.get("id"),
+        return cls(d.get("name", "Space"), d.get("color", PALETTE[0][1]), d.get("icon", d.get("emoji", "")), d.get("id"),
                    [node_from_dict(t) for t in d.get("pinned", [])],
-                   [Tab.from_dict(t) for t in d.get("today", [])],
+                   [node_from_dict(t) for t in d.get("today", [])],
                    d.get("active_tab_id"), d.get("profile", "default"), d.get("theme"))
 
 
@@ -158,7 +180,8 @@ class Store(QObject):
         self.path = path
         self._save_timer = QTimer(self, singleShot=True, interval=500, timeout=self.save)
 
-        data = storage.read_json(path) or {}
+        # If the session file is unreadable (or missing after a crash mid-save), the copy before it
+        data = storage.read_json(path) or storage.read_json(storage.previous_copy(path)) or {}
         self.is_new = not data  # first launch: nothing saved yet
         if data.get("spaces"):
             self.spaces = [Space.from_dict(s) for s in data["spaces"]]
@@ -198,7 +221,7 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
             "settings": self.settings,
             "window_geometry": self.window_geometry,
             "splits": [g for g in ([i for i in g if self.find_tab(i)] for g in self.splits) if len(g) >= 2],
-        })
+        }, keep_previous=True)
 
     def _changed(self):
         self.structure_changed.emit()
@@ -224,8 +247,9 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
             parent = _containing_list(space.pinned, node)
             if parent is not None:
                 return parent, PINNED, space
-            if any(n is node for n in space.today):
-                return space.today, TODAY, space
+            parent = _containing_list(space.today, node)
+            if parent is not None:
+                return parent, TODAY, space
         return None
 
     def locate(self, node) -> tuple[str, Space | None] | None:
@@ -236,7 +260,7 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
         yield from self.favorites
         for space in self.spaces:
             yield from walk_tabs(space.pinned)
-            yield from space.today
+            yield from walk_tabs(space.today)
 
     def find_tab(self, tab_id) -> Tab | None:
         return next((t for t in self.all_tabs() if t.id == tab_id), None)
@@ -244,21 +268,21 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
     def find_node(self, node_id):
         """A Tab or a Folder by id."""
         for space in self.spaces:
-            for folder in walk_folders(space.pinned):
+            for folder in walk_folders(space.pinned + space.today):
                 if folder.id == node_id:
                     return folder
         return self.find_tab(node_id)
 
     def folder_of(self, node) -> Folder | None:
         for space in self.spaces:
-            for folder in walk_folders(space.pinned):
+            for folder in walk_folders(space.pinned + space.today):
                 if any(n is node for n in folder.children):
                     return folder
         return None
 
     def visible_tabs(self) -> list[Tab]:
         space = self.active_space
-        return self.favorites + list(walk_tabs(space.pinned)) + space.today
+        return self.favorites + list(walk_tabs(space.pinned)) + list(walk_tabs(space.today))
 
     # --- Mutations -------------------------------------------------------------
 
@@ -270,12 +294,14 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
 
     def move_tab(self, node, kind, space=None, index=None, folder=None):
         """Move a Tab or Folder. `folder` (pinned only) puts it inside that folder."""
+        if folder is not None and folder.live:
+            return  # a Live Folder's contents come from its feed; refreshing would drop anything added
         space = space or self.active_space
         if isinstance(node, Folder):
-            # Folders only live in Pinned, and never inside themselves
-            if kind != PINNED or (folder is not None and (folder is node or folder in walk_folders(node.children))):
+            # Folders live in Pinned or Today (not Favorites), and never inside themselves
+            if kind == FAVORITES or (folder is not None and (folder is node or folder in walk_folders(node.children))):
                 return
-        dest = folder.children if folder is not None and kind == PINNED else self.tab_list(kind, space)
+        dest = folder.children if folder is not None and kind != FAVORITES else self.tab_list(kind, space)
         found = self._parent(node)
         if found:
             src = found[0]
@@ -300,11 +326,19 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
         found = self._parent(node)
         if found:
             found[0][:] = [n for n in found[0] if n is not node]
+            if found[1] == TODAY:
+                self._prune_empty_folders(found[2].today)  # a Today folder goes away with its last tab
             self._changed()
 
-    def add_folder(self, space, name, index=None) -> Folder:
+    def _prune_empty_folders(self, nodes):
+        for folder in [n for n in nodes if isinstance(n, Folder)]:
+            self._prune_empty_folders(folder.children)
+        nodes[:] = [n for n in nodes if not (isinstance(n, Folder) and not n.children)]
+
+    def add_folder(self, space, name, index=None, kind=PINNED) -> Folder:
         folder = Folder(name)
-        space.pinned.insert(len(space.pinned) if index is None else index, folder)
+        nodes = self.tab_list(kind, space)
+        nodes.insert(len(nodes) if index is None else index, folder)
         self._changed()
         return folder
 
@@ -327,15 +361,17 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
             del self.archive[ARCHIVE_LIMIT:]
         self.remove_tab(tab)
 
-    def stale_today_tabs(self, exclude=None) -> list[tuple[Tab, Space]]:
+    def stale_today_tabs(self, exclude=()) -> list[tuple[Tab, Space]]:
+        """Today tabs idle for longer than the archive setting. `exclude`: tabs to keep (on screen)."""
         hours = self.settings.get("archive_after_hours", 12)
         if not hours:
             return []
         cutoff = time.time() - hours * 3600
-        return [(t, s) for s in self.spaces for t in s.today if t is not exclude and t.last_active < cutoff]
+        keep = {id(t) for t in exclude if t is not None}
+        return [(t, s) for s in self.spaces for t in walk_tabs(s.today) if id(t) not in keep and t.last_active < cutoff]
 
-    def add_space(self, name, color, emoji="") -> Space:
-        space = Space(name, color, emoji)
+    def add_space(self, name, color, icon="") -> Space:
+        space = Space(name, color, icon)
         self.spaces.append(space)
         self._changed()
         return space
@@ -388,16 +424,22 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
         """Add entries ({url, title, ts}) from elsewhere, keeping the newest per URL."""
         newest = {}
         for entry in self.history + entries:
-            if entry["url"] not in newest or entry["ts"] > newest[entry["url"]]["ts"]:
-                newest[entry["url"]] = entry
+            old = newest.get(entry["url"])
+            if old is None or entry["ts"] > old["ts"]:
+                visits = max(entry.get("visits", 1), old.get("visits", 1) if old else 1)
+                newest[entry["url"]] = {**entry, "visits": visits}
+            else:
+                old["visits"] = max(old.get("visits", 1), entry.get("visits", 1))
         self.history = sorted(newest.values(), key=lambda e: e["ts"], reverse=True)[:HISTORY_LIMIT]
         self.schedule_save()
 
     def record_history(self, url, title):
         if not url.startswith(("http://", "https://")):
             return
-        # Most recent first, one entry per URL
+        # Most recent first, one entry per URL, counting visits (for ranking command bar suggestions)
+        old = next((h for h in self.history if h["url"] == url), None)
         self.history = [h for h in self.history if h["url"] != url]
-        self.history.insert(0, {"url": url, "title": title, "ts": time.time()})
+        self.history.insert(0, {"url": url, "title": title, "ts": time.time(),
+                                "visits": (old or {}).get("visits", 0) + 1})
         del self.history[HISTORY_LIMIT:]
         self.schedule_save()

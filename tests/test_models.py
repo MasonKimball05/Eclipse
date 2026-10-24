@@ -61,11 +61,30 @@ def test_folder_cannot_go_inside_itself_or_its_children(store):
     assert space.pinned == [outer] and outer.children == [inner]
 
 
-def test_folders_only_live_in_pinned(store):
+def test_folders_never_go_into_favorites(store):
     folder = store.add_folder(store.active_space, "F")
-    store.move_tab(folder, TODAY)
     store.move_tab(folder, FAVORITES)
     assert folder in store.active_space.pinned
+    store.move_tab(folder, TODAY)  # Today can hold folders (Tidy Tabs makes them)
+    assert folder in store.active_space.today
+
+
+def test_today_folders_hold_tabs_and_vanish_when_empty(store):
+    space = store.active_space
+    a, b = Tab("https://a.com"), Tab("https://b.com")
+    store.add_tab(a)
+    store.add_tab(b)
+    folder = store.add_folder(space, "Reading", kind=TODAY)
+    store.move_tab(a, TODAY, folder=folder)
+    store.move_tab(b, TODAY, folder=folder)
+    assert store.locate(a) == (TODAY, space) and a in store.visible_tabs()
+    assert space.today == [folder]
+    a.last_active = b.last_active = 0
+    assert {t for t, _ in store.stale_today_tabs()} == {a, b}  # archiving looks inside folders
+    store.archive_tab(a, space)
+    assert folder in space.today
+    store.archive_tab(b, space)
+    assert space.today == []  # the emptied folder went away with its last tab
 
 
 def test_ungroup_keeps_tabs_in_place(store):
@@ -115,7 +134,7 @@ def test_stale_today_tabs_respect_the_setting_and_skip_current(store):
     old.last_active = current.last_active = time.time() - 13 * 3600
     for t in (old, fresh, current):
         store.add_tab(t)
-    stale = [t for t, _ in store.stale_today_tabs(exclude=current)]
+    stale = [t for t, _ in store.stale_today_tabs(exclude=[current])]
     assert stale == [old]
     store.settings["archive_after_hours"] = 0  # "Never"
     assert store.stale_today_tabs() == []
@@ -156,3 +175,18 @@ def test_corrupt_session_is_kept_aside_and_replaced(data_dir):
     fresh = Store(path)
     assert fresh.is_new
     assert path.with_suffix(".corrupt.json").exists()
+
+
+def test_old_sessions_with_emoji_key_still_load(data_dir):
+    from browser.models import Space
+    space = Space.from_dict({"name": "Games", "color": "#f43f5e", "emoji": "🎮"})
+    assert space.icon == "🎮"
+    assert "emoji" not in space.to_dict() and space.to_dict()["icon"] == "🎮"
+
+
+def test_space_icons_render_for_symbols_emoji_and_none():
+    from PyQt6.QtGui import QColor
+    from browser.icons import space_icon
+    from browser.models import Space
+    for icon in ("ph.planet", "🎮", "", "ph.not-a-real-icon"):
+        assert not space_icon(Space("S", "#3b82f6", icon), QColor("white")).isNull()

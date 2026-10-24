@@ -192,7 +192,8 @@ class BoostEditor(QDialog):
         super().__init__(parent)
         self.manager = manager
         self.boost = boost
-        self.setObjectName("DownloadSettings")  # shares the panel styling
+        self.setObjectName("BoostEditor")
+        self.setProperty("panel", True)  # the shared panel styling (theme.py)
         self.setWindowTitle(f"Boost · {boost.site}")
         self.setStyleSheet(stylesheet(theme))
         self.resize(640, 680)

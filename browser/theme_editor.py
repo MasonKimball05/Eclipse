@@ -20,7 +20,8 @@ class ThemeEditor(QDialog):
         self._original = (space.color, dict(space.theme))
         t = {**DEFAULT_SPACE_THEME, **space.theme}
         self.colors = list(t["colors"]) or [space.color]
-        self.setObjectName("DownloadSettings")  # shares the panel styling
+        self.setObjectName("ThemeEditor")
+        self.setProperty("panel", True)  # the shared panel styling (theme.py)
         self.setWindowTitle(f"{space.name} · Theme")
         self.setFixedWidth(420)
 

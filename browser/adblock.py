@@ -17,7 +17,7 @@ from PyQt6.QtCore import QTimer, QUrl, pyqtSignal
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PyQt6.QtWebEngineCore import QWebEngineScript, QWebEngineUrlRequestInfo, QWebEngineUrlRequestInterceptor
 
-from . import storage
+from . import cookies, storage
 
 BLOCK_LISTS = {
     # Peter Lowe's ad & tracking server list: small and careful about false positives
@@ -61,9 +61,16 @@ setInterval(() => {
 """
 
 
+def _ace(host: str) -> str:
+    """A host in punycode ("xn--…"), the form block lists use; Qt hands us international hosts decoded."""
+    if host.isascii():
+        return host.lower()
+    return bytes(QUrl.toAce(host)).decode().lower() or host.lower()
+
+
 def _site(host: str) -> str:
     """Rough "registrable domain": news.bbc.co.uk -> bbc.co.uk, cdn.example.com -> example.com."""
-    labels = host.lower().removeprefix("www.").split(".")
+    labels = _ace(host).removeprefix("www.").split(".")
     if len(labels) >= 3 and len(labels[-1]) == 2 and len(labels[-2]) <= 3:  # co.uk, com.au, ...
         return ".".join(labels[-3:])
     return ".".join(labels[-2:])
@@ -71,7 +78,7 @@ def _site(host: str) -> str:
 
 def should_block(host: str, first_party_host: str, domains: set[str], allowed_sites=()) -> bool:
     """Block third-party requests to listed domains (or their subdomains), unless the site is allowed."""
-    host = host.lower()
+    host = _ace(host)
     first_party = _site(first_party_host)
     if not host or _site(host) == first_party or first_party in allowed_sites:
         return False
@@ -114,6 +121,11 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
         profile.setUrlRequestInterceptor(self)
         self._install_scripts(profile)
 
+    def detach(self, profile):
+        if profile in self.profiles:
+            self.profiles.remove(profile)
+            profile.setUrlRequestInterceptor(None)
+
     def detach_all(self):
         for profile in self.profiles:
             profile.setUrlRequestInterceptor(None)
@@ -151,7 +163,13 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
 
     # --- Blocking ---------------------------------------------------------------------
 
+    # Set by the extension runtime: applies extensions' declarativeNetRequest rules first;
+    # returns True when one of them decided the request
+    extension_rules = None
+
     def interceptRequest(self, info):
+        if self.extension_rules is not None and self.extension_rules(info):
+            return
         if not self.enabled or info.resourceType() in _SKIPPED_TYPES:
             return
         first_party_host = info.firstPartyUrl().host()
@@ -165,8 +183,18 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
         for profile in self.profiles:
             self._install_scripts(profile)
 
+    @property
+    def reject_cookies(self) -> bool:
+        return self.store.settings.get(cookies.SETTING, True)
+
+    def set_reject_cookies(self, on):
+        self.store.settings[cookies.SETTING] = on
+        self.store.schedule_save()
+        self.install_scripts()
+
     def _install_scripts(self, profile):
         """(Re)install the page scripts, with the current on/off state and allowed sites baked in."""
+        cookies.install(profile, self.reject_cookies, self.allowed_sites)  # banners: on even if ads are allowed
         scripts = profile.scripts()
         for old in scripts.find("pybrowser-adblock"):
             scripts.remove(old)
@@ -175,6 +203,7 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
         allowed = repr(self.allowed_sites)
         source = f"""
         (() => {{
+          if (location.protocol === 'pbext:') return;  // extension pages aren't websites
           const site = location.hostname.replace(/^www\\./, '');
           if ({allowed}.some(s => site === s || site.endsWith('.' + s))) return;
           const style = document.createElement('style');
