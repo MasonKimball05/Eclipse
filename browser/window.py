@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (QApplication, QColorDialog, QDialog, QFileDialog, Q
 
 import qtawesome as qta
 
-from . import arc_import, backup, macos, motion, storage
+from . import arc_import, backup, brand, clean_links, macos, motion, spelling, storage
 from .adblock import AdBlocker
 from .ai import Claude, page_block
 from .browse import BrowseForMe, PageReader, answer_path, js_set, new_run_id, render_page
@@ -40,6 +40,7 @@ from .mini_player import MiniPlayer
 from .notify import NotificationCenter
 from .devmode import DevMode, is_dev_url
 from .now_playing import NowPlaying
+from .cert_errors import CertificateGuard
 from .crash import CrashWatcher, logs_dir as crash_logs_dir
 from . import integrations
 from .integrations import Homebase, LocalAI
@@ -50,7 +51,7 @@ from .page_index import PageIndex
 from .private import PrivateSession
 from .reader import ReaderView
 from .self_update import SelfUpdater
-from .translate import Translator
+from .translate import Translator, target_language
 from .gestures import SwipeNavigator, slide_region
 from .tab_switcher import TabSwitcher
 from .zoom import remember_zoom, step_zoom, zoom_for, zoom_key
@@ -118,6 +119,7 @@ class MainWindow(QMainWindow):
         self.now_playing = NowPlaying(self)  # the sidebar's card for a background tab playing audio
         self.translator = Translator(self)  # Translate Page, with the Claude CLI
         self.crashes = CrashWatcher(self)  # pages whose renderer crashed get a Reload card
+        self.certificates = CertificateGuard(self)  # "This connection isn't private"
         self.private = PrivateSession(self)  # ⇧⌘P: windows that remember nothing
         self.page_index = PageIndex(self)  # the text of pages you've read, searchable from ⌘T
         self.homebase = Homebase(self)  # your desktop's apps (status, start/stop, logs)
@@ -127,7 +129,7 @@ class MainWindow(QMainWindow):
         self.up_next = UpNext(self)  # your next event today, from Daybook
         self.parliament_badge = integrations.ParliamentBadge(self)  # its unread count on its tabs
         use_custom_sites(store.settings.get(CUSTOM_SETTING, []))  # your own search shortcuts
-        self.self_updater = SelfUpdater(self)  # a daily look for a newer PythonBrowser on GitHub
+        self.self_updater = SelfUpdater(self)  # a daily look for a newer version on GitHub
         self.extensions = ExtensionHost(self)  # userscripts and Chrome extensions (our own runtime)
         self.installer = Installer(self)
         self.ext_updates = Updater(self)  # daily update checks for extensions and userscripts
@@ -294,6 +296,11 @@ class MainWindow(QMainWindow):
         self.notifications.attach_profile(profile)
         self.swipes.attach_profile(profile)
         self.now_playing.attach_profile(profile)
+        spelling.apply([profile], self.store.settings)
+
+    def apply_spelling(self) -> bool:
+        profiles = list(self._profiles.values()) + ([self.private.profile] if self.private.profile else [])
+        return spelling.apply(profiles, self.store.settings)
 
     def profile_named(self, name):
         if name not in self._profiles:
@@ -334,16 +341,40 @@ class MainWindow(QMainWindow):
         self.swipes.attach(view)
         self.devmode.attach(view)
         self.crashes.attach(view)
+        self.certificates.attach(view)
         view.urlChanged.connect(lambda _url, v=view: self._apply_site_zoom(v))
         view.loadFinished.connect(lambda _ok, v=view: self._apply_site_zoom(v))  # pages can reset it
         view.printRequested.connect(lambda v=view: self.print_page(v))  # a site's own Print button
         view.printRequestedByFrame.connect(lambda _frame, v=view: self.print_page(v))
         view.context_menu_hook = self._extend_context_menu
+        self._count_loading(view)
         return view
+
+    @staticmethod
+    def _count_loading(view):
+        # While a page loads, macOS mustn't nap the app (see macos.busy); once per load, however it ends
+        state = {"loading": False}
+
+        def started():
+            if not state["loading"]:
+                state["loading"] = True
+                macos.busy(True)
+
+        def stopped(*_):
+            if state["loading"]:
+                state["loading"] = False
+                macos.busy(False)
+        view.loadStarted.connect(started)
+        view.loadFinished.connect(stopped)
+        view.destroyed.connect(stopped)
 
     def _extend_context_menu(self, view, menu, request):
         tab = next((t for t in self.store.all_tabs() if t.view is view), None)
-        actions = self.apps.send_to_actions(tab) if tab is not None and not request.linkUrl().isValid() else []
+        selected = " ".join(request.selectedText().split())
+        if selected and not request.misspelledWord():  # (a typo's corrections stay first, as in any Mac app)
+            self._selection_actions(view, menu, selected)
+        actions = (self.apps.send_to_actions(tab) if tab is not None and not request.linkUrl().isValid()
+                   and not selected else [])
         if actions:
             send = PlainMenu("Send Page To", menu)
             for label, _icon, run in actions:
@@ -352,12 +383,51 @@ class MainWindow(QMainWindow):
             menu.insertMenu(first, send) if first else menu.addMenu(send)
             menu.insertSeparator(first) if first else None
         link = request.linkUrl()
+        copy_link = view.page().action(QWebEnginePage.WebAction.CopyLinkToClipboard)
+        if link.isValid() and copy_link in menu.actions():  # copied without its tracking tags
+            clean_copy = QAction(copy_link.text(), menu)
+            clean_copy.triggered.connect(lambda _=False, u=bytes(link.toEncoded()).decode(): QGuiApplication.clipboard()
+                                         .setText(clean_links.for_copy(u, self.store.settings)))
+            menu.insertAction(copy_link, clean_copy)
+            menu.removeAction(copy_link)
         if link.isValid() and link.scheme() in ("http", "https"):
             private = QAction("Open Link in Private Window", menu)
             private.triggered.connect(lambda _=False, u=link.toString(): self.private.new_window(u))
             actions = menu.actions()
             menu.insertAction(actions[2] if len(actions) > 2 else None, private)  # after "Open Link in New Tab/Window"
         self.extensions.extend_context_menu(view, menu, request)
+
+    def _selection_actions(self, view, menu, selected):
+        """Right-clicking selected text: ask about it, translate it, look it up — at the top of the menu."""
+        short = selected if len(selected) <= 28 else selected[:26].rstrip() + "…"
+        title = view.title() or display_host(view.url().toString())
+        page = page_block(title, view.url().toString(), selected[:6000])
+        explain = (page + "\n\nExplain the passage above (from that page) plainly and briefly, in under 150 "
+                   "words: what it means, and any term in it a reader might not know. Use Markdown where it helps.")
+        language = target_language(self.store.settings)
+        translate = (page + f"\n\nTranslate the passage above into {language}. Answer with only the "
+                     "translation (if it's already in that language, say so in one line).")
+        first = menu.actions()[0] if menu.actions() else None
+        added = []
+        for ai in (self.assistant(), self.assistant(other=True)):
+            if ai is not None:
+                action = QAction(f"Ask {self.assistant_name(ai)} About “{short}”", menu)
+                action.triggered.connect(lambda _=False, a=ai: self.command_bar.ask_about(selected, explain, a))
+                added.append(action)
+        if self.assistant() is not None:
+            action = QAction(f"Translate “{short}”", menu)
+            action.triggered.connect(lambda: self.command_bar.ask_about(selected, translate))
+            added.append(action)
+        if len(selected.split()) <= 3 and len(selected) <= 40:  # a word or a term: the Mac's own Dictionary
+            action = QAction(f"Look Up “{short}” in Dictionary", menu)
+            action.triggered.connect(lambda: QDesktopServices.openUrl(
+                QUrl("dict://" + QUrl.toPercentEncoding(selected).data().decode())))
+            added.append(action)
+        for action in added:
+            action.setText(action.text().replace("&", "&&"))
+            menu.insertAction(first, action) if first else menu.addAction(action)
+        if added and first:
+            menu.insertSeparator(first)
 
     def _ensure_view(self, tab, load=True):
         if tab.view is None and is_easel(tab.url):
@@ -632,7 +702,7 @@ class MainWindow(QMainWindow):
     def copy_markdown_link(self, tab=None):
         tab = tab or self.current_tab
         if tab and tab.url:
-            QApplication.clipboard().setText(markdown_link(tab.label, tab.url))
+            QApplication.clipboard().setText(markdown_link(tab.label, clean_links.for_copy(tab.url, self.store.settings)))
             self.toast("Copied as a Markdown link")
 
     # --- Downloads & yt-dlp --------------------------------------------------------------------
@@ -901,7 +971,7 @@ class MainWindow(QMainWindow):
         self.content.show_view(None)
         self.reader.close_reader()
         self.devmode.update_for_current()
-        self.setWindowTitle("PythonBrowser")
+        self.setWindowTitle(brand.NAME)
         self.sidebar.update_selection()
         self.sidebar.update_nav()
 
@@ -1300,7 +1370,7 @@ class MainWindow(QMainWindow):
     def copy_url(self, tab=None):
         tab = tab or self.current_tab
         if tab and tab.url:
-            QGuiApplication.clipboard().setText(tab.url)
+            QGuiApplication.clipboard().setText(clean_links.for_copy(tab.url, self.store.settings))
             self.toast("Copied URL to clipboard")
 
     def open_find(self):
@@ -1403,7 +1473,7 @@ class MainWindow(QMainWindow):
                 self, "Set as Default Browser",
                 "macOS only lets an installed app be the default browser.\n\n"
                 "Build it once with:   ./run.sh --build-app\n\n"
-                "then open PythonBrowser from your Applications folder and choose this again.")
+                f"then open {brand.NAME} from your Applications folder and choose this again.")
             return
         if macos.set_default_browser(macos.APP_BUNDLE_ID):
             self.toast("macOS will ask you to confirm the change")
@@ -1854,7 +1924,7 @@ class MainWindow(QMainWindow):
 
     def _on_console(self, tab, message):
         if message.startswith(STORE_MESSAGE):
-            # "Add to PythonBrowser" on a Chrome Web Store page: only our button knows the secret, and
+            # "Add to Halo" on a Chrome Web Store page: only our button knows the secret, and
             # only on the store itself
             prefix = self.extensions.store_prefix
             if (message.startswith(prefix) and QUrl(tab.url).host() == "chromewebstore.google.com"
@@ -1935,9 +2005,9 @@ class MainWindow(QMainWindow):
     # --- Backup & restore ------------------------------------------------------------------------
 
     def back_up(self):
-        name = time.strftime("PythonBrowser Backup %Y-%m-%d.zip")
+        name = time.strftime(f"{brand.NAME} Backup %Y-%m-%d.zip")
         folder = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
-        path, _ = QFileDialog.getSaveFileName(self, "Back Up PythonBrowser", f"{folder}/{name}", "Backups (*.zip)")
+        path, _ = QFileDialog.getSaveFileName(self, f"Back Up {brand.NAME}", f"{folder}/{name}", "Backups (*.zip)")
         if not path:
             return
         # Everything on disk first: the session, open notes, extensions' storage
@@ -1969,7 +2039,7 @@ class MainWindow(QMainWindow):
             f"Replace your Spaces, tabs, settings, notes and extensions with this backup from {made}?\n\n"
             f"It has {len(info['spaces'])} Space(s) ({', '.join(info['spaces'][:5])}) and {info['tabs']} tabs. "
             "What you have now is kept in a folder, not deleted. Sign-ins and cookies aren't affected.\n\n"
-            "PythonBrowser will quit; open it again to finish.")
+            f"{brand.NAME} will quit; open it again to finish.")
         if answer != QMessageBox.StandardButton.Yes:
             return
         try:
@@ -2001,7 +2071,7 @@ class MainWindow(QMainWindow):
                      "Extensions → Add Extension → Import from Arc. Some may not fully work here.")
         box = QMessageBox(self)
         box.setWindowTitle("Import from Arc")
-        box.setText("Bring your Arc setup into PythonBrowser?")
+        box.setText(f"Bring your Arc setup into {brand.NAME}?")
         box.setInformativeText("\n".join(lines) + "\n\n" + note +
                                "\n\nImporting again later replaces these Spaces with Arc's current state.")
         box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
@@ -2198,7 +2268,7 @@ class MainWindow(QMainWindow):
             ("New Private Window", "ph.ghost", lambda: self.private.new_window()),
             ("Reopen Closed Tab", "ph.clock-counter-clockwise", self.reopen_closed_tab),
             ("Reader View", "ph.book-open-text", self.toggle_reader),
-            ("Check for PythonBrowser Updates", "ph.arrows-clockwise", lambda: self.self_updater.check(manual=True)),
+            (f"Check for {brand.NAME} Updates", "ph.arrows-clockwise", lambda: self.self_updater.check(manual=True)),
             ("What's New", "ph.gift", self.show_whats_new),
             ("Show Crash Logs", "ph.bug", self.show_crash_logs),
             ("Translate Page / Show Original", "ph.translate", self.toggle_translate),

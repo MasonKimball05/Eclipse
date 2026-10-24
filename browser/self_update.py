@@ -1,6 +1,6 @@
-# Keeping PythonBrowser itself up to date.
+# Keeping the browser itself up to date.
 #
-# The app runs straight from its git checkout (PythonBrowser.app is a launcher pointing at it), so an
+# The app runs straight from its git checkout (the .app is a launcher pointing at it), so an
 # update is a fast-forward to the branch it tracks on GitHub: once a day it fetches, and if there are
 # new commits it offers Update & Restart, which pulls them, installs any new requirements, and
 # relaunches.
@@ -19,8 +19,10 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, QProcess, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
+from . import brand
+
 REPO = Path(__file__).resolve().parents[1]
-VENV = Path.home() / "Library" / "Application Support" / "PythonBrowser" / "venv"  # same as run.sh
+VENV = Path.home() / "Library" / "Application Support" / brand.INTERNAL_NAME / "venv"  # same as run.sh
 CHECK_EVERY_SECONDS = 24 * 3600
 FIRST_CHECK_MS = 120_000
 GIT_TIMEOUT = 60
@@ -40,7 +42,7 @@ def inspect(fetch=True) -> dict:
     """Where this checkout stands: {"state": …, "behind": n, "subjects": […], "reason": …}.
     state: "current", "available", "blocked" (an update exists but can't be applied) or "unavailable"."""
     if not (REPO / ".git").exists():
-        return {"state": "unavailable", "reason": "PythonBrowser isn't running from a git checkout."}
+        return {"state": "unavailable", "reason": f"{brand.NAME} isn't running from a git checkout."}
     code, upstream = _git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
     if code != 0:
         code, branch = _git("rev-parse", "--abbrev-ref", "HEAD")
@@ -136,7 +138,7 @@ class SelfUpdater(QObject):
             self._offer(result)
         elif self._manual:
             if state == "current":
-                self.browser.toast("PythonBrowser is up to date")
+                self.browser.toast(f"{brand.NAME} is up to date")
             elif state == "blocked":
                 QMessageBox.information(self.browser, "Update Available",
                                         f"There {'is' if result['behind'] == 1 else 'are'} {result['behind']} new "
@@ -153,7 +155,7 @@ class SelfUpdater(QObject):
             subjects += f"\n…and {more} more"
         box = QMessageBox(self.browser)
         box.setWindowTitle("Update Available")
-        box.setText(f"A new version of PythonBrowser is ready ({result['behind']} "
+        box.setText(f"A new version of {brand.NAME} is ready ({result['behind']} "
                     f"change{'s' if result['behind'] != 1 else ''}).")
         box.setInformativeText(subjects + "\n\nYour tabs come back after the restart.")
         update = box.addButton("Update && Restart", QMessageBox.ButtonRole.AcceptRole)
@@ -163,7 +165,7 @@ class SelfUpdater(QObject):
             self.update_and_restart()
 
     def update_and_restart(self):
-        self.browser.toast("Updating PythonBrowser…")
+        self.browser.toast(f"Updating {brand.NAME}…")
         threading.Thread(target=lambda: self.applied.emit(*apply_update()), daemon=True).start()  # pip can be slow
 
     def _applied(self, ok, message):

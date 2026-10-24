@@ -12,6 +12,7 @@ from PyQt6.QtNetwork import QNetworkReply, QNetworkRequest
 from PyQt6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QHBoxLayout, QInputDialog,
                              QLabel, QMenu, QMessageBox, QPushButton, QVBoxLayout, QWidget)
 
+from .. import brand
 from ..theme import stylesheet
 from ..webview import WebView
 from . import chrome, userscripts
@@ -497,7 +498,7 @@ class ExtensionsPage(QWidget):
         layout.addLayout(self.scripts_box)
         layout.addWidget(self.ext_title)
         layout.addLayout(self.ext_box)
-        about = QLabel("Extensions run on PythonBrowser's own lightweight runtime, not Chrome's. Content scripts, "
+        about = QLabel(f"Extensions run on {brand.NAME}'s own lightweight runtime, not Chrome's. Content scripts, "
                        "storage, messaging, popups, options pages and background scripts work; features that need "
                        "Chrome's internals (blocking requests, side panels, native apps…) don't, and extensions "
                        "that rely on them are marked. Changes apply to pages loaded afterwards.")

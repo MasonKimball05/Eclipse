@@ -472,17 +472,29 @@ class CommandBar(QWidget):
 
     # --- Ask Claude --------------------------------------------------------------------
 
-    def ask(self, question, ai=None):
+    def ask(self, question, ai=None, prompt=None):
         self._cancel_answer()
         ai = ai or self.browser.assistant() or self.browser.claude
         self._show_answer("*Thinking…*")
-        self.request = ai.ask(
+        self.request = ai.ask(prompt or (
             "Answer this question from someone using their web browser. Be direct and concise "
-            "(under 200 words unless they ask for more); use Markdown where it helps.\n\n" + question)
+            "(under 200 words unless they ask for more); use Markdown where it helps.\n\n" + question))
         self.request.partial.connect(self._show_answer)
         self.request.finished.connect(self._show_answer)
         name = self.browser.assistant_name(ai)
         self.request.failed.connect(lambda msg: self._show_answer(f"**Couldn't ask {name}:** {msg}"))
+
+    def ask_about(self, shown, prompt, ai=None):
+        """Open the bar with `shown` in the box and the answer to `prompt` under it (right-clicking a
+        selection: explain it, translate it)."""
+        self.open("new")
+        self._quiet = True
+        self.input.blockSignals(True)
+        self.input.setText(shown)
+        self.input.blockSignals(False)
+        self._quiet = False
+        self.list.clear()
+        self.ask(shown, ai, prompt)
 
     def _show_answer(self, text):
         fit_answer(self.answer, self.panel.width(), text, max_height=int(self.height() * 0.6))

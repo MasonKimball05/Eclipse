@@ -21,7 +21,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, QProcess, QTimer, pyqtSignal
 
-from .. import storage
+from .. import brand, storage
 
 _SUPPORT = Path.home() / "Library" / "Application Support"
 HOST_FOLDERS = [
@@ -43,7 +43,7 @@ FORBIDDEN = "Access to the specified native messaging host is forbidden."
 EXITED = "Native host has exited."
 BROKEN = "Error when communicating with the native messaging host."
 REFUSED_BY_MACOS = ("macOS refused to start this helper (\"Launch Constraint Violation\"): it only runs "
-                    "for browsers that pass Apple's signing rules, and PythonBrowser doesn't.")
+                    f"for browsers that pass Apple's signing rules, and {brand.NAME} doesn't yet.")
 
 
 def find_host(name: str) -> dict | None:

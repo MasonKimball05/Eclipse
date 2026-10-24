@@ -4,12 +4,27 @@
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QDialogButtonBox, QTextBrowser, QVBoxLayout, QWidget
 
+from . import brand
 from .theme import stylesheet
 
-EDITION = 1
+EDITION = 2
 SETTING = "whats_new_seen"
 
 NOTES = """
+## Meet Halo
+
+PythonBrowser has a proper name and icon now. Your Spaces, tabs, sign-ins and settings are all where
+they were. Rebuild the app (`./run.sh --build-app`) for the new icon in the Dock and Spotlight.
+
+## Safer links
+
+- **Clean links**: tracking tags such as `utm_source`, `fbclid` and `gclid` come off links before they open and when you
+  copy them. Off in Settings → Privacy.
+- **Certificate warnings**: a site with a bad certificate shows *This connection isn't private*, with Go Back up
+  front and *Visit Anyway* tucked behind Details.
+- **Right-click selected text** to ask about it, translate it, or look it up in Dictionary.
+- **Spell check** in text fields (Settings → General): corrections at the top of the right-click menu.
+
 ## Your apps, in the browser
 
 - **Homebase** in the sidebar's bottom bar: a dot says whether your desktop's apps are up. Its menu opens,
@@ -44,7 +59,7 @@ NOTES = """
 class WhatsNew(QWidget):
     def __init__(self, browser):
         super().__init__(None, Qt.WindowType.Window)
-        self.setWindowTitle("What's New in PythonBrowser")
+        self.setWindowTitle(f"What's New in {brand.NAME}")
         self.setProperty("panel", True)
         self.setStyleSheet(stylesheet(browser.theme))
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)

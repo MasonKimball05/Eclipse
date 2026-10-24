@@ -238,7 +238,10 @@ class DevMode(QObject):
             self.update_for_current()  # leaving localhost for a website closes the drawer
 
     def _console(self, view, level, message, line, source):
-        if not is_dev_url(view.url().toString()):
+        # A new page's first messages can arrive before the view knows its address: go by where the
+        # message came from then
+        url = view.url().toString() or source
+        if not is_dev_url(url):
             return
         entry = (LEVELS.get(int(level), "log"), message, line, source)
         self._logs.setdefault(id(view), deque(maxlen=MAX_LINES)).append(entry)

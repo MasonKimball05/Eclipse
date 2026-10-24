@@ -16,7 +16,7 @@ import time
 import zipfile
 from pathlib import Path
 
-from . import storage
+from . import brand, storage
 
 FORMAT = "pythonbrowser-backup"
 INCLUDED = ["session.json", "notes", "easels", "browse", "userscripts", "extension_storage", "extensions",
@@ -47,9 +47,9 @@ def describe(path: Path) -> dict:
             info = json.loads(archive.read("backup.json"))
             session = json.loads(archive.read("session.json")) if "session.json" in archive.namelist() else {}
     except (KeyError, ValueError, zipfile.BadZipFile) as error:
-        raise ValueError("That isn't a PythonBrowser backup.") from error
+        raise ValueError(f"That isn't a {brand.NAME} backup.") from error
     if info.get("format") != FORMAT:
-        raise ValueError("That isn't a PythonBrowser backup.")
+        raise ValueError(f"That isn't a {brand.NAME} backup.")
     spaces = session.get("spaces", [])
     return {"created": info.get("created", 0), "files": info.get("files", 0),
             "spaces": [s.get("name", "") for s in spaces],

@@ -1,4 +1,4 @@
-"""Build PythonBrowser.app into ~/Applications.
+"""Build Halo.app into ~/Applications.
 
 Run it with:   ./run.sh --build-app
                ./run.sh --build-app --sign "Developer ID Application: Your Name (TEAMID)"
@@ -32,7 +32,11 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-APP = Path.home() / "Applications" / "PythonBrowser.app"
+sys.path.insert(0, str(ROOT))
+from browser.brand import NAME  # noqa: E402
+
+APP = Path.home() / "Applications" / f"{NAME}.app"
+OLD_APP = Path.home() / "Applications" / "PythonBrowser.app"  # its name before it was Halo
 BUNDLE_ID = "com.masonkimball.pythonbrowser"  # must match browser/macos.py
 LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework"
               "/Support/lsregister")
@@ -76,10 +80,10 @@ ENTITLEMENTS = {
 
 def info_plist() -> dict:
     return {
-        "CFBundleName": "PythonBrowser",
-        "CFBundleDisplayName": "PythonBrowser",
+        "CFBundleName": NAME,
+        "CFBundleDisplayName": NAME,
         "CFBundleIdentifier": BUNDLE_ID,
-        "CFBundleExecutable": "PythonBrowser",
+        "CFBundleExecutable": NAME,
         "CFBundleIconFile": "AppIcon",
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": "1.0",
@@ -122,45 +126,10 @@ def compile_launcher(dest: Path):
 
 def make_icon(dest: Path):
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PyQt6.QtCore import QPointF, QRectF, Qt
-    from PyQt6.QtGui import QColor, QGuiApplication, QImage, QLinearGradient, QPainter, QPainterPath, QPen
+    from PyQt6.QtGui import QGuiApplication
 
+    from browser.brand import icon_image
     app = QGuiApplication.instance() or QGuiApplication([])  # noqa: F841 (needed for painting)
-    size = 1024
-    image = QImage(size, size, QImage.Format.Format_ARGB32)
-    image.fill(Qt.GlobalColor.transparent)
-    p = QPainter(image)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-    # macOS icon grid: an 824px rounded square centred in the 1024 canvas
-    tile = QRectF(100, 100, 824, 824)
-    gradient = QLinearGradient(tile.topLeft(), tile.bottomRight())
-    gradient.setColorAt(0, QColor("#a78bfa"))
-    gradient.setColorAt(0.55, QColor("#6366f1"))
-    gradient.setColorAt(1, QColor("#0ea5e9"))
-    shape = QPainterPath()
-    shape.addRoundedRect(tile, 185, 185)
-    p.fillPath(shape, gradient)
-
-    # A browser window with Arc's signature sidebar, in white
-    window = QRectF(250, 290, 524, 444)
-    outline = QPainterPath()
-    outline.addRoundedRect(window, 64, 64)
-    p.save()
-    p.setClipPath(outline)
-    p.fillRect(QRectF(window.left(), window.top(), 176, window.height()), QColor("white"))  # the sidebar
-    p.restore()
-    p.setPen(QPen(QColor("white"), 44, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
-    p.setBrush(Qt.BrushStyle.NoBrush)
-    p.drawPath(outline)
-    p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(QColor("#6366f1"))
-    for i in range(3):  # tabs in the sidebar
-        p.drawRoundedRect(QRectF(window.left() + 40, window.top() + 74 + i * 76, 100, 34), 17, 17)
-    p.setBrush(QColor(255, 255, 255, 210))
-    p.drawEllipse(QPointF(window.left() + 350, window.top() + 222), 20, 20)  # a spark on the page
-    p.end()
-
     with tempfile.TemporaryDirectory() as tmp:
         iconset = Path(tmp) / "AppIcon.iconset"
         iconset.mkdir()
@@ -168,9 +137,30 @@ def make_icon(dest: Path):
             for scale in (1, 2):
                 px = points * scale
                 name = f"icon_{points}x{points}{'@2x' if scale == 2 else ''}.png"
-                image.scaled(px, px, Qt.AspectRatioMode.KeepAspectRatio,
-                             Qt.TransformationMode.SmoothTransformation).save(str(iconset / name))
+                icon_image(px).save(str(iconset / name))  # drawn at each size (small ones get a bolder ring)
         subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(dest)], check=True)
+
+
+def retire_old_app(old: Path):
+    """The app used to be called PythonBrowser.app: move that one to the Trash (it's only a launcher;
+    your data isn't in it), so Spotlight and Launchpad show one browser, not two."""
+    if not old.exists():
+        return
+    try:
+        existing = plistlib.loads((old / "Contents" / "Info.plist").read_bytes()).get("CFBundleIdentifier")
+    except (OSError, plistlib.InvalidFileException):
+        return
+    if existing != BUNDLE_ID:
+        return
+    trash = Path.home() / ".Trash" / old.name
+    n = 2
+    while trash.exists():
+        trash = trash.with_name(f"{old.stem} {n}.app")
+        n += 1
+    shutil.move(str(old), str(trash))
+    # (after the move: Launch Services follows a moved app, so it would still list the one in the Trash)
+    subprocess.run([LSREGISTER, "-u", str(trash)], check=False)
+    print(f"Moved the old {old.name} to the Trash")
 
 
 def sign(app: Path, identity: str):
@@ -194,7 +184,7 @@ def sign(app: Path, identity: str):
 
 def notarize(app: Path, profile: str):
     with tempfile.TemporaryDirectory() as tmp:
-        archive = Path(tmp) / "PythonBrowser.zip"
+        archive = Path(tmp) / f"{NAME}.zip"
         subprocess.run(["ditto", "-c", "-k", "--keepParent", str(app), str(archive)], check=True)
         print("Sending to Apple for notarization (this usually takes a few minutes)…")
         result = subprocess.run(["xcrun", "notarytool", "submit", str(archive), "--keychain-profile", profile,
@@ -207,7 +197,7 @@ def notarize(app: Path, profile: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Build PythonBrowser.app")
+    parser = argparse.ArgumentParser(description=f"Build {NAME}.app")
     parser.add_argument("--sign", default=os.environ.get("PYBROWSER_SIGN_IDENTITY", "-"), metavar="IDENTITY",
                         help='a codesigning identity (e.g. "Developer ID Application: …"); default: ad hoc')
     parser.add_argument("--notarize", metavar="PROFILE", help="notarytool keychain profile (needs --sign)")
@@ -224,7 +214,7 @@ def build(app: Path, identity="-", notary_profile=None):
         # Only ever replace our own app
         existing = plistlib.loads((app / "Contents" / "Info.plist").read_bytes()).get("CFBundleIdentifier")
         if existing != BUNDLE_ID:
-            sys.exit(f"{app} exists and isn't PythonBrowser ({existing}); not touching it.")
+            sys.exit(f"{app} exists and isn't {NAME} ({existing}); not touching it.")
         shutil.rmtree(app)
 
     contents = app / "Contents"
@@ -232,18 +222,19 @@ def build(app: Path, identity="-", notary_profile=None):
     (contents / "Resources").mkdir()
     (contents / "Info.plist").write_bytes(plistlib.dumps(info_plist()))
     print("Compiling the launcher…")
-    compile_launcher(contents / "MacOS" / "PythonBrowser")
+    compile_launcher(contents / "MacOS" / NAME)
     print("Drawing the icon…")
     make_icon(contents / "Resources" / "AppIcon.icns")
     sign(app, identity)
     if notary_profile:
         notarize(app, notary_profile)
     if app == APP:  # only the real install claims web links; a test build elsewhere shouldn't
+        retire_old_app(OLD_APP)
         subprocess.run([LSREGISTER, "-f", str(app)], check=False)  # tell Launch Services it can open links
 
     print(f"\nBuilt {app}")
     print("Open it from your Applications folder or Spotlight.")
-    print("To make it your default browser: PythonBrowser menu → Set as Default Browser…")
+    print(f"To make it your default browser: {NAME} menu → Set as Default Browser…")
 
 
 if __name__ == "__main__":

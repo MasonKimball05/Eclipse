@@ -220,7 +220,7 @@ STORE_MESSAGE = "PYBROWSER_ADD_EXTENSION:"
 STORE_BUTTON = """(() => {
   if (location.hostname !== 'chromewebstore.google.com') return;
   const button = document.createElement('button');
-  button.textContent = 'Add to PythonBrowser';
+  button.textContent = 'Add to Halo';
   button.style.cssText = 'position:fixed;right:24px;bottom:24px;z-index:2147483647;padding:12px 20px;' +
     'border:0;border-radius:999px;background:#7c5cff;color:#fff;font:600 14px -apple-system,sans-serif;' +
     'box-shadow:0 8px 28px rgba(0,0,0,.25);cursor:pointer';

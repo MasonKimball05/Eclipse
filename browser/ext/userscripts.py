@@ -113,7 +113,7 @@ def build_script(script: Userscript, required_code: str, values: dict, world: in
     body = _BLOCK.sub("", script.source)
     info = {"script": {"name": script.name, "namespace": script.namespace, "version": script.version,
                        "description": script.description, "matches": script.matches},
-            "scriptHandler": "PythonBrowser", "version": "1.0"}
+            "scriptHandler": "Halo", "version": "1.0"}
     if script.uses_gm:
         setup = (f"const {{GM, GM_info, GM_getValue, GM_setValue, GM_deleteValue, GM_listValues, GM_addStyle, "
                  f"GM_xmlhttpRequest, GM_openInTab, GM_setClipboard, GM_notification, unsafeWindow}} = "

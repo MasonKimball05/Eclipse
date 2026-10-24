@@ -12,7 +12,7 @@ from PyQt6.QtGui import QColor, QFont, QGuiApplication, QPainter
 from PyQt6.QtWidgets import (QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
                              QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
-from . import storage
+from . import clean_links, storage
 from .models import display_host
 from .theme import letter_icon, quiet_scrollbars, stylesheet
 
@@ -311,7 +311,8 @@ class LibraryWindow(QWidget):
         if not entry["url"].startswith("note:"):
             b._act(menu, "ph.app-window", "Open in Little Window", lambda: self._open_item(item, little=True))
         if entry["url"].startswith("http"):
-            b._act(menu, "ph.link", "Copy Link", lambda: QGuiApplication.clipboard().setText(entry["url"]))
+            b._act(menu, "ph.link", "Copy Link", lambda: QGuiApplication.clipboard().setText(
+                clean_links.for_copy(entry["url"], b.store.settings)))
         menu.addSeparator()
         b._act(menu, "ph.trash", "Delete" if "path" in entry else "Remove", lambda: self._remove(entry))
         menu.exec(self.list.viewport().mapToGlobal(pos))

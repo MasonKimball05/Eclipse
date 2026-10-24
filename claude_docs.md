@@ -1,9 +1,9 @@
-# PythonBrowser — Documentation
+# Halo — Documentation
 
 **Author:** MasonKimball05
 **Stack:** Python 3, PyQt6, QtWebEngine (Chromium), qtawesome
 
-An Arc-inspired browser. Arc is being wound down in favour of Dia, so this project carries its ideas forward: a vertical sidebar, Spaces, pinned and favorite tabs, a command bar in place of a new-tab page, and tabs that archive themselves.
+**Halo** is an Arc-inspired browser. It was called PythonBrowser at first, and that name lives on underneath: the data folder, the Keychain entries and the bundle ID. Arc is being wound down in favour of Dia, so this project carries its ideas forward: a vertical sidebar, Spaces, pinned and favorite tabs, a command bar in place of a new-tab page, and tabs that archive themselves.
 
 ---
 
@@ -15,7 +15,7 @@ An Arc-inspired browser. Arc is being wound down in favour of Dia, so this proje
 ./run.sh --build-app
 ```
 
-This builds `~/Applications/PythonBrowser.app`, which you can open from Spotlight, Launchpad or the Dock like any other app. Then choose **PythonBrowser menu → Set as Default Browser…**, and macOS asks you to confirm.
+This builds `~/Applications/Halo.app`, which you can open from Spotlight, Launchpad or the Dock like any other app. (An older `PythonBrowser.app` from before the rename goes to the Trash; it's only a launcher. It keeps the same bundle ID, so macOS still treats it as your default browser and remembers its camera and microphone permissions.) Then choose **Halo menu → Set as Default Browser…**, and macOS asks you to confirm.
 
 - **Links from other apps** (Slack, Mail, Messages…) open in a Little window, the same as Arc.
 - **No rebuild needed for code changes:** the app is a small native launcher that runs this checkout with its virtualenv, so your next launch picks them up. Rebuild only if you move the checkout or Homebrew moves to a new Python version (3.15+).
@@ -46,7 +46,7 @@ To try things without touching your real session, set a throwaway data folder:
 PYBROWSER_DATA_DIR=/tmp/pybrowser-test venv/bin/python main.py
 ```
 
-Your session, favicons, cookies and cache normally live in `~/Library/Application Support/MasonKimball05/PythonBrowser/`.
+Your session, favicons, cookies and cache normally live in `~/Library/Application Support/MasonKimball05/PythonBrowser/` (the internal name, so renaming the app to Halo didn't move anything; the Keychain entries for your app tokens keep it too).
 
 ---
 
@@ -92,6 +92,8 @@ Drag tabs between Favorites, Pinned and Today to reorganise them. Right-click a 
 | **Easels** | *File → New Easel* (or ⌘T → "New Easel") opens a whiteboard tab: text, sticky notes, drawing, rectangles, ellipses and arrows in six colours (shortcuts V T S P R O A), plus images you paste or drop in. ⌘-scroll or pinch to zoom, ⌘0 fits everything, ⌘Z / ⇧⌘Z undo and redo, Backspace deletes. Click the name at the left of its toolbar to rename it. |
 | **Capture** | ⇧⌘2 on any web page, then drag a box: that part of the page goes onto your most recently used easel (or a new one), captioned with the page's title. Double-click it on the easel to open the page again. |
 | **Live Folders** | ⌘T → "New Live Folder": a pinned folder that fills itself from a feed (RSS/Atom, or just a site's address and its feed is found) or from GitHub (PRs to review, your open PRs, issues assigned to you, via the `gh` CLI you're signed in to). It refreshes every half hour; new items are bold, with a count on the folder, until you open them. Right-click it to refresh now or mark everything seen. |
+| **Spell check** | Turn on *Check spelling while typing* in *Settings → General*. The first time, it downloads your language's dictionary (about 450 KB for English) from the server Chrome gets its own from; after that, checking happens on this Mac and nothing is sent anywhere. Misspelled words in text fields get underlined, and right-clicking one puts corrections at the top of the menu. English, Spanish, French, German, Italian, Portuguese and Dutch. |
+| **Selected text** | Select some text and right-click: *Ask Claude About* (or the other assistant, such as Qwen) opens ⌘T with the answer about that passage, *Translate* shows it in your language in ⌘T, and for a word or short term *Look Up in Dictionary* opens macOS's Dictionary. |
 | **Sound** | A speaker appears on tabs playing audio; click it to mute or unmute the tab (also in the tab's right-click menu). |
 | **Mini player** | Switch away from a tab that's playing a video and the video keeps playing in a small floating window. Hover it for play/pause, back to the tab, and close (which pauses it). Drag the top strip to move it. Turn it off in *Settings → Tabs*. |
 | **Site search** | In ⌘T, type a site's name or keyword and press Tab to search just that site (YouTube, GitHub, Wikipedia, Maps, Images, Amazon, Reddit, X, Stack Overflow, MDN, PyPI, npm, Gmail, Drive, Spotify, Claude). Or start with the keyword: "yt lofi", "gh pyqt6". Backspace on an empty box leaves site search. |
@@ -109,8 +111,10 @@ Drag tabs between Favorites, Pinned and Today to reorganise them. Right-click a 
 | **Reader view** | ⌥⌘R (or ⌘T → "Reader View") shows just the article: a clean column with the site, title and reading time, in light, sepia or dark, with bigger or smaller text. It's rebuilt from safe tags and shown with JavaScript off. Esc closes it. |
 | **Translate Page** | ⌘T → "Translate Page", or *Translate* in Reader view: the page's text is translated in place by the local Claude CLI, top of the page first, into your Mac's language. Run it again to show the original. Code and anything marked `translate="no"` is left alone. |
 | **Crash recovery** | Tabs are saved as you go (with the previous copy kept as a spare), so after a crash everything comes back, with a note saying so. A page whose renderer crashes shows a card with Reload; one in the background reloads when you return to it. Errors and hard-crash stacks go to the `logs` folder (⌘T → "Show Crash Logs"). |
-| **Updates** | Once a day PythonBrowser checks its GitHub branch and offers *Update & Restart* when there are new commits: it fast-forwards the checkout, installs new requirements, and relaunches with your tabs. A checkout with uncommitted changes or unpushed commits is never touched. *Settings → General → Updates* has Check Now. |
+| **Updates** | Once a day Halo checks its GitHub branch and offers *Update & Restart* when there are new commits: it fast-forwards the checkout, installs new requirements, and relaunches with your tabs. A checkout with uncommitted changes or unpushed commits is never touched. *Settings → General → Updates* has Check Now. |
 | **Private windows** | ⇧⌘P (*File → New Private Window*, ⌘T, or right-click a link → *Open Link in Private Window*). A dark window with its own tabs, sharing one in-memory profile: no history, suggestions, site icons, zoom levels, remembered permissions or page text are kept, and extensions don't run. Cookies and logins are forgotten when the last private window closes. Ads are still blocked. |
+| **Clean links** | Tracking tags such as `utm_source`, `fbclid` and `gclid` are taken off a link before it opens, and off links you copy (⇧⌘C, *Copy Link*, the Markdown link). Everything else in the address stays exactly as it was. YouTube's and Spotify's `si` share tags go too. Off in *Settings → Privacy*. |
+| **Certificate warnings** | A site with a bad security certificate (expired, for another site, or not from a trusted authority) shows *This connection isn't private* instead of loading. **Go Back** returns you to the previous page, or closes the tab if it was opened just for that site. *Details* says what's wrong and, where the site allows it, offers *Visit Anyway* for the rest of the session. Local development servers say that this is expected. |
 | **Cookie banners** | On by default: consent pop-ups get "Reject all" / "Only necessary" clicked for you, never Accept. The big consent tools are recognised by their own buttons, others by a careful match on the button's label. Toggle it from the shield in the URL pill or *Settings → Privacy*. |
 | **Copied links** | Copy a link anywhere, then press ⌘T: it's the first suggestion ("Copied link"), so Return opens it. |
 | **Search what you've read** | ⌘T also finds pages by their text, not just their titles: type a few words you remember and matches appear marked *Read*, with the sentence around them. The text is kept in a local index (5,000 most recent pages), never from private windows or sign-in pages. Clear it or turn it off in *Settings → Privacy*; the shield menu can exclude a site. |
@@ -149,8 +153,8 @@ Set up in *Settings → My Apps* (addresses default to your setup: homebase and 
 
 ### Settings, shortcuts & Library
 
-- **Settings** (⌘,, or *PythonBrowser → Settings…*) has a search box at the top ("sleep", "cookie", "qwen"): pages without a match step aside and matching settings light up; Return scrolls to the first. It has one page each for:
-  - **General:** default browser, where outside links open, search engine (Google, DuckDuckGo, Bing, Brave, Kagi or Ecosia).
+- **Settings** (⌘,, or *Halo → Settings…*) has a search box at the top ("sleep", "cookie", "qwen"): pages without a match step aside and matching settings light up; Return scrolls to the first. It has one page each for:
+  - **General:** default browser, where outside links open, search engine (Google, DuckDuckGo, Bing, Brave, Kagi or Ecosia), and spell check (off until you turn it on; the first time, it downloads your language's dictionary, a few hundred KB, from Chrome's dictionary server).
   - **General** also has Back Up / Restore, and Updates (automatic daily check, Check Now).
   - **Tabs:** archive timing, tab sleeping, Peek, the mini player, ⌃Tab order, swipe to go back, notification banners.
   - **Air Traffic Control:** which Space outside links open in.
@@ -174,9 +178,9 @@ The shield in the URL pill shows how many requests were blocked on the current s
 
 ### Extensions & userscripts
 
-Qt WebEngine's own extension support crashes on macOS, so PythonBrowser has its **own lightweight runtime** (`browser/ext/`). Manage everything in **Settings → Extensions**. The puzzle piece in the URL pill lists your extensions (click one for its popup); *Pin to URL Bar* in that menu gives an extension its own button, with its badge. Keyboard shortcuts from an extension's manifest work too (⌘⇧X opens Proton Pass), unless they'd take over one of the browser's.
+Qt WebEngine's own extension support crashes on macOS, so Halo has its **own lightweight runtime** (`browser/ext/`). Manage everything in **Settings → Extensions**. The puzzle piece in the URL pill lists your extensions (click one for its popup); *Pin to URL Bar* in that menu gives an extension its own button, with its badge. Keyboard shortcuts from an extension's manifest work too (⌘⇧X opens Proton Pass), unless they'd take over one of the browser's.
 
-**Installing:** on a Chrome Web Store extension page, click **Add to PythonBrowser** (bottom right). Before anything is installed you see what it can access and anything that won't work here. Extensions and userscripts installed from the web are **checked for updates daily** (or *Check for Updates* in Settings); an update that asks for more permissions asks you first.
+**Installing:** on a Chrome Web Store extension page, click **Add to Halo** (bottom right). Before anything is installed you see what it can access and anything that won't work here. Extensions and userscripts installed from the web are **checked for updates daily** (or *Check for Updates* in Settings); an update that asks for more permissions asks you first.
 
 **Userscripts** (Greasemonkey/Tampermonkey format):
 - Open any `.user.js` link (e.g. Greasy Fork's Install button) and an install dialog shows where the script runs and what it can use. You can also add one from a link or file, or write a new one.
@@ -256,11 +260,22 @@ How it works (`browser/ai.py`):
 
 ---
 
+### Troubleshooting slow pages
+
+- **Pages (GitHub especially) take 15–30 s or never finish**, while `curl` gets them in a second: the
+  network has IPv6 routes that go nowhere (on 23 Oct 2026 the Mac's IPv6 default routes went through VPN
+  tunnels, utun0–2, with no IPv6 on Wi-Fi). Chromium tries IPv6 first and waits on each attempt before
+  falling back to IPv4. Check with `curl -6 https://github.githubassets.com` (it times out). Fix it in
+  the VPN (Tailscale: turn off its IPv6 route / exit-node IPv6) or set Wi-Fi's IPv6 to *Link-local only*
+  in System Settings → Network → Wi-Fi → Details → TCP/IP.
+- **Pages load slowly while the browser is behind other windows**: macOS App Nap. The browser now holds
+  off App Nap while anything is loading (`macos.busy`), which roughly halved load times in testing.
+
 ## Testing
 
 ```bash
-venv/bin/pip install -r requirements-dev.txt
-venv/bin/python -m pytest tests
+./run.sh --tests
+./run.sh --live-tests
 ```
 
 The tests cover:
@@ -286,6 +301,8 @@ The tests cover:
 
 They run headless and use a throwaway data folder.
 
+**Live tests** (`./run.sh --live-tests`, or `python -m pytest tests --live`) drive the real window against pages from a local server in `tests/live/site`, about 30 seconds with a window showing: swipes (and not over a carousel), cookie banners (and not other buttons), private windows keeping nothing, ⌘T completion, sums and page-text search, Reader, the Developer Mode console and Reload on Save, the crashed-page card, pinned tabs going home, Now Playing, menus showing "&", links losing their tracking tags, certificate warnings (against a local HTTPS server with a self-signed certificate), and spell check. The spell-check test needs a real dictionary: it uses yours once you've turned spell check on, or `PB_TEST_DICTIONARY=/path/to/en-US.bdic`, and is skipped otherwise. Plain `pytest` skips them.
+
 ## Code layout (`browser/`)
 
 | File | Responsibility |
@@ -300,7 +317,8 @@ They run headless and use a throwaway data folder.
 | `content.py` | The rounded page card, plus overlays: progress line, link-hover label, find bar, toasts. |
 | `little.py` | Little windows. |
 | `app.py` | Startup, single-instance hand-off (local socket), and links arriving from macOS. |
-| `tools/build_app.py` | Builds `PythonBrowser.app`: a native launcher, `Info.plist` (registered for http/https and HTML files) and the icon. |
+| `tools/build_app.py` | Builds `Halo.app`: a native launcher, `Info.plist` (registered for http/https and HTML files) and the icon, and retires an old `PythonBrowser.app`. |
+| `brand.py` | The name (Halo) and the icon, drawn in code (the built app and `./run.sh` both use it), plus the internal name that never changes. |
 | `webview.py` | Profile setup (one per name: persistent cookies, user agent), `WebPage` and `WebView`. |
 | `theme_editor.py` | The Space theme editor. |
 | `space_editor.py` | The Space popover (name, icon, colour, profile). |
@@ -342,8 +360,11 @@ They run headless and use a throwaway data folder.
 | `reader.py` | Reader view: article extraction (in the page's isolated world) and the script-free reader page. |
 | `translate.py` | Translate Page via the Claude CLI: collecting text nodes, batching, writing translations back, Show Original. |
 | `crash.py` | Crash recovery: the "did it quit properly" marker, error and native crash logs, the crashed-page card. |
-| `self_update.py` | Updating PythonBrowser itself from its git upstream (fast-forward only) and relaunching. |
+| `self_update.py` | Updating Halo itself from its git upstream (fast-forward only) and relaunching. |
 | `private.py` | Private windows and the shared off-the-record profile. |
+| `spelling.py` | Spell check: which Chrome dictionary fits your language, downloading it once, turning checking on in every profile. |
+| `clean_links.py` | Tracking-tag removal for links that open (via the request interceptor) and links you copy. |
+| `cert_errors.py` | The "This connection isn't private" card for pages with bad certificates. |
 | `cookies.py` | The cookie-banner rejecter (known consent tools, then a careful label match). |
 | `page_index.py` | The local full-text index of pages you've read (SQLite FTS5, written on its own thread). |
 | `answers.py` | The command bar's instant answers: safe arithmetic, unit conversion, world time, colours. |

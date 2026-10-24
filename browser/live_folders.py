@@ -28,7 +28,7 @@ from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkReques
 
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineScript
 
-from . import keychain
+from . import keychain, macos
 from .downloads import find_tool
 from .models import Folder, Tab, walk_folders
 
@@ -362,11 +362,13 @@ class LiveFolders(QObject):
         render after loading), run `script` in its isolated world, then throw the page away."""
         page = QWebEnginePage(profile, self)
         state = {"over": False}
+        macos.busy(True)  # loading in the background: no App Nap until it's read
 
         def finish(result=None, error=None):
             if state["over"]:
                 return
             state["over"] = True
+            macos.busy(False)
             final = page.url().toString()
             page.deleteLater()
             if error:

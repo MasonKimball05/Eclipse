@@ -18,7 +18,7 @@ from PyQt6.QtWebEngineCore import QWebEngineNewWindowRequest, QWebEngineProfile
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QStackedWidget,
                              QToolButton, QVBoxLayout, QWidget)
 
-from . import macos
+from . import macos, spelling
 from .command_bar import search_url, to_url
 from .content import RADIUS, Corner
 from .models import display_host
@@ -413,6 +413,7 @@ class PrivateSession(QObject):
             self.profile = QWebEngineProfile(self.browser)  # no storage name: off the record
             self.profile.setHttpUserAgent(self.browser.profile.httpUserAgent())
             self.browser.adblock.attach(self.profile)  # ads still blocked, cookie banners still rejected
+            spelling.apply([self.profile], self.browser.store.settings)
             self.profile.downloadRequested.connect(self._download_started)
             self.profile.downloadRequested.connect(self.browser._on_download)
         window = PrivateWindow(self, url=url, request=request)

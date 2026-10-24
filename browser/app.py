@@ -5,10 +5,11 @@ from pathlib import Path
 # QtWebEngine must be imported before the QApplication is created
 from PyQt6.QtWebEngineWidgets import QWebEngineView  # noqa: F401
 from PyQt6.QtCore import QEvent, QObject, QTimer, QUrl
+from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication
 
-from . import backup, crash, storage, whats_new
+from . import backup, brand, crash, macos, spelling, storage, whats_new
 from .models import Store
 from .ext.chrome import register_scheme
 from .webview import build_profile
@@ -82,10 +83,15 @@ def run() -> int:
     # PyQt aborts the whole app when an exception escapes a Qt callback and no hook is set; one
     # bad callback (a closed popup, an odd web page) shouldn't take every tab down with it
     sys.excepthook = crash.log_exception
-    QApplication.setApplicationName("PythonBrowser")
+    QApplication.setApplicationName(brand.INTERNAL_NAME)  # where your data lives: never renamed
+    QApplication.setApplicationDisplayName(brand.NAME)
     QApplication.setOrganizationName("MasonKimball05")
     register_scheme()  # pbext:// (extension files) has to be known before the app starts
+    spelling.prepare()  # where spell-check dictionaries live, also before the app starts
+    macos.name_in_menu_bar(brand.NAME)
     app = QApplication(sys.argv)
+    if not macos.is_built_app():  # (the built app has the icon in its bundle)
+        app.setWindowIcon(QIcon(QPixmap.fromImage(brand.icon_image(512))))
 
     links = _links(sys.argv[1:])
     if _hand_off(links):
@@ -104,7 +110,7 @@ def run() -> int:
     if restored is not None:
         window.toast(f"Restored your backup · what you had before is in {restored.name}")
     elif crashed:
-        window.toast("PythonBrowser didn't quit properly last time. Your tabs are back "
+        window.toast(f"{brand.NAME} didn't quit properly last time. Your tabs are back "
                      "(⌘T → Show Crash Logs for details).")
     for link in links:
         window.open_external(link)

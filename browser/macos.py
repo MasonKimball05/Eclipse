@@ -23,13 +23,22 @@ def _send(receiver, selector, *args, restype=ctypes.c_void_p, argtypes=()):
     return send(receiver, _objc.sel_registerName(selector.encode()), *args)
 
 
+def _cocoa() -> bool:
+    """Windows are real NSViews only on Qt's Cocoa platform (not offscreen, say): anything that asks
+    a window's NSView for something must check this first, or it crashes."""
+    if _objc is None:
+        return False
+    from PyQt6.QtGui import QGuiApplication
+    return QGuiApplication.platformName() == "cocoa"
+
+
 def hide_title_text(widget):
     """Keep the window title for Mission Control and the Window menu, but don't draw it.
 
     With the title bar made transparent (Arc-style), macOS would otherwise paint the
     page title across the top of the sidebar.
     """
-    if _objc is None:
+    if not _cocoa():
         return
     view = ctypes.c_void_p(int(widget.winId()))  # the NSView Qt created for the window
     window = _send(view, "window")
@@ -70,10 +79,15 @@ def _pystr(cfstring):
 
 
 def bundle_identifier() -> str | None:
-    """The app's bundle ID when running as PythonBrowser.app; None when run from a terminal."""
+    """The app's bundle ID when running as the built app; None when run from a terminal."""
     if _cf is None:
         return None
     return _pystr(_cf.CFBundleGetIdentifier(_cf.CFBundleGetMainBundle()))
+
+
+def is_built_app() -> bool:
+    """Running as the built Halo.app (not from a terminal, where the process is Python's)."""
+    return bundle_identifier() == APP_BUNDLE_ID
 
 
 def default_browser() -> str | None:
@@ -101,6 +115,22 @@ def set_default_browser(bundle_id) -> bool:
     return ok
 
 
+def name_in_menu_bar(name):
+    """Run from a terminal, macOS would call the app "Python" in the menu bar: it reads the name
+    from the process's Info.plist. Call before the QApplication exists. (The built app has its own.)"""
+    if _objc is None or is_built_app():
+        return
+    bundle = _send(_objc.objc_getClass(b"NSBundle"), "mainBundle")
+    info = _send(bundle, "infoDictionary") if bundle else None
+    if not info or not _send(info, "respondsToSelector:", _objc.sel_registerName(b"setObject:forKey:"),
+                             restype=ctypes.c_bool, argtypes=(ctypes.c_void_p,)):
+        return  # (only a dictionary that can be changed; anything else is left alone)
+    nsstring = _objc.objc_getClass(b"NSString")
+    value = _send(nsstring, "stringWithUTF8String:", name.encode(), argtypes=(ctypes.c_char_p,))
+    key = _send(nsstring, "stringWithUTF8String:", b"CFBundleName", argtypes=(ctypes.c_char_p,))
+    _send(info, "setObject:forKey:", value, key, restype=None, argtypes=(ctypes.c_void_p, ctypes.c_void_p))
+
+
 # --- Traffic lights -------------------------------------------------------------------------
 
 class _CGRect(ctypes.Structure):
@@ -110,7 +140,7 @@ class _CGRect(ctypes.Structure):
 def traffic_lights(widget) -> tuple[float, float] | None:
     """(right edge, vertical centre) of the window's traffic lights, in points from the window's
     top-left, so our own buttons can line up with them. None off macOS or before the window exists."""
-    if _objc is None:
+    if not _cocoa():
         return None
     window = _send(ctypes.c_void_p(int(widget.window().winId())), "window")
     zoom = _send(window, "standardWindowButton:", 2, argtypes=(ctypes.c_long,)) if window else None
@@ -142,3 +172,36 @@ def set_dock_badge(text: str):
     _send(tile, "display", restype=None)
     if label:
         _cf.CFRelease(label)
+
+
+# --- Busy: keep App Nap away while pages load ----------------------------------------------------
+#
+# macOS naps apps whose windows are hidden behind others, and Qt WebEngine's pages then load at a
+# crawl (measured: GitHub took twice as long, or stalled). While anything is loading (a tab, a Live
+# Folder reading a page) the app tells macOS it's doing work you asked for; once nothing is, it
+# lets go, so an idle browser still naps and saves battery. It never stops the Mac sleeping.
+
+_NS_ACTIVITY_USER_INITIATED_ALLOWING_IDLE_SLEEP = 0x00FFFFFF
+_busy = {"count": 0, "token": None}
+
+
+def busy(start: bool):
+    """Count one piece of loading work in (start=True) or out."""
+    if _objc is None:
+        return
+    _busy["count"] = max(0, _busy["count"] + (1 if start else -1))
+    if _busy["count"] and _busy["token"] is None:
+        info = _send(_objc.objc_getClass(b"NSProcessInfo"), "processInfo")
+        reason = _cfstr("Loading pages")
+        token = _send(info, "beginActivityWithOptions:reason:",
+                      ctypes.c_uint64(_NS_ACTIVITY_USER_INITIATED_ALLOWING_IDLE_SLEEP), reason,
+                      argtypes=(ctypes.c_uint64, ctypes.c_void_p))
+        _cf.CFRelease(reason)
+        if token:
+            _send(token, "retain")
+            _busy["token"] = token
+    elif not _busy["count"] and _busy["token"] is not None:
+        info = _send(_objc.objc_getClass(b"NSProcessInfo"), "processInfo")
+        _send(info, "endActivity:", _busy["token"], restype=None, argtypes=(ctypes.c_void_p,))
+        _send(_busy["token"], "release", restype=None)
+        _busy["token"] = None

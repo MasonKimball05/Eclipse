@@ -10,7 +10,7 @@ from PyQt6.QtCore import QObject, QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
-from . import macos, storage
+from . import clean_links, macos, storage
 from .command_bar import search_url, to_url
 from .content import RADIUS, Corner
 from .models import display_host
@@ -235,7 +235,8 @@ class LittleWindow(QWidget):
 
     def copy_link(self):
         if self.view is not None and not self.view.url().isEmpty():
-            QGuiApplication.clipboard().setText(self.view.url().toString())
+            QGuiApplication.clipboard().setText(clean_links.for_copy(self.view.url().toString(),
+                                                                    self.browser.store.settings))
             self.toast.setText("Copied link")
             self.toast.adjustSize()
             self.toast.move((self.card.width() - self.toast.width()) // 2,

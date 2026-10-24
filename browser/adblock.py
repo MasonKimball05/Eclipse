@@ -17,7 +17,7 @@ from PyQt6.QtCore import QTimer, QUrl, pyqtSignal
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PyQt6.QtWebEngineCore import QWebEngineScript, QWebEngineUrlRequestInfo, QWebEngineUrlRequestInterceptor
 
-from . import cookies, storage
+from . import clean_links, cookies, storage
 
 BLOCK_LISTS = {
     # Peter Lowe's ad & tracking server list: small and careful about false positives
@@ -112,6 +112,7 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
         self.domains: set[str] = set(BUILTIN_DOMAINS)
         self.counts: dict[str, int] = {}
         self._network = QNetworkAccessManager(self)
+        self.link_cleaner = clean_links.Cleaner()
         self._load_cached_lists()
         QTimer.singleShot(5000, self.update_lists)
 
@@ -170,6 +171,12 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
     def interceptRequest(self, info):
         if self.extension_rules is not None and self.extension_rules(info):
             return
+        if (info.resourceType() == QWebEngineUrlRequestInfo.ResourceType.ResourceTypeMainFrame
+                and info.requestMethod() == b"GET" and self.store.settings.get(clean_links.SETTING, True)):
+            cleaned = self.link_cleaner.redirect_for(bytes(info.requestUrl().toEncoded()).decode())
+            if cleaned:
+                info.redirect(QUrl.fromEncoded(cleaned.encode()))
+                return
         if not self.enabled or info.resourceType() in _SKIPPED_TYPES:
             return
         first_party_host = info.firstPartyUrl().host()

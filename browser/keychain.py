@@ -7,7 +7,7 @@
 import subprocess
 import sys
 
-SERVICE = "PythonBrowser"
+SERVICE = "PythonBrowser"  # (the internal name: renaming the app mustn't lose your tokens)
 
 
 def available() -> bool:

@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QF
                              QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea,
                              QStackedWidget, QVBoxLayout, QWidget)
 
-from . import macos
+from . import brand, clean_links, macos, spelling
 from .command_bar import CUSTOM_SETTING, SEARCH_ENGINES, use_custom_sites
 from .downloads import DownloadSettingsForm, find_tool
 from .ext.ui import ExtensionsPage
@@ -246,6 +246,32 @@ class SettingsWindow(QWidget):
         self.store.settings[key] = value
         self.store.schedule_save()
 
+    def _toggle_spelling(self, on):
+        lang = spelling.language(self.store.settings.get("spell_check_language"))
+        if on and lang is None:
+            self.spell_status.setText("There's no dictionary for your Mac's language yet.")
+            self.spell_box.setChecked(False)
+            return
+        self._setting(spelling.SETTING, on)
+        if not on or spelling.installed(lang):
+            self.spell_status.setText("")
+            self.browser.apply_spelling()
+            return
+        if self._spell_download is not None:
+            return
+        self.spell_status.setText("Downloading the dictionary (once, a few hundred KB)…")
+        self._spell_download = download = spelling.DictionaryDownload(lang, self)
+
+        def done(ok, message):
+            self._spell_download = None
+            download.deleteLater()
+            if ok and self.store.settings.get(spelling.SETTING):
+                self.browser.apply_spelling()
+            self.spell_status.setText(message if not ok else "")
+            if not ok:
+                self.spell_box.setChecked(False)
+        download.finished.connect(done)
+
     # --- Pages ---------------------------------------------------------------------------
 
     def _general(self):
@@ -291,6 +317,17 @@ class SettingsWindow(QWidget):
         u.addWidget(auto)
         u.addWidget(check)
 
+        self.spell_box = QCheckBox()
+        self.spell_box.setChecked(self.store.settings.get(spelling.SETTING, False))
+        self.spell_box.toggled.connect(self._toggle_spelling)
+        self.spell_status = QLabel()
+        self.spell_status.setObjectName("Hint")
+        spell_row = self._row("Check spelling while typing", "Underlines misspelled words in text fields; "
+                                                             "right-click one for corrections. Checked on this Mac.",
+                              self.spell_box)
+        spell_row.layout().itemAt(0).layout().addWidget(self.spell_status)
+        self._spell_download = None
+
         self.shortcut_list = QListWidget()
         self.shortcut_list.setObjectName("SettingsList")
         add_shortcut = QPushButton("Add…")
@@ -308,7 +345,8 @@ class SettingsWindow(QWidget):
             self._card([default_row,
                         self._row("Open links from other apps in",
                                   "Like Arc, a Little window is quick to glance at and close. ⌘O keeps it.", links),
-                        self._row("Search engine", "Used by the command bar and Little windows.", engine)]),
+                        self._row("Search engine", "Used by the command bar and Little windows.", engine),
+                        spell_row]),
             self._card([self._row("Search shortcuts", "Your own sites to search from ⌘T: type the keyword and a "
                                                       "space (\u201cparl budget\u201d), or the keyword and Tab. "
                                                       "Built-in ones: yt, gh, w, r, x, az, so, npm, pypi…",
@@ -318,7 +356,7 @@ class SettingsWindow(QWidget):
                                           "Right-click a Space to change it.", appearance)]),
             self._card([self._row("Backup", "Spaces, tabs, settings, notes, Boosts, userscripts and extensions in "
                                             "one file. Sign-ins and cookies aren't included.", backup_box),
-                        self._row("Updates", "Once a day, look for a newer PythonBrowser on GitHub and offer to "
+                        self._row("Updates", f"Once a day, look for a newer {brand.NAME} on GitHub and offer to "
                                              "restart into it. A checkout with your own changes is never touched.",
                                   updates)]),
         )
@@ -377,6 +415,10 @@ class SettingsWindow(QWidget):
         cookie_box = QCheckBox()
         cookie_box.setChecked(blocker.reject_cookies)
         cookie_box.toggled.connect(blocker.set_reject_cookies)
+        clean_box = QCheckBox()
+        clean_box.setChecked(self.browser.store.settings.get(clean_links.SETTING, True))
+        clean_box.toggled.connect(lambda on: (self.browser.store.settings.__setitem__(clean_links.SETTING, on),
+                                              self.browser.store.schedule_save()))
         self.block_box = QCheckBox()
         self.block_box.setChecked(blocker.enabled)
         self.block_box.toggled.connect(lambda on: on != blocker.enabled and self.browser.toggle_adblock())
@@ -429,7 +471,9 @@ class SettingsWindow(QWidget):
                         allowed_box,
                         self._row("Reject cookie banners", "Answers “Reject all” (or “Only necessary”) on cookie "
                                                            "pop-ups for you. Never clicks Accept. Sites where ads "
-                                                           "are allowed are left alone.", cookie_box)]),
+                                                           "are allowed are left alone.", cookie_box),
+                        self._row("Clean links", "Takes tracking tags (utm_source, fbclid, gclid…) off links "
+                                                 "before they open, and off links you copy.", clean_box)]),
             self._card([self._row("Browsing history", "Used for command bar suggestions. Also browsable in the "
                                                       "Library (⌘Y).", clear_history),
                         self._row("Search what you've read", "Keeps the text of pages you visit on this Mac so ⌘T "
@@ -585,7 +629,7 @@ class SettingsWindow(QWidget):
         current = macos.default_browser()
         mine = macos.APP_BUNDLE_ID
         if current == mine:
-            self.default_status.setText("PythonBrowser is your default browser.")
+            self.default_status.setText(f"{brand.NAME} is your default browser.")
             self.default_btn.hide()
         else:
             name = {"company.thebrowser.browser": "Arc", "com.apple.safari": "Safari",
