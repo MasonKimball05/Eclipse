@@ -86,7 +86,7 @@ def bundle_identifier() -> str | None:
 
 
 def is_built_app() -> bool:
-    """Running as the built Halo.app (not from a terminal, where the process is Python's)."""
+    """Running as the built Eclipse.app (not from a terminal, where the process is Python's)."""
     return bundle_identifier() == APP_BUNDLE_ID
 
 

@@ -1,9 +1,9 @@
-# Halo — Documentation
+# Eclipse — Documentation
 
 **Author:** MasonKimball05
 **Stack:** Python 3, PyQt6, QtWebEngine (Chromium), qtawesome
 
-**Halo** is an Arc-inspired browser. It was called PythonBrowser at first, and that name lives on underneath: the data folder, the Keychain entries and the bundle ID. Arc is being wound down in favour of Dia, so this project carries its ideas forward: a vertical sidebar, Spaces, pinned and favorite tabs, a command bar in place of a new-tab page, and tabs that archive themselves.
+**Eclipse** is an Arc-inspired browser. It was called PythonBrowser at first (then, briefly, Halo), and that name lives on underneath: the data folder, the Keychain entries and the bundle ID. Arc is being wound down in favour of Dia, so this project carries its ideas forward: a vertical sidebar, Spaces, pinned and favorite tabs, a command bar in place of a new-tab page, and tabs that archive themselves.
 
 ---
 
@@ -15,7 +15,7 @@
 ./run.sh --build-app
 ```
 
-This builds `~/Applications/Halo.app`, which you can open from Spotlight, Launchpad or the Dock like any other app. (An older `PythonBrowser.app` from before the rename goes to the Trash; it's only a launcher. It keeps the same bundle ID, so macOS still treats it as your default browser and remembers its camera and microphone permissions.) Then choose **Halo menu → Set as Default Browser…**, and macOS asks you to confirm.
+This builds `~/Applications/Eclipse.app`, which you can open from Spotlight, Launchpad or the Dock like any other app. (An older `PythonBrowser.app` or `Halo.app` from before the rename goes to the Trash; it's only a launcher. It keeps the same bundle ID, so macOS still treats it as your default browser and remembers its camera and microphone permissions.) Then choose **Eclipse menu → Set as Default Browser…**, and macOS asks you to confirm.
 
 - **Links from other apps** (Slack, Mail, Messages…) open in a Little window, the same as Arc.
 - **No rebuild needed for code changes:** the app is a small native launcher that runs this checkout with its virtualenv, so your next launch picks them up. Rebuild only if you move the checkout or Homebrew moves to a new Python version (3.15+).
@@ -46,7 +46,7 @@ To try things without touching your real session, set a throwaway data folder:
 PYBROWSER_DATA_DIR=/tmp/pybrowser-test venv/bin/python main.py
 ```
 
-Your session, favicons, cookies and cache normally live in `~/Library/Application Support/MasonKimball05/PythonBrowser/` (the internal name, so renaming the app to Halo didn't move anything; the Keychain entries for your app tokens keep it too).
+Your session, favicons, cookies and cache normally live in `~/Library/Application Support/MasonKimball05/PythonBrowser/` (the internal name, so renaming the app didn't move anything; the Keychain entries for your app tokens keep it too).
 
 ---
 
@@ -105,13 +105,13 @@ Drag tabs between Favorites, Pinned and Today to reorganise them. Right-click a 
 | **Recent-tab switching** | Hold ⌃ and tap Tab to go back through recently used tabs, shown as cards with a picture of each page; let go to switch. A quick ⌃Tab flips to the previous tab. Esc cancels. *Settings → Tabs* switches ⌃Tab back to sidebar order. |
 | **Per-site zoom** | ⌘= / ⌘- / ⌘0 zoom the page and remember it for that site. A chip in the URL pill shows the level; click it to reset. |
 | **Print, PDF & saving** | ⌘P prints, ⌥⌘P saves the page as a PDF, ⇧⌘S saves it as a web archive (.mhtml), and ⌥⇧⌘C copies the page as a Markdown link (`[Title](url)`). |
-| **Swipe gestures** | Swipe right with two fingers on a page to go back, left to go forward; an arrow slides in from the edge and fills in once letting go will navigate. Pages that scroll sideways themselves (carousels, code blocks, maps) keep the swipe. Swiping on the sidebar slides to the next or previous Space. Turn page swipes off in *Settings → Tabs*. |
+| **Swipe gestures** | Both swipes follow your fingers, as far as you like and back again, and nothing happens until you let go. **On a page**, swipe right with two fingers to go back, left to go forward. The page slides with your fingers over a picture of the page you're going to (taken when you left it; a page that changed without loading shows its icon and title instead). Let go past about a third of the way, or flick, and it carries on at your speed; otherwise it springs back. Pages that scroll sideways themselves (carousels, code blocks, maps) keep the swipe. **On the sidebar**, the Space's tabs and its address slide across to the next or previous Space's while the window's colours blend over (Favorites, shared by every Space, stay put). The page swaps once the switch lands. Let go past halfway, or flick, to switch; with one Space it just gives a little. With macOS's Reduce Motion on, page swipes show an arrow instead and Spaces switch at once. Turn page swipes off in *Settings → Tabs*. |
 | **Developer Mode** | Pages you're building (localhost, 127.0.0.1, `*.localhost`, `*.test`, files) show their full address with port in the URL pill and a **DEV** chip that turns red with the page's error count. Click it (or ⌥⌘J) for the console drawer under the page: the page's log, a line to run JavaScript in it (↑ for history), DevTools, and **Reload on Save**: pick your project folder and the page reloads whenever a file in it changes (`node_modules`, `.git` and build folders are ignored). Pages opened from a file reload on save by themselves. |
 | **Now Playing** | When a tab you've left is playing music or a video, a card at the bottom of the sidebar shows the track and artist (from the site's media info), with play/pause, next track (YouTube, Spotify, SoundCloud, YouTube Music) and × to stop. Click it to go back to the tab. Videos still go to the mini player first. |
 | **Reader view** | ⌥⌘R (or ⌘T → "Reader View") shows just the article: a clean column with the site, title and reading time, in light, sepia or dark, with bigger or smaller text. It's rebuilt from safe tags and shown with JavaScript off. Esc closes it. |
 | **Translate Page** | ⌘T → "Translate Page", or *Translate* in Reader view: the page's text is translated in place by the local Claude CLI, top of the page first, into your Mac's language. Run it again to show the original. Code and anything marked `translate="no"` is left alone. |
 | **Crash recovery** | Tabs are saved as you go (with the previous copy kept as a spare), so after a crash everything comes back, with a note saying so. A page whose renderer crashes shows a card with Reload; one in the background reloads when you return to it. Errors and hard-crash stacks go to the `logs` folder (⌘T → "Show Crash Logs"). |
-| **Updates** | Once a day Halo checks its GitHub branch and offers *Update & Restart* when there are new commits: it fast-forwards the checkout, installs new requirements, and relaunches with your tabs. A checkout with uncommitted changes or unpushed commits is never touched. *Settings → General → Updates* has Check Now. |
+| **Updates** | Once a day Eclipse checks its GitHub branch and offers *Update & Restart* when there are new commits: it fast-forwards the checkout, installs new requirements, and relaunches with your tabs. A checkout with uncommitted changes or unpushed commits is never touched. *Settings → General → Updates* has Check Now. |
 | **Private windows** | ⇧⌘P (*File → New Private Window*, ⌘T, or right-click a link → *Open Link in Private Window*). A dark window with its own tabs, sharing one in-memory profile: no history, suggestions, site icons, zoom levels, remembered permissions or page text are kept, and extensions don't run. Cookies and logins are forgotten when the last private window closes. Ads are still blocked. |
 | **Clean links** | Tracking tags such as `utm_source`, `fbclid` and `gclid` are taken off a link before it opens, and off links you copy (⇧⌘C, *Copy Link*, the Markdown link). Everything else in the address stays exactly as it was. YouTube's and Spotify's `si` share tags go too. Off in *Settings → Privacy*. |
 | **Certificate warnings** | A site with a bad security certificate (expired, for another site, or not from a trusted authority) shows *This connection isn't private* instead of loading. **Go Back** returns you to the previous page, or closes the tab if it was opened just for that site. *Details* says what's wrong and, where the site allows it, offers *Visit Anyway* for the rest of the session. Local development servers say that this is expected. |
@@ -153,7 +153,7 @@ Set up in *Settings → My Apps* (addresses default to your setup: homebase and 
 
 ### Settings, shortcuts & Library
 
-- **Settings** (⌘,, or *Halo → Settings…*) has a search box at the top ("sleep", "cookie", "qwen"): pages without a match step aside and matching settings light up; Return scrolls to the first. It has one page each for:
+- **Settings** (⌘,, or *Eclipse → Settings…*) has a search box at the top ("sleep", "cookie", "qwen"): pages without a match step aside and matching settings light up; Return scrolls to the first. It has one page each for:
   - **General:** default browser, where outside links open, search engine (Google, DuckDuckGo, Bing, Brave, Kagi or Ecosia), and spell check (off until you turn it on; the first time, it downloads your language's dictionary, a few hundred KB, from Chrome's dictionary server).
   - **General** also has Back Up / Restore, and Updates (automatic daily check, Check Now).
   - **Tabs:** archive timing, tab sleeping, Peek, the mini player, ⌃Tab order, swipe to go back, notification banners.
@@ -178,9 +178,9 @@ The shield in the URL pill shows how many requests were blocked on the current s
 
 ### Extensions & userscripts
 
-Qt WebEngine's own extension support crashes on macOS, so Halo has its **own lightweight runtime** (`browser/ext/`). Manage everything in **Settings → Extensions**. The puzzle piece in the URL pill lists your extensions (click one for its popup); *Pin to URL Bar* in that menu gives an extension its own button, with its badge. Keyboard shortcuts from an extension's manifest work too (⌘⇧X opens Proton Pass), unless they'd take over one of the browser's.
+Qt WebEngine's own extension support crashes on macOS, so Eclipse has its **own lightweight runtime** (`browser/ext/`). Manage everything in **Settings → Extensions**. The puzzle piece in the URL pill lists your extensions (click one for its popup); *Pin to URL Bar* in that menu gives an extension its own button, with its badge. Keyboard shortcuts from an extension's manifest work too (⌘⇧X opens Proton Pass), unless they'd take over one of the browser's.
 
-**Installing:** on a Chrome Web Store extension page, click **Add to Halo** (bottom right). Before anything is installed you see what it can access and anything that won't work here. Extensions and userscripts installed from the web are **checked for updates daily** (or *Check for Updates* in Settings); an update that asks for more permissions asks you first.
+**Installing:** on a Chrome Web Store extension page, click **Add to Eclipse** (bottom right). Before anything is installed you see what it can access and anything that won't work here. Extensions and userscripts installed from the web are **checked for updates daily** (or *Check for Updates* in Settings); an update that asks for more permissions asks you first.
 
 **Userscripts** (Greasemonkey/Tampermonkey format):
 - Open any `.user.js` link (e.g. Greasy Fork's Install button) and an install dialog shows where the script runs and what it can use. You can also add one from a link or file, or write a new one.
@@ -301,7 +301,7 @@ The tests cover:
 
 They run headless and use a throwaway data folder.
 
-**Live tests** (`./run.sh --live-tests`, or `python -m pytest tests --live`) drive the real window against pages from a local server in `tests/live/site`, about 30 seconds with a window showing: swipes (and not over a carousel), cookie banners (and not other buttons), private windows keeping nothing, ⌘T completion, sums and page-text search, Reader, the Developer Mode console and Reload on Save, the crashed-page card, pinned tabs going home, Now Playing, menus showing "&", links losing their tracking tags, certificate warnings (against a local HTTPS server with a self-signed certificate), and spell check. The spell-check test needs a real dictionary: it uses yours once you've turned spell check on, or `PB_TEST_DICTIONARY=/path/to/en-US.bdic`, and is skipped otherwise. Plain `pytest` skips them.
+**Live tests** (`./run.sh --live-tests`, or `python -m pytest tests --live`) drive the real window against pages from a local server in `tests/live/site`, about 30 seconds with a window showing: swipes (and not over a carousel), cookie banners (and not other buttons), private windows keeping nothing, ⌘T completion, sums and page-text search, Reader, the Developer Mode console and Reload on Save, the crashed-page card, pinned tabs going home, Now Playing, menus showing "&", links losing their tracking tags, Space and page swipes following the fingers (and springing back when let go early), certificate warnings (against a local HTTPS server with a self-signed certificate), and spell check. The spell-check test needs a real dictionary: it uses yours once you've turned spell check on, or `PB_TEST_DICTIONARY=/path/to/en-US.bdic`, and is skipped otherwise. Plain `pytest` skips them.
 
 ## Code layout (`browser/`)
 
@@ -317,8 +317,8 @@ They run headless and use a throwaway data folder.
 | `content.py` | The rounded page card, plus overlays: progress line, link-hover label, find bar, toasts. |
 | `little.py` | Little windows. |
 | `app.py` | Startup, single-instance hand-off (local socket), and links arriving from macOS. |
-| `tools/build_app.py` | Builds `Halo.app`: a native launcher, `Info.plist` (registered for http/https and HTML files) and the icon, and retires an old `PythonBrowser.app`. |
-| `brand.py` | The name (Halo) and the icon, drawn in code (the built app and `./run.sh` both use it), plus the internal name that never changes. |
+| `tools/build_app.py` | Builds `Eclipse.app`: a native launcher, `Info.plist` (registered for http/https and HTML files) and the icon, and retires an old `PythonBrowser.app`. |
+| `brand.py` | The name (Eclipse) and the icon: a total eclipse drawn in code, used by both the built app and `./run.sh`. `LOOKS` holds the variations and `LOOK` picks one. Also the internal name, which never changes. |
 | `webview.py` | Profile setup (one per name: persistent cookies, user agent), `WebPage` and `WebView`. |
 | `theme_editor.py` | The Space theme editor. |
 | `space_editor.py` | The Space popover (name, icon, colour, profile). |
@@ -354,13 +354,13 @@ They run headless and use a throwaway data folder.
 | `tab_switcher.py` | The ⌃Tab recent-tabs switcher. |
 | `zoom.py` | Per-site zoom levels. |
 | `page_actions.py` | Helpers for printing and saving: safe file names, Markdown links. |
-| `gestures.py` | Two-finger swipe back/forward (with the page asked whether it scrolls sideways itself) and the sliding Space transition. |
+| `gestures.py` | Swipes that follow your fingers: back/forward (`SwipeNavigator`, `PageSlide`, page `Snapshots`, with the page asked whether it scrolls sideways itself) and Spaces (`SpaceSwipe`, `SpaceSlide`, also used when you click a Space), plus the shared release rules (speed, rubber-banding, settle time). |
 | `devmode.py` | Developer Mode: which pages count, the console drawer, Reload on Save (a polling folder watcher). |
 | `now_playing.py` | The sidebar's Now Playing card and the page scripts that find and control what's playing. |
 | `reader.py` | Reader view: article extraction (in the page's isolated world) and the script-free reader page. |
 | `translate.py` | Translate Page via the Claude CLI: collecting text nodes, batching, writing translations back, Show Original. |
 | `crash.py` | Crash recovery: the "did it quit properly" marker, error and native crash logs, the crashed-page card. |
-| `self_update.py` | Updating Halo itself from its git upstream (fast-forward only) and relaunching. |
+| `self_update.py` | Updating Eclipse itself from its git upstream (fast-forward only) and relaunching. |
 | `private.py` | Private windows and the shared off-the-record profile. |
 | `spelling.py` | Spell check: which Chrome dictionary fits your language, downloading it once, turning checking on in every profile. |
 | `clean_links.py` | Tracking-tag removal for links that open (via the request interceptor) and links you copy. |

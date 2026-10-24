@@ -14,7 +14,7 @@ def test_the_icon_draws_at_every_size(qapp):
 
 
 def test_renaming_keeps_your_data_and_tokens_where_they_were():
-    assert brand.NAME == "Halo"
+    assert brand.NAME == "Eclipse"
     assert brand.INTERNAL_NAME == keychain.SERVICE == "PythonBrowser"
 
 
@@ -45,3 +45,14 @@ def test_the_old_app_goes_to_the_trash_only_if_its_ours(tmp_path, monkeypatch):
     _fake_app(ours, build_app.BUNDLE_ID)
     build_app.retire_old_app(ours)
     assert (tmp_path / ".Trash" / "PythonBrowser 2.app").exists()  # an earlier one in the Trash is kept
+
+
+def test_copies_in_the_trash_are_forgotten_by_launch_services(tmp_path, monkeypatch):
+    build_app = _build_app_module()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    forgotten = []
+    monkeypatch.setattr(build_app.subprocess, "run", lambda args, check=False: forgotten.append(args[-1]))
+    _fake_app(tmp_path / ".Trash" / "Halo.app", build_app.BUNDLE_ID)
+    _fake_app(tmp_path / ".Trash" / "Other.app", "com.someone.else")
+    build_app.forget_trashed()
+    assert forgotten == [str(tmp_path / ".Trash" / "Halo.app")]

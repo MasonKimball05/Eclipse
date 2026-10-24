@@ -1,4 +1,4 @@
-"""Build Halo.app into ~/Applications.
+"""Build Eclipse.app into ~/Applications.
 
 Run it with:   ./run.sh --build-app
                ./run.sh --build-app --sign "Developer ID Application: Your Name (TEAMID)"
@@ -36,7 +36,7 @@ sys.path.insert(0, str(ROOT))
 from browser.brand import NAME  # noqa: E402
 
 APP = Path.home() / "Applications" / f"{NAME}.app"
-OLD_APP = Path.home() / "Applications" / "PythonBrowser.app"  # its name before it was Halo
+OLD_APPS = [Path.home() / "Applications" / f"{old}.app" for old in ("PythonBrowser", "Halo")]  # its earlier names
 BUNDLE_ID = "com.masonkimball.pythonbrowser"  # must match browser/macos.py
 LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework"
               "/Support/lsregister")
@@ -137,13 +137,13 @@ def make_icon(dest: Path):
             for scale in (1, 2):
                 px = points * scale
                 name = f"icon_{points}x{points}{'@2x' if scale == 2 else ''}.png"
-                icon_image(px).save(str(iconset / name))  # drawn at each size (small ones get a bolder ring)
+                icon_image(px).save(str(iconset / name))  # drawn at each size (small ones bolder)
         subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(dest)], check=True)
 
 
 def retire_old_app(old: Path):
-    """The app used to be called PythonBrowser.app: move that one to the Trash (it's only a launcher;
-    your data isn't in it), so Spotlight and Launchpad show one browser, not two."""
+    """An app from before a rename (PythonBrowser.app, then Halo.app): move it to the Trash (it's only a
+    launcher; your data isn't in it), so Spotlight and Launchpad show one browser, not two."""
     if not old.exists():
         return
     try:
@@ -158,9 +158,20 @@ def retire_old_app(old: Path):
         trash = trash.with_name(f"{old.stem} {n}.app")
         n += 1
     shutil.move(str(old), str(trash))
-    # (after the move: Launch Services follows a moved app, so it would still list the one in the Trash)
-    subprocess.run([LSREGISTER, "-u", str(trash)], check=False)
     print(f"Moved the old {old.name} to the Trash")
+
+
+def forget_trashed():
+    """Launch Services follows an app into the Trash (and notices it again a moment after it's moved),
+    so it would still offer the old copy for opening links: tell it to forget every copy of this app
+    there. (Done last, once the new one is registered.)"""
+    for bundle in (Path.home() / ".Trash").glob("*.app"):
+        try:
+            existing = plistlib.loads((bundle / "Contents" / "Info.plist").read_bytes()).get("CFBundleIdentifier")
+        except (OSError, plistlib.InvalidFileException):
+            continue
+        if existing == BUNDLE_ID:
+            subprocess.run([LSREGISTER, "-u", str(bundle)], check=False)
 
 
 def sign(app: Path, identity: str):
@@ -229,8 +240,10 @@ def build(app: Path, identity="-", notary_profile=None):
     if notary_profile:
         notarize(app, notary_profile)
     if app == APP:  # only the real install claims web links; a test build elsewhere shouldn't
-        retire_old_app(OLD_APP)
+        for old in OLD_APPS:
+            retire_old_app(old)
         subprocess.run([LSREGISTER, "-f", str(app)], check=False)  # tell Launch Services it can open links
+        forget_trashed()
 
     print(f"\nBuilt {app}")
     print("Open it from your Applications folder or Spotlight.")

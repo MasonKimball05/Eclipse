@@ -1,4 +1,4 @@
-// Halo's extension runtime. Injected into:
+// Eclipse's extension runtime. Injected into:
 //   - the main world of extension pages (pbext://…: popups, options and background pages),
 //     after Qt's qwebchannel.js, talking to Python over the web channel
 //   - an isolated world per extension (its content scripts) and per userscript, with

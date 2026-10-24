@@ -7,14 +7,20 @@ from PyQt6.QtWidgets import QDialogButtonBox, QTextBrowser, QVBoxLayout, QWidget
 from . import brand
 from .theme import stylesheet
 
-EDITION = 2
+EDITION = 3
 SETTING = "whats_new_seen"
 
 NOTES = """
-## Meet Halo
+## Meet Eclipse
 
-PythonBrowser has a proper name and icon now. Your Spaces, tabs, sign-ins and settings are all where
+The browser has a proper name and icon now. Your Spaces, tabs, sign-ins and settings are all where
 they were. Rebuild the app (`./run.sh --build-app`) for the new icon in the Dock and Spotlight.
+
+## Swipes that follow your fingers
+
+- Swipe on a page or the sidebar and it moves with you, as far as you like and back. Let go past
+  the middle (or flick) to go, anywhere short of it to spring back. Pages slide over a picture of
+  where you're going; Spaces slide their tabs while the colours blend.
 
 ## Safer links
 

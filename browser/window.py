@@ -52,7 +52,7 @@ from .private import PrivateSession
 from .reader import ReaderView
 from .self_update import SelfUpdater
 from .translate import Translator, target_language
-from .gestures import SwipeNavigator, slide_region
+from .gestures import SpaceSwipe, SwipeNavigator, slide_region
 from .tab_switcher import TabSwitcher
 from .zoom import remember_zoom, step_zoom, zoom_for, zoom_key
 from .page_actions import markdown_link, safe_filename
@@ -115,6 +115,7 @@ class MainWindow(QMainWindow):
         self.permissions = PermissionManager(self)  # camera, microphone, screen sharing, location…
         self.notifications = NotificationCenter(self)  # site notifications and unread badges
         self.swipes = SwipeNavigator(self)  # two-finger back/forward
+        self.space_swipe = SpaceSwipe(self)  # two fingers on the sidebar: the next Space
         self.devmode = DevMode(self)  # localhost and file pages: console drawer, reload on save
         self.now_playing = NowPlaying(self)  # the sidebar's card for a background tab playing audio
         self.translator = Translator(self)  # Translate Page, with the Claude CLI
@@ -1924,7 +1925,7 @@ class MainWindow(QMainWindow):
 
     def _on_console(self, tab, message):
         if message.startswith(STORE_MESSAGE):
-            # "Add to Halo" on a Chrome Web Store page: only our button knows the secret, and
+            # "Add to Eclipse" on a Chrome Web Store page: only our button knows the secret, and
             # only on the store itself
             prefix = self.extensions.store_prefix
             if (message.startswith(prefix) and QUrl(tab.url).host() == "chromewebstore.google.com"

@@ -472,6 +472,10 @@ class TabSection(DropZone):
 
     def set_tabs(self, nodes):
         for row, *_ in self.entries:
+            # Out of sight and out of the layout now: deleteLater only happens on a later pass, and
+            # until then the old rows would still show (and take up room) under the new ones
+            row.hide()
+            self.layout_.removeWidget(row)
             row.deleteLater()
         self.nodes = nodes
         self.entries = []
@@ -530,6 +534,8 @@ class FavoritesGrid(DropZone):
 
     def set_tabs(self, tabs):
         for tile in self.tiles:
+            tile.hide()  # (see TabSection.set_tabs: gone now, not on a later pass)
+            self.grid.removeWidget(tile)
             tile.deleteLater()
         self.grid.removeWidget(self.hint)
         self.tiles = [FavoriteTile(self.browser, t, self) for t in tabs]
@@ -602,8 +608,6 @@ class Sidebar(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)  # only painted when floating
         self.setMinimumWidth(190)
         self.setMaximumWidth(420)
-        self._swipe = 0.0
-        self._swiped = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 9, 4, 10)
@@ -869,6 +873,8 @@ class Sidebar(QWidget):
 
     def _rebuild_switcher(self):
         for btn in self.space_buttons:
+            btn.hide()  # (gone now, not on a later pass: see TabSection.set_tabs)
+            btn.setParent(None)
             btn.deleteLater()
         self.space_buttons = []
         store = self.browser.store
@@ -1022,6 +1028,8 @@ class Sidebar(QWidget):
     def update_extensions(self):
         host = self.browser.extensions
         for button in self.pinned_ext_buttons:
+            button.hide()
+            button.setParent(None)
             button.deleteLater()
         self.pinned_ext_buttons = []
         if not host.extensions and not host.scripts:
@@ -1087,13 +1095,4 @@ class Sidebar(QWidget):
             super().wheelEvent(event)
 
     def _handle_swipe(self, event) -> bool:
-        delta = event.pixelDelta() if not event.pixelDelta().isNull() else event.angleDelta() / 4
-        if event.phase() in (Qt.ScrollPhase.ScrollBegin, Qt.ScrollPhase.NoScrollPhase):
-            self._swipe, self._swiped = 0.0, False
-        if abs(delta.x()) <= abs(delta.y()):
-            return False
-        self._swipe += delta.x()
-        if not self._swiped and abs(self._swipe) > 90:
-            self._swiped = True  # one switch per gesture
-            self.browser.cycle_space(1 if self._swipe < 0 else -1)
-        return True
+        return self.browser.space_swipe.wheel(event)  # (gestures.SpaceSwipe: the sidebar follows your fingers)
