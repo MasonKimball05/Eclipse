@@ -596,6 +596,7 @@ def stylesheet(t: Theme) -> str:
     QFrame#PaneFocus {{ background: transparent; border: 2px solid {rgba(t.accent, 0.9)}; border-radius: 10px; }}
     QToolButton#PaneClose {{ background: {panel}; border: 1px solid {panel_line}; border-radius: 12px; }}
     QFrame#TabRow[insplit="true"] {{ background: {hover}; }}
+    QFrame#TabRow[marked="true"] {{ background: {selected}; }}
 
     #PeekBackdrop {{ background: rgba(0, 0, 0, {70 if t.dark else 40}); }}
     QFrame#PeekCard {{ background: {panel}; border: 1px solid {panel_line}; border-radius: 14px; }}

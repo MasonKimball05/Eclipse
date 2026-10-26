@@ -17,7 +17,7 @@ import re
 import sys
 
 import qtawesome as qta
-from PyQt6.QtCore import QEvent, QMimeData, QObject, QPoint, QRect, QRectF, QSize, Qt, QTimer, QUrl
+from PyQt6.QtCore import QEvent, QMimeData, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import QColor, QDrag, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (QApplication, QFrame, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QLabel,
                              QPushButton, QScrollArea, QSizePolicy, QSpacerItem, QToolButton, QVBoxLayout, QWidget)
@@ -35,6 +35,7 @@ from .icons import is_symbol, space_icon, symbol
 from .theme import legible, letter_icon, quiet_scrollbars
 
 TAB_MIME = "application/x-pybrowser-tab"
+TABS_MIME = "application/x-pybrowser-tabs"  # several picked tabs dragged together: their ids, in order
 FAVORITE_COLUMNS = 4
 INDENT = 16  # per folder level
 
@@ -156,18 +157,66 @@ class ElidedLabel(QLabel):
         self.setText(self.fontMetrics().elidedText(self._full, Qt.TextElideMode.ElideRight, max(self.width(), 10)))
 
 
+def dragged_together(widget) -> list:
+    """The picked tabs, in sidebar order, when the drag starts on one of them (else [])."""
+    sidebar = widget.browser.sidebar
+    tab = getattr(widget, "tab", None)
+    if not isinstance(widget, TabRow) or len(sidebar.marked) < 2 or not any(t is tab for t in sidebar.marked):
+        return []
+    marked = {id(t) for t in sidebar.marked}
+    return [r for r in sidebar.pinned.rows + sidebar.today.rows
+            if id(r.tab) in marked and not getattr(r, "_pb_gone", False)]
+
+
+def stack_picture(row, count):
+    """What several dragged tabs look like: the row you grabbed on two cards behind it, and a count."""
+    face = row.grab()
+    ratio = face.devicePixelRatio()
+    w, h = face.width() / ratio, face.height() / ratio
+    pixmap = QPixmap(int((w + 8) * ratio), int((h + 8) * ratio))
+    pixmap.setDevicePixelRatio(ratio)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pixmap)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    theme = row.browser.theme
+    p.setPen(Qt.PenStyle.NoPen)
+    for offset, alpha in ((8, 0.10), (4, 0.18)):
+        card = QColor(theme.text)
+        card.setAlphaF(alpha)
+        p.setBrush(card)
+        p.drawRoundedRect(QRectF(offset, offset, w, h), 9, 9)
+    p.drawPixmap(QPointF(0, 0), face)
+    badge = QRectF(w - 30, 7, 24, 20)
+    p.setBrush(QColor(theme.accent))
+    p.drawRoundedRect(badge, 10, 10)
+    p.setPen(QColor("white"))
+    font = p.font()
+    font.setPixelSize(12)
+    font.setBold(True)
+    p.setFont(font)
+    p.drawText(badge, Qt.AlignmentFlag.AlignCenter, str(count))
+    p.end()
+    return pixmap
+
+
 def start_drag(widget, node_id, press_pos):
+    together = dragged_together(widget)
     mime = QMimeData()
     mime.setData(TAB_MIME, node_id.encode())
+    if together:
+        mime.setData(TABS_MIME, ",".join(r.tab.id for r in together).encode())
     drag = QDrag(widget)
     drag.setMimeData(mime)
-    drag.setPixmap(widget.grab())
+    drag.setPixmap(stack_picture(widget, len(together)) if together else widget.grab())
     drag.setHotSpot(press_pos)
     split_drop = widget.browser.content.split_drop
     split_drop.activate(True)  # the page area accepts tabs too: drop one there to split
+    lifted = [(r, r.parentWidget()) for r in together or [widget]]
+    for row, section in lifted:
+        if isinstance(section, TabSection):
+            # (once the drag has its picture of the row)
+            QTimer.singleShot(0, lambda s=section, r=row: not sip.isdeleted(r) and s.lift(r))
     section = widget.parentWidget()
-    if isinstance(section, TabSection):
-        QTimer.singleShot(0, lambda: section.lift(widget))  # (once the drag has its picture of the row)
     sidebar = widget.browser.sidebar
     sidebar.drag_active = True  # rebuilds wait till it's over (they'd delete the row being dragged)
     drag.exec(Qt.DropAction.MoveAction)
@@ -179,9 +228,10 @@ def start_drag(widget, node_id, press_pos):
     if isinstance(widget, FavoriteTile) and not sip.isdeleted(widget) and widget.press != 1.0:
         from PyQt6.QtCore import QEasingCurve
         widget._squeeze(1.0, 220, QEasingCurve.Type.OutBack)  # (the release went to the drag, not the tile)
-    if isinstance(section, TabSection):
-        # After the drop has had its chance to rebuild the list (it moves the tab a pass later)
-        QTimer.singleShot(120, lambda: not sip.isdeleted(section) and section.drag_ended(widget))
+    for row, section in lifted:
+        if isinstance(section, TabSection):
+            # After the drop has had its chance to rebuild the list (it moves the tab a pass later)
+            QTimer.singleShot(120, lambda s=section, r=row: not sip.isdeleted(s) and s.drag_ended(r))
 
 
 class DraggableTab:
@@ -193,7 +243,16 @@ class DraggableTab:
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
+            command, shift = (event.modifiers() & m for m in (Qt.KeyboardModifier.ControlModifier,
+                                                               Qt.KeyboardModifier.ShiftModifier))
+            if isinstance(self, TabRow) and (command or shift):
+                self.browser.sidebar.mark(self.tab, extend=bool(shift))  # ⌘-click / ⇧-click: several tabs
+                return
             self._press_pos = event.position().toPoint()
+            if dragged_together(self):
+                self._pick_on_release = True  # it may be the start of dragging them all
+                return
+            self.browser.sidebar.clear_marks()
             self.browser.activate_tab(self.tab)
         elif event.button() == Qt.MouseButton.MiddleButton:
             self.browser.close_tab(self.tab)
@@ -204,13 +263,24 @@ class DraggableTab:
         if (event.position().toPoint() - self._press_pos).manhattanLength() < QApplication.startDragDistance():
             return
         press_pos, self._press_pos = self._press_pos, None
+        self._pick_on_release = False
         start_drag(self, self.tab.id, press_pos)
 
     def mouseReleaseEvent(self, event):
+        clicked = self._press_pos is not None  # (a drag sets it to None when it starts)
         self._press_pos = None
+        if getattr(self, "_pick_on_release", False):
+            self._pick_on_release = False
+            if clicked:  # just a click on one of the picked tabs: go to it, and stop picking
+                self.browser.sidebar.clear_marks()
+                self.browser.activate_tab(self.tab)
 
     def contextMenuEvent(self, event):
-        self.browser.show_tab_menu(self.tab, event.globalPos())
+        marked = self.browser.sidebar.marked
+        if len(marked) > 1 and any(t is self.tab for t in marked):
+            self.browser.show_tabs_menu(list(marked), event.globalPos())
+        else:
+            self.browser.show_tab_menu(self.tab, event.globalPos())
 
 
 class HoverFade:
@@ -524,6 +594,15 @@ class FavoriteTile(DraggableTab, QToolButton):
         p.end()
 
 
+def dragged_tabs(browser, event) -> list:
+    """The tabs in a drag of several picked tabs (else [])."""
+    data = event.mimeData()
+    if not data.hasFormat(TABS_MIME):
+        return []
+    found = (browser.store.find_tab(i) for i in bytes(data.data(TABS_MIME)).decode().split(","))
+    return [t for t in found if t is not None]
+
+
 class DropZone(QWidget):
     """Base for areas that accept dragged tabs and folders.
 
@@ -587,8 +666,12 @@ class DropZone(QWidget):
             return
         event.acceptProposedAction()
         folder, index, _, _ = target
+        together = dragged_tabs(self.browser, event)
         # Defer so the drag's source widget isn't rebuilt while still inside drag.exec()
-        QTimer.singleShot(0, lambda: self.browser.move_tab(node, self.kind, index, folder))
+        if together:
+            QTimer.singleShot(0, lambda: self.browser.move_tabs(together, self.kind, index, folder))
+        else:
+            QTimer.singleShot(0, lambda: self.browser.move_tab(node, self.kind, index, folder))
 
 
 class RowReveal(QWidget):
@@ -715,7 +798,7 @@ class TabSection(DropZone):
         self._reveals = []
         self._gap = None  # where a dragged tab would land (opening), with any older ones closing
         self._gaps = []
-        self.dragging = None  # the node being dragged out of this list, folded up while it is
+        self.dragging = []  # the nodes being dragged out of this list, folded up while they are
         self.just_dropped = None  # the node dropped here, which takes its gap's place as the list rebuilds
 
     @property
@@ -726,7 +809,7 @@ class TabSection(DropZone):
         for reveal in list(self._reveals):
             reveal.settle()
         self._remove_gaps()  # (a dropped tab takes its gap's place in this same pass: nothing jumps)
-        self.dragging = None
+        self.dragging = []
         dropped, self.just_dropped = self.just_dropped, None
         old = [e for e in self.entries if not sip.isdeleted(e[0]) and not getattr(e[0], "_pb_gone", False)]
         # Rows for tabs and folders that are still here are kept (refreshed, and put back in order)
@@ -833,7 +916,7 @@ class TabSection(DropZone):
         from . import motion
         if motion.reduced():
             return
-        self.dragging = entry[1]
+        self.dragging = [*self.dragging, entry[1]]
         index = self.layout_.indexOf(row)
         self.layout_.removeWidget(row)
         reveal = RowReveal(self, row, growing=False, keep=True)
@@ -842,7 +925,7 @@ class TabSection(DropZone):
 
     def drag_ended(self, row):
         """The drag is over. If nothing rebuilt this list (it wasn't moved), the row comes back."""
-        self.dragging = None
+        self.dragging = []
         if not sip.isdeleted(row) and isinstance(row.parentWidget(), RowReveal) and row.parentWidget().keep:
             row.parentWidget().unfold()
         self._close_gaps()
@@ -857,7 +940,7 @@ class TabSection(DropZone):
         gaps = [g for g in self._gaps if not sip.isdeleted(g)]
         out = []
         for row, node, parent, depth in self.entries:
-            if node is self.dragging or sip.isdeleted(row):
+            if any(node is n for n in self.dragging) or sip.isdeleted(row):
                 continue
             rect = self._holder(row).geometry()
             above = sum(g.height() + self.layout_.spacing() * (g.height() > 0) for g in gaps
@@ -1283,6 +1366,8 @@ class Sidebar(QWidget):
         self.favorites.set_tabs(store.favorites)
         # Rows slide in and out for changes within a Space; switching Spaces just shows the new one
         same_space = getattr(self, "_built_space", None) == space.id
+        if not same_space:
+            self.marked = []  # (a selection belongs to the Space it was made in)
         self._built_space = space.id
         self.pinned.animate_changes = self.today.animate_changes = same_space
         self.pinned.set_tabs(space.pinned)
@@ -1347,15 +1432,50 @@ class Sidebar(QWidget):
                 btn.show()  # (see TabSection.set_tabs)
             self.space_buttons.append(btn)
 
+    # --- Several tabs at once (⌘-click, ⇧-click), as in Arc ---------------------------
+
+    marked: list = []
+
+    def mark(self, tab, extend=False):
+        """⌘-click adds a tab to the selection or takes it out; ⇧-click (extend) adds every tab from
+        the last one picked to this one, in sidebar order. The tab you're on starts the selection."""
+        order = [r.tab for r in self.pinned.rows + self.today.rows if not getattr(r, "_pb_gone", False)]
+        current = self.browser.current_tab
+        marked = list(self.marked)
+        if not marked and any(t is current for t in order):
+            marked = [current]
+        index = {id(t): i for i, t in enumerate(order)}
+        if extend and marked and id(marked[-1]) in index and id(tab) in index:
+            a, b = sorted((index[id(marked[-1])], index[id(tab)]))
+            have = {id(t) for t in marked}
+            span = order[a:b + 1] if index[id(tab)] >= index[id(marked[-1])] else order[a:b + 1][::-1]
+            marked += [t for t in span if id(t) not in have]
+            marked = [t for t in marked if t is not tab] + [tab]  # (the next ⇧-click runs from here)
+        elif any(t is tab for t in marked):
+            marked = [t for t in marked if t is not tab]
+        else:
+            marked.append(tab)
+        self.marked = marked if len(marked) > 1 else []  # one tab is just the tab you're on
+        self.update_selection()
+
+    def clear_marks(self):
+        if self.marked:
+            self.marked = []
+            self.update_selection()
+
     # --- Cheap updates (no widget rebuild) ---------------------------------------
 
     def update_selection(self):
         current = self.browser.current_tab
         split = (self.browser.store.split_of(current) or []) if current else []
+        self.marked = [t for t in self.marked if self.browser.store.locate(t)]  # (closed ones drop out)
+        marked = {id(t) for t in self.marked}
         for tile in self.favorites.tiles:
             tile.set_selected(tile.tab is current)
         for row in self.pinned.rows + self.today.rows:
             row.set_selected(row.tab is current)
+            if (row.property("marked") is True) != (id(row.tab) in marked):
+                repolish(row, marked=id(row.tab) in marked)
             in_split = row.tab is not current and any(t is row.tab for t in split)
             if (row.property("insplit") is True) != in_split:
                 repolish(row, insplit=in_split)

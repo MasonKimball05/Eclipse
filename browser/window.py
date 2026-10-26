@@ -1205,6 +1205,19 @@ class MainWindow(QMainWindow):
         if isinstance(node, Tab) and loc and loc[0] == TODAY and kind == PINNED:
             self.tidy_title(node)
 
+    def move_tabs(self, tabs, kind, index=None, folder=None):
+        """Several picked tabs dropped together: in their order, where the drop line was."""
+        self.sidebar.clear_marks()
+        space = None if kind == FAVORITES else self.store.active_space
+        dest = folder.children if folder is not None and kind != FAVORITES else self.store.tab_list(kind, space)
+        moving = {id(t) for t in tabs}
+        # They go in before whatever was under the drop line (that isn't one of them), or at the end
+        anchor = next((n for n in dest[index:] if id(n) not in moving), None) if index is not None else None
+        for tab in tabs:
+            if self.store.locate(tab):
+                at = next(i for i, n in enumerate(dest) if n is anchor) if anchor is not None else None
+                self.move_tab(tab, kind, at, folder)
+
     # --- Folders -----------------------------------------------------------------------------
 
     def toggle_folder(self, folder):
@@ -1447,11 +1460,88 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         if kind == TODAY:
             self._act(menu, "ph.x-circle", "Close Tab", lambda: self.close_tab(tab))
+            below = self._tabs_below(tab, space)
+            if below:
+                self._act(menu, "ph.arrow-line-down", "Close Tabs Below", lambda: self.close_tabs(below))
         else:
             if tab.view is not None:
                 self._act(menu, "ph.minus-circle", "Unload Tab", lambda: self.close_tab(tab))
             self._act(menu, "ph.trash", "Delete", lambda: self.delete_tab(tab))
         menu.exec(pos)
+
+    def _tabs_below(self, tab, space):
+        today = list(walk_tabs(space.today))
+        index = next((i for i, t in enumerate(today) if t is tab), None)
+        return today[index + 1:] if index is not None else []
+
+    def show_tabs_menu(self, tabs, pos):
+        """Right-click on several tabs picked with ⌘-click or ⇧-click."""
+        tabs = [t for t in tabs if self.store.locate(t)]
+        menu = self._menu()
+        header = menu.addAction(f"{len(tabs)} Tabs")
+        header.setEnabled(False)
+        if len(tabs) <= MAX_PANES:
+            self._act(menu, "ph.columns", "Open in Split View", lambda: self.split_tabs(tabs))
+        self._act(menu, "ph.list-bullets", "Copy Links", lambda: self.copy_links(tabs))
+        if any(self.store.locate(t)[0] == TODAY for t in tabs):
+            self._act(menu, "ph.push-pin", "Pin Tabs", lambda: self._for_marked(
+                lambda: [self.move_tab(t, PINNED) for t in tabs if self.store.locate(t)[0] == TODAY]))
+        self._act(menu, "ph.folder-plus", "New Folder with These Tabs…", lambda: self.folder_from(tabs))
+        others = [s for s in self.store.spaces if s is not self.store.active_space]
+        if others:
+            move = self._submenu(menu, "ph.arrows-left-right", "Move to Space")
+            for other in others:
+                move.addAction(space_icon(other, self.theme.panel_text, 16), other.name,
+                               lambda s=other: self._for_marked(
+                                   lambda: [self.move_to_space(t, s) for t in reversed(tabs)]))
+        menu.addSeparator()
+        self._act(menu, "ph.x-circle", f"Close {len(tabs)} Tabs", lambda: self.close_tabs(tabs))
+        menu.exec(pos)
+
+    def _for_marked(self, action):
+        self.sidebar.clear_marks()
+        action()
+
+    def close_tabs(self, tabs):
+        """Close (or, for pinned tabs, unload) several tabs; Today's come back with Undo."""
+        self.sidebar.clear_marks()
+        tabs = [t for t in tabs if self.store.locate(t)]
+        place = {id(t): i for i, t in enumerate(walk_tabs(self.store.active_space.today))}
+        closed = []
+        for tab in sorted(tabs, key=lambda t: t is self.current_tab):  # yours last: one move to the next
+            today = self.store.locate(tab)[0] == TODAY
+            self.close_tab(tab)
+            if today:
+                closed.append((place.get(id(tab), 0), self._closed[-1]))
+        closed = [entry for _, entry in sorted(closed, key=lambda c: c[0])]  # (Undo: in sidebar order)
+        if closed:
+            self.toast(f"Closed {len(closed)} tab{'s' if len(closed) != 1 else ''}",
+                       lambda: self._reopen_entries(closed))
+
+    def _reopen_entries(self, entries):
+        for entry in reversed(entries):  # (each goes on top: the first ends up first again)
+            if entry in self._closed:
+                self.reopen_closed_tab(self._closed.index(entry))
+
+    def split_tabs(self, tabs):
+        self.sidebar.clear_marks()
+        base, rest = tabs[0], tabs[1:]
+
+        def change():
+            for tab in rest:
+                self.store.add_to_split(base, tab, MAX_PANES)
+            self.activate_tab(base)
+        motion.crossfade(self.centralWidget(), self.content, change)
+
+    def folder_from(self, tabs):
+        name, ok = QInputDialog.getText(self, "New Folder", f"Name for a folder of {len(tabs)} tabs:")
+        if not ok or not name.strip():
+            return
+        self.sidebar.clear_marks()
+        folder = self.store.add_folder(self.store.active_space, name.strip())
+        for tab in tabs:
+            if self.store.locate(tab):
+                self.move_tab(tab, PINNED, None, folder)
 
     def go_home(self, tab):
         """Back to the page a pinned tab or favorite was pinned at."""
@@ -1749,6 +1839,9 @@ class MainWindow(QMainWindow):
             self._shift_alone = event.key() == Qt.Key.Key_Shift
             if event.key() == Qt.Key.Key_Escape and self.peek.isVisible() and self._zap_tab is None:
                 self.peek.close_peek()
+                return True
+            if event.key() == Qt.Key.Key_Escape and self.sidebar.marked:
+                self.sidebar.clear_marks()
                 return True
         elif kind == QEvent.Type.KeyRelease and event.key() == Qt.Key.Key_Shift and not event.isAutoRepeat():
             if self._shift_alone and self._hovered_link:

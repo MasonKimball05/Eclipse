@@ -541,10 +541,18 @@ class SplitDropZone(QWidget):
         self.update()
 
     def dropEvent(self, event):
+        from .sidebar import dragged_tabs
+        from .split import MAX_PANES  # (split.py imports this module)
         tab = self._tab(event)
         self.activate(False)
-        if tab is not None:
-            event.acceptProposedAction()
+        if tab is None:
+            return
+        event.acceptProposedAction()
+        current = self.browser.current_tab
+        together = [t for t in dragged_tabs(self.browser, event) if t is not current]
+        if together and current is not None:  # several picked tabs: beside the one you're on
+            QTimer.singleShot(0, lambda: self.browser.split_tabs([current, *together][:MAX_PANES]))
+        else:
             QTimer.singleShot(0, lambda: self.browser.add_to_split(tab))
 
     def paintEvent(self, event):

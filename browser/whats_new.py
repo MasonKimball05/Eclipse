@@ -8,12 +8,13 @@ from . import brand
 from .motion import FadesIn
 from .theme import stylesheet
 
-EDITION = 5
+EDITION = 6
 SETTING = "whats_new_seen"
 
 NOTES = """
 ## Lately
 
+- **Several tabs at once**: ⌘-click or ⇧-click tabs, then drag them anywhere together, or right-click to split, pin, file, move or close them.
 - **Screenshots**: ⌥⇧⌘4 copies what's on screen; ⌥⇧⌘3 saves the whole page, top to bottom.
 - **Share…** (File menu, or right-click a tab): AirDrop a page to your phone, or send it to Messages or Mail.
 - **Copy Links** of a folder or Today's tabs as a Markdown list (right-click the folder, or the archive button).

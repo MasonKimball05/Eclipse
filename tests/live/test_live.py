@@ -392,12 +392,14 @@ def test_picking_an_app_icon_changes_the_dock_icon(window):
     settings.close()
 
 
-def _drag_event(kind, section, y, tab):
+def _drag_event(kind, section, y, tab, together=()):
     from PyQt6.QtCore import QMimeData
     from PyQt6.QtGui import QDragMoveEvent, QDropEvent
-    from browser.sidebar import TAB_MIME
+    from browser.sidebar import TAB_MIME, TABS_MIME
     mime = QMimeData()
     mime.setData(TAB_MIME, tab.id.encode())
+    if together:
+        mime.setData(TABS_MIME, ",".join(t.id for t in together).encode())
     cls = QDragMoveEvent if kind == "move" else QDropEvent
     event = cls(QPointF(60, y) if cls is QDropEvent else QPoint(60, int(y)), Qt.DropAction.MoveAction, mime,
                 Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
@@ -911,3 +913,97 @@ def test_copy_links_and_share(window, site):
     window.copy_links(folder.children)
     assert QApplication.clipboard().text() == f"- [{a.label}]({a.url})"
     assert macos.share_picker(b.url)  # the share menu has something to share (showing it would take focus)
+
+
+def test_several_tabs_picked_with_command_and_shift_click(window, site, monkeypatch):
+    from PyQt6.QtTest import QTest
+    tabs = [open_page(window, f"{site}/index.html?{i}") for i in range(5)]
+    sidebar = window.sidebar
+    rows = {id(r.tab): r for r in sidebar.today.rows}
+    order = [r.tab for r in sidebar.today.rows if any(r.tab is t for t in tabs)]
+    command, shift = Qt.KeyboardModifier.ControlModifier, Qt.KeyboardModifier.ShiftModifier
+
+    def click(tab, mods=Qt.KeyboardModifier.NoModifier):
+        QTest.mouseClick(rows[id(tab)], Qt.MouseButton.LeftButton, mods, QPoint(60, 17))
+    click(order[0])
+    assert window.current_tab is order[0]
+    click(order[2], command)  # the tab you're on, and this one
+    assert sidebar.marked == [order[0], order[2]] and window.current_tab is order[0]
+    click(order[4], shift)    # and everything down to here
+    assert [t for t in order if t in sidebar.marked] == [order[0], order[2], order[3], order[4]]
+    assert rows[id(order[3])].property("marked") is True and rows[id(order[1])].property("marked") is not True
+    click(order[2], command)  # taken back out
+    assert order[2] not in sidebar.marked
+    QTest.keyClick(window, Qt.Key.Key_Escape)
+    assert sidebar.marked == []
+
+    saved = {}
+    window.toast = lambda text, action=None, label="Undo": saved.update(text=text, action=action)
+    click(order[1], command)  # (with the tab you're on, order[0])
+    click(order[3], shift)
+    window.close_tabs(list(sidebar.marked))
+    assert saved["text"] == "Closed 4 tabs" and sidebar.marked == []
+    assert [t for t in order if window.store.locate(t)] == [order[4]]
+    assert window.current_tab is order[4]
+    saved["action"]()  # Undo: the same four, in the same order, on top
+    today = [t.url for t in window.store.active_space.today[:4]]
+    assert today == [t.url for t in order[:4]]
+
+    below = window._tabs_below(window.store.active_space.today[0], window.store.active_space)
+    assert [t.url for t in below[:2]] == [order[1].url, order[2].url]
+
+    first, second = window.store.active_space.today[:2]
+    monkeypatch.setattr("browser.window.QInputDialog.getText", lambda *a, **k: ("Reading", True))
+    window.folder_from([first, second])
+    folder = next(f for f in window.store.active_space.pinned if getattr(f, "name", "") == "Reading")
+    assert folder.children == [first, second]
+
+
+def test_picked_tabs_are_dragged_together(window, site):
+    from PyQt6.QtTest import QTest
+    from browser.sidebar import dragged_together, stack_picture
+    a, b, c, d, e = (open_page(window, f"{site}/index.html?{i}") for i in "abcde")
+    pause(0.4)
+    sidebar = window.sidebar
+    today, pinned = sidebar.today, sidebar.pinned
+    assert [r.tab for r in today.rows] == [e, d, c, b, a]
+    rows = {id(r.tab): r for r in today.rows}
+    window.activate_tab(d)
+    sidebar.mark(b)  # d (the tab you're on) and b
+    together = dragged_together(rows[id(b)])
+    assert [r.tab for r in together] == [d, b]  # in sidebar order, whichever one you grab
+    assert dragged_together(rows[id(c)]) == []  # grabbing a tab that isn't picked drags just that one
+    picture = stack_picture(rows[id(b)], 2)
+    assert picture.width() > rows[id(b)].grab().width()  # the stack, with the count
+
+    # A plain click on a picked tab waits for the release (it may be a drag), then goes to it
+    QTest.mousePress(rows[id(b)], Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(60, 17))
+    assert len(sidebar.marked) == 2
+    QTest.mouseRelease(rows[id(b)], Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(60, 17))
+    assert sidebar.marked == [] and window.current_tab is b
+
+    window.activate_tab(d)
+    sidebar.mark(b)
+    for row in together:
+        today.lift(row)
+    assert wait_until(lambda: all(r.parentWidget().height() == 0 for r in together), 1)  # both fold away
+    _drag_event("move", pinned, 10, b, [d, b])
+    _drag_event("drop", pinned, 10, b, [d, b])
+    assert wait_until(lambda: [r.tab for r in pinned.rows] == [d, b], 2)
+    assert wait_until(lambda: [r.tab for r in today.rows] == [e, c, a], 2)
+    assert sidebar.marked == []
+
+    # Back into Today, between e and c
+    window.activate_tab(d)
+    sidebar.mark(b)
+    rows = {id(r.tab): r for r in today.rows}
+    _drag_event("drop", today, rows[id(c)].geometry().top() + 4, d, [d, b])
+    assert wait_until(lambda: [r.tab for r in today.rows] == [e, d, b, c, a], 2)
+
+    # Onto the page: beside the tab you're on, in Split View
+    window.activate_tab(e)
+    sidebar.mark(c)
+    sidebar.mark(a)
+    window.content.split_drop.activate(True)
+    _drag_event("drop", window.content.split_drop, 50, c, [e, c, a])
+    assert wait_until(lambda: [t.url for t in window.store.split_of(e) or []] == [e.url, c.url, a.url], 2)
