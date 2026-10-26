@@ -21,14 +21,14 @@ from PyQt6.QtWidgets import (QApplication, QColorDialog, QDialog, QFileDialog,
 
 import qtawesome as qta
 
-from . import arc_import, backup, brand, clean_links, dark_pages, macos, motion, spelling, storage
+from . import arc_import, backup, brand, clean_links, dark_pages, macos, motion, screenshots, spelling, storage
 from .adblock import AdBlocker
 from .ai import Claude, page_block
 from .browse import BrowseForMe, PageReader, answer_path, js_set, new_run_id, render_page
 from .boosts import ZAP_DONE, ZAP_MESSAGE, ZAP_SCRIPT, Boost, BoostEditor, BoostManager, site_of
 from .command_bar import CUSTOM_SETTING, CommandBar, use_custom_sites
 from .content import ContentFrame
-from .downloads import BrowserDownload, DownloadSettings, DownloadsWindow, ytdlp_settings
+from .downloads import BrowserDownload, DownloadSettings, DownloadsWindow, reveal_in_finder, ytdlp_settings
 from .ext.host import STORE_MESSAGE, ExtensionHost
 from .ext.ui import ExtensionPopup, Installer, extensions_menu
 from .ext.updates import Updater
@@ -143,6 +143,7 @@ class MainWindow(QMainWindow):
         self._zap_tab: Tab | None = None
         self._tidy_undo = None  # (space, Today's top-level nodes before the last Tidy)
         self._last_easel = None  # where Capture (⇧⌘2) puts things
+        self._page_shot = None   # a whole-page screenshot being taken
         self._printing = None  # (view, printer) while a page prints
         self._browse_runs: set = set()
         self.floating_sidebar = FloatingSidebar(self)  # the hidden sidebar, out over the page on hover
@@ -740,6 +741,79 @@ class MainWindow(QMainWindow):
             QApplication.clipboard().setText(markdown_link(tab.label, clean_links.for_copy(tab.url, self.store.settings)))
             self.toast("Copied as a Markdown link")
 
+    def copy_links(self, tabs):
+        """A Markdown list of links, one per tab: a folder's, Today's, a Space's."""
+        tabs = [t for t in tabs if t.url.startswith(("http://", "https://", "file:"))]
+        if not tabs:
+            self.toast("There are no links to copy")
+            return
+        settings = self.store.settings
+        QApplication.clipboard().setText("\n".join(
+            f"- {markdown_link(t.label, clean_links.for_copy(t.url, settings))}" for t in tabs))
+        self.toast(f"Copied {len(tabs)} link{'s' if len(tabs) != 1 else ''}")
+
+    def copy_today_links(self):
+        self.copy_links(walk_tabs(self.store.active_space.today))
+
+    def copy_space_links(self):
+        space = self.store.active_space
+        self.copy_links([*walk_tabs(space.pinned), *walk_tabs(space.today)])
+
+    def share_page(self, tab=None):
+        """macOS's share menu for the page: AirDrop it to your phone, or send it to Messages, Mail, Notes…"""
+        tab = tab or self.current_tab
+        if tab is None or not tab.url.startswith(("http://", "https://")):
+            self.toast("Open a web page to share it")
+            return
+        pill = self.sidebar.url_pill
+        if pill.isVisible() and pill.window() is self:
+            anchor = QRect(pill.mapTo(self, QPoint(0, 0)), pill.size())
+        else:  # (the sidebar's hidden: from the top of the page)
+            anchor = QRect(self.content.mapTo(self, QPoint(self.content.width() // 2, 0)), QSize(1, 1))
+        if not macos.share(self, clean_links.for_copy(tab.url, self.store.settings), anchor):
+            self.toast("Sharing isn't available here")
+
+    # --- Screenshots -------------------------------------------------------------------------------
+
+    def copy_screenshot(self):
+        view = self._current_view()
+        if view is None:
+            self.toast("Screenshots work on web pages")
+            return
+        QApplication.clipboard().setImage(screenshots.visible(view))
+        self.toast("Copied a screenshot of what's on screen")
+
+    def save_page_screenshot(self):
+        """The whole page, top to bottom, as a PNG in your downloads folder."""
+        view, tab = self._current_view(), self.current_tab
+        if view is None:
+            self.toast("Screenshots work on web pages")
+            return
+        if self._page_shot is not None and not sip.isdeleted(self._page_shot):
+            self.toast("Still taking the last screenshot")
+            return
+        shot = self._page_shot = screenshots.PageShot(view)
+        name = safe_filename(tab.label if tab else "")
+        shot.done.connect(lambda image, cut_off: self._save_screenshot(image, cut_off, name))
+        shot.failed.connect(self._screenshot_failed)
+        self.toast("Taking a screenshot of the whole page…")
+
+    def _screenshot_failed(self, message):
+        self._page_shot = None
+        self.toast(message)
+
+    def _save_screenshot(self, image, cut_off, name):
+        self._page_shot = None
+        folder = Path(ytdlp_settings(self.store)["folder"]).expanduser()
+        path, n = folder / f"{name}.png", 2
+        while path.exists():
+            path, n = folder / f"{name} {n}.png", n + 1
+        if not image.save(str(path), "PNG"):
+            self.toast("Couldn't save the screenshot")
+            return
+        note = " (the top of it: the page is very long)" if cut_off else ""
+        self.toast(f"Saved {path.name}{note}", lambda: reveal_in_finder(str(path)), "Show")
+
     # --- Downloads & yt-dlp --------------------------------------------------------------------
 
     @property
@@ -1198,6 +1272,7 @@ class MainWindow(QMainWindow):
         self._act(menu, "ph.folder" if folder.expanded else "ph.folder-open",
                   "Collapse" if folder.expanded else "Expand", lambda: self.toggle_folder(folder))
         self._act(menu, "ph.folder-plus", "New Folder…", self.new_folder)
+        self._act(menu, "ph.list-bullets", "Copy Links", lambda: self.copy_links(walk_tabs(folder.children)))
         if folder.live:
             self._act(menu, "ph.arrows-clockwise", "Refresh Now", lambda: self.live_folders.refresh(
                 folder, lambda error: self.toast(f"Couldn't update “{folder.name}”: {error}" if error
@@ -1323,6 +1398,8 @@ class MainWindow(QMainWindow):
         menu = self._menu()
         self._act(menu, "ph.link", "Copy Link", lambda: self.copy_url(tab))
         self._act(menu, "ph.link-simple", "Copy as Markdown Link", lambda: self.copy_markdown_link(tab))
+        if tab.url.startswith(("http://", "https://")):
+            self._act(menu, "ph.share", "Share…", lambda: self.share_page(tab))
         if not is_note(tab.url) and not is_easel(tab.url):  # two editors on one file would fight over it
             self._act(menu, "ph.copy", "Duplicate", lambda: self.open_url(tab.url))
         self._act(menu, "ph.download-simple", "Download Video…", lambda: self.download_video(tab))
@@ -2304,6 +2381,7 @@ class MainWindow(QMainWindow):
             empty.setEnabled(False)
         menu.addSeparator()
         self._act(menu, "ph.books", "Show All in Library…", lambda: self.open_library("archive"))
+        self._act(menu, "ph.list-bullets", "Copy Links of Today's Tabs", self.copy_today_links)
         after = self._submenu(menu, "ph.clock", "Archive Today Tabs After")
         current = self.store.settings.get("archive_after_hours", 12)
         for hours, label in ARCHIVE_CHOICES:
@@ -2327,6 +2405,11 @@ class MainWindow(QMainWindow):
             ("Print…", "ph.printer", self.print_page),
             ("Save as PDF", "ph.file-pdf", self.save_pdf),
             ("Save Page As", "ph.floppy-disk", self.save_page),
+            ("Share Page (AirDrop, Messages, Mail…)", "ph.share", self.share_page),
+            ("Copy Screenshot of What's on Screen", "ph.camera", self.copy_screenshot),
+            ("Save Screenshot of the Whole Page", "ph.camera", self.save_page_screenshot),
+            ("Copy Links of Today's Tabs", "ph.list-bullets", self.copy_today_links),
+            ("Copy Links of All Tabs in This Space", "ph.list-bullets", self.copy_space_links),
             ("Pin / Unpin Tab", "ph.push-pin", self.toggle_pin),
             ("Add / Remove Favorite", "ph.star", self.toggle_favorite),
             ("Clear Today's Tabs", "ph.archive", self.clear_today),
@@ -2417,6 +2500,9 @@ class MainWindow(QMainWindow):
         add(file, "Print…", "Ctrl+P", self.print_page)
         add(file, "Save as PDF…", "Ctrl+Alt+P", self.save_pdf)
         add(file, "Save Page As…", "Ctrl+Shift+S", self.save_page)
+        add(file, "Share…", "", self.share_page)
+        add(file, "Copy Screenshot", "Ctrl+Alt+Shift+4", self.copy_screenshot)
+        add(file, "Save Screenshot of Whole Page", "Ctrl+Alt+Shift+3", self.save_page_screenshot)
         add(file, "Download Settings…", "", self.download_settings)
         file.addSeparator()
         add(file, "Import from Arc…", "", self.import_from_arc)

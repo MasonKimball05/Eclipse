@@ -8,12 +8,15 @@ from . import brand
 from .motion import FadesIn
 from .theme import stylesheet
 
-EDITION = 4
+EDITION = 5
 SETTING = "whats_new_seen"
 
 NOTES = """
 ## Lately
 
+- **Screenshots**: ⌥⇧⌘4 copies what's on screen; ⌥⇧⌘3 saves the whole page, top to bottom.
+- **Share…** (File menu, or right-click a tab): AirDrop a page to your phone, or send it to Messages or Mail.
+- **Copy Links** of a folder or Today's tabs as a Markdown list (right-click the folder, or the archive button).
 - **Dark websites** (Settings → General): pages that only come in light are darkened. Leave a site light
   from the shield in the address bar.
 - **Tabs keep their place**: a tab that sleeps, or comes back after a restart, reopens where you'd scrolled to.

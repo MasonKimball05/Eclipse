@@ -174,6 +174,47 @@ def set_dock_badge(text: str):
         _cf.CFRelease(label)
 
 
+# --- Share menu --------------------------------------------------------------------------------
+
+_NS_MIN_Y_EDGE, _NS_MAX_Y_EDGE = 1, 3
+_picker = None  # the share menu on screen: it has to outlive the call that shows it
+
+
+def share_picker(url: str):
+    """An NSSharingServicePicker for a link (AirDrop, Messages, Mail, Notes, Reminders…), or None."""
+    if _objc is None:
+        return None
+    text = _cfstr(url)
+    link = _send(_objc.objc_getClass(b"NSURL"), "URLWithString:", text, argtypes=(ctypes.c_void_p,))
+    _cf.CFRelease(text)
+    if not link:
+        return None  # (not a URL macOS accepts)
+    items = _send(_objc.objc_getClass(b"NSArray"), "arrayWithObject:", link, argtypes=(ctypes.c_void_p,))
+    picker = _send(_objc.objc_getClass(b"NSSharingServicePicker"), "alloc")
+    return _send(picker, "initWithItems:", items, argtypes=(ctypes.c_void_p,)) if picker else None
+
+
+def share(widget, url: str, anchor) -> bool:
+    """Show macOS's share menu for `url` under `anchor` (a QRect in `widget`'s window)."""
+    global _picker
+    if not _cocoa():
+        return False
+    picker = share_picker(url)
+    if not picker:
+        return False
+    if _picker:
+        _send(_picker, "release", restype=None)
+    _picker = picker
+    view = ctypes.c_void_p(int(widget.window().winId()))
+    flipped = _send(view, "isFlipped", restype=ctypes.c_bool)
+    y = anchor.y() if flipped else widget.window().height() - anchor.y() - anchor.height()
+    rect = _CGRect(anchor.x(), y, anchor.width(), anchor.height())
+    edge = _NS_MAX_Y_EDGE if flipped else _NS_MIN_Y_EDGE  # below the anchor, either way up
+    _send(picker, "showRelativeToRect:ofView:preferredEdge:", rect, view, edge, restype=None,
+          argtypes=(_CGRect, ctypes.c_void_p, ctypes.c_ulong))
+    return True
+
+
 # --- Busy: keep App Nap away while pages load ----------------------------------------------------
 #
 # macOS naps apps whose windows are hidden behind others, and Qt WebEngine's pages then load at a

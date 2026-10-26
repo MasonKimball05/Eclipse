@@ -870,3 +870,44 @@ def test_dark_websites_turn_on_at_once_and_a_site_can_stay_light(window, site):
     window.store.settings[dark_pages.SETTING] = False
     window.apply_dark_pages()
     assert wait_until(lambda: colour(fresh) > 200, 2)
+
+
+def test_whole_page_screenshot_is_stitched_without_repeating_the_header(window, site, tmp_path):
+    window.store.settings["ytdlp"] = {"folder": str(tmp_path)}
+    tab = open_page(window, f"{site}/shot.html")
+    run_js(tab.view, "scrollTo(0, 700)")
+    pause(0.3)
+    saved = {}
+    window.toast = lambda text, action=None, label="Undo": saved.update(text=text, action=action)
+    window.save_page_screenshot()
+    assert wait_until(lambda: saved.get("text", "").startswith("Saved"), 15)
+    from PyQt6.QtGui import QImage
+    image = QImage(str(tmp_path / "Tall page.png"))
+    ratio = round(image.width() / tab.view.width())
+    assert abs(image.height() - 3000 * ratio) <= ratio  # every band, top to bottom
+
+    def at(y):
+        c = image.pixelColor(image.width() // 2, y * ratio)
+        return c.red() > 200, c.green() > 200, c.blue() > 200
+    assert at(10) == (True, False, False)        # the fixed header, once, at the top
+    assert at(100) == (False, False, True)       # blue
+    assert at(900) == (False, True, False)       # green, with no header painted over it at a frame's top
+    for y in range(600, 3000, 50):
+        assert at(y) != (True, False, False), y  # the header never repeats
+    assert at(2990) == (True, False, True)       # magenta: the very bottom
+    assert wait_until(lambda: run_js(tab.view, "scrollY") == 700, 2)  # put back where it was
+    assert run_js(tab.view, "getComputedStyle(document.querySelector('header')).visibility") == "visible"
+
+
+def test_copy_links_and_share(window, site):
+    from browser import macos
+    from browser.models import Folder
+    a = open_page(window, f"{site}/index.html")
+    b = open_page(window, f"{site}/links.html")
+    window.copy_today_links()
+    text = QApplication.clipboard().text().splitlines()
+    assert f"- [{b.label}]({b.url})" in text and f"- [{a.label}]({a.url})" in text
+    folder = Folder("Reading", [a])
+    window.copy_links(folder.children)
+    assert QApplication.clipboard().text() == f"- [{a.label}]({a.url})"
+    assert macos.share_picker(b.url)  # the share menu has something to share (showing it would take focus)
