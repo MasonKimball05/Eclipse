@@ -5,12 +5,23 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QDialogButtonBox, QTextBrowser, QVBoxLayout, QWidget
 
 from . import brand
+from .motion import FadesIn
 from .theme import stylesheet
 
-EDITION = 3
+EDITION = 4
 SETTING = "whats_new_seen"
 
 NOTES = """
+## Lately
+
+- **Dark websites** (Settings → General): pages that only come in light are darkened. Leave a site light
+  from the shield in the address bar.
+- **Tabs keep their place**: a tab that sleeps, or comes back after a restart, reopens where you'd scrolled to.
+- **Undo Clear**: the message after Clear has an Undo button for a few seconds.
+- **Drag tabs** and the rows part to show where they'll land; tabs slide in and out as they open and close.
+- **App icon** (Settings → General): twelve looks of the eclipse.
+- Drag finished downloads straight into other apps; the hidden sidebar slides out more reliably.
+
 ## Meet Eclipse
 
 The browser has a proper name and icon now. Your Spaces, tabs, sign-ins and settings are all where
@@ -62,7 +73,7 @@ they were. Rebuild the app (`./run.sh --build-app`) for the new icon in the Dock
 """
 
 
-class WhatsNew(QWidget):
+class WhatsNew(FadesIn, QWidget):
     def __init__(self, browser):
         super().__init__(None, Qt.WindowType.Window)
         self.setWindowTitle(f"What's New in {brand.NAME}")

@@ -88,8 +88,9 @@ def _faded(color, alpha):
     return c
 
 
-def icon_image(size: int = 1024, look: str | None = None) -> QImage:
-    """The app icon: the moon in front of the sun, the corona glowing round it, on a night-sky tile."""
+def icon_image(size: int = 1024, look: str | None = None, tile: bool = True) -> QImage:
+    """The app icon: the moon in front of the sun, the corona glowing round it, on a night-sky tile.
+    tile=False: just the eclipse, on nothing (for drawing it on a page)."""
     o = LOOKS[look or LOOK]
     corona, radius, spread = o.get("corona", "#ffffff"), o.get("radius", 230), o.get("spread", 1.75)
     image = QImage(size, size, QImage.Format.Format_ARGB32_Premultiplied)
@@ -100,14 +101,15 @@ def icon_image(size: int = 1024, look: str | None = None) -> QImage:
     p.scale(size / 1024, size / 1024)  # drawn on Apple's 1024 grid
 
     # An 824px rounded square centred in the canvas, as macOS icons are
-    tile = QRectF(100, 100, 824, 824)
+    card = QRectF(100, 100, 824, 824)
     shape = QPainterPath()
-    shape.addRoundedRect(tile, 185, 185)
-    sky = QLinearGradient(tile.topLeft(), tile.bottomRight())
+    shape.addRoundedRect(card, 185, 185)
+    sky = QLinearGradient(card.topLeft(), card.bottomRight())
     sky.setColorAt(0, QColor(o["sky"][0]))
     sky.setColorAt(1, QColor(o["sky"][1]))
-    p.fillPath(shape, sky)
-    p.setClipPath(shape)
+    if tile:
+        p.fillPath(shape, sky)
+        p.setClipPath(shape)
     small = size <= 64  # (a Dock badge or a menu: a touch bigger, with a bolder rim, so it still reads)
     r = radius * (1.08 if small else 1.0)
     sun = QPointF(512, 512)

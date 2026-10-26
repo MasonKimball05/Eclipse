@@ -10,10 +10,11 @@ from PyQt6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDialo
                              QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
                              QPushButton, QScrollArea, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
-from . import brand, clean_links, macos, spelling
+from . import brand, clean_links, dark_pages, macos, spelling
 from .command_bar import CUSTOM_SETTING, SEARCH_ENGINES, use_custom_sites
 from .downloads import DownloadSettingsForm, find_tool
 from .ext.ui import ExtensionsPage
+from .motion import FadesIn
 from .permissions import set_capture_rule
 from .theme import quiet_scrollbars, stylesheet
 from .webview import DEFAULT_PROFILE
@@ -62,7 +63,7 @@ def _combo(options, current):
     return box
 
 
-class SettingsWindow(QWidget):
+class SettingsWindow(FadesIn, QWidget):
     def __init__(self, browser):
         super().__init__(None, Qt.WindowType.Window)
         self.browser = browser
@@ -246,6 +247,13 @@ class SettingsWindow(QWidget):
         self.store.settings[key] = value
         self.store.schedule_save()
 
+    def _dark_switch(self):
+        box = QCheckBox()
+        box.setChecked(self.store.settings.get(dark_pages.SETTING, False))
+        box.toggled.connect(lambda on: (self._setting(dark_pages.SETTING, on), self.browser.apply_dark_pages()))
+        self.dark_box = box
+        return box
+
     def _icon_choices(self):
         """Every look of the eclipse, to pick the app's icon from."""
         box = QWidget()
@@ -275,6 +283,7 @@ class SettingsWindow(QWidget):
         from PyQt6.QtWidgets import QApplication
         self._setting(brand.SETTING, look)
         brand.apply_icon(QApplication.instance(), self.store.settings)
+        self.browser.content.empty.show_mark(self.store.settings)
 
     def _toggle_spelling(self, on):
         lang = spelling.language(self.store.settings.get("spell_check_language"))
@@ -384,6 +393,9 @@ class SettingsWindow(QWidget):
                         self.shortcut_list]),
             self._card([self._row("Look", "Each Space has its own name, icon, colour and theme. "
                                           "Right-click a Space to change it.", appearance),
+                        self._row("Dark websites", "Pages that only come in light are darkened (images stay as "
+                                                   "they are). Leave a site light from the shield in the address "
+                                                   "bar.", self._dark_switch()),
                         self._row("App icon", "Changes in the Dock right away; Finder and Launchpad show it "
                                               "after the next app build.", None),
                         self._icon_choices()]),
@@ -417,8 +429,9 @@ class SettingsWindow(QWidget):
         return self._stack(self._card([
             self._row("Archive Today tabs after", "Unpinned tabs you haven't used for this long move to the "
                                                   "archive (the box icon at the bottom of the sidebar).", archive),
-            self._row("Put idle tabs to sleep after", "Sleeping tabs free their memory and reload when you click "
-                                                      "them. Tabs playing audio never sleep.", sleep),
+            self._row("Put idle tabs to sleep after", "Sleeping tabs free their memory and reload, where you'd "
+                                                      "scrolled to, when you click them. Tabs playing audio never "
+                                                      "sleep.", sleep),
             self._row("Peek", "Links opened from pinned tabs and favorites float over the page instead of "
                               "opening a new tab.", peek),
             self._row("Mini player", "Switch away from a tab that's playing a video and it keeps playing in a "

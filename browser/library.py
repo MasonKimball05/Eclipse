@@ -9,10 +9,11 @@ from pathlib import Path
 import qtawesome as qta
 from PyQt6.QtCore import QRectF, QSize, Qt, QUrl
 from PyQt6.QtGui import QColor, QFont, QGuiApplication, QPainter
-from PyQt6.QtWidgets import (QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
-                             QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+                             QPushButton, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
 from . import clean_links, storage
+from .motion import FadesIn
 from .models import display_host
 from .theme import letter_icon, quiet_scrollbars, stylesheet
 
@@ -121,7 +122,7 @@ class EntryDelegate(QStyledItemDelegate):
         painter.restore()
 
 
-class LibraryWindow(QWidget):
+class LibraryWindow(FadesIn, QWidget):
     def __init__(self, browser):
         super().__init__(None, Qt.WindowType.Window)
         self.browser = browser
@@ -135,14 +136,20 @@ class LibraryWindow(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
+        # The sections, in the same side panel as Settings (clear of the traffic lights)
+        side = QFrame()
+        side.setObjectName("SettingsSide")
+        side.setFixedWidth(220)
+        sv = QVBoxLayout(side)
+        sv.setContentsMargins(10, 40, 0, 0)
         self.nav = QListWidget()
         self.nav.setObjectName("SettingsNav")
-        self.nav.setFixedWidth(210)
         self.nav.setIconSize(QSize(16, 16))
         for _, _, title in SECTIONS:
             self.nav.addItem(title)
         self.nav.currentRowChanged.connect(lambda row: self.show_section(SECTIONS[row][0]))
-        layout.addWidget(self.nav)
+        sv.addWidget(self.nav, 1)
+        layout.addWidget(side)
 
         right = QWidget()
         right.setObjectName("SettingsBody")

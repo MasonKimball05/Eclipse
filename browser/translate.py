@@ -158,6 +158,8 @@ class Translator(QObject):
         view.page().runJavaScript(COLLECT, WORLD, lambda found, v=view: self._collected(v, found, language))
 
     def _collected(self, view, found, language):
+        if found is None:
+            return  # (the page closed while it was being read: Qt answers with nothing)
         texts = (found or {}).get("texts") or []
         if not texts:
             self.browser.toast("There's no text on this page to translate")
@@ -168,7 +170,7 @@ class Translator(QObject):
         if id(view) not in self._watched:
             self._watched.add(id(view))
             view.loadStarted.connect(lambda v=view: self.forget(v))
-            view.destroyed.connect(lambda _=None, key=id(view): self._watched.discard(key))
+            view.destroyed.connect(lambda _=None, key=id(view): self._drop(key))
         self.browser.toast(f"Translating into {language}…")
         self._changed(view)
         for _ in range(min(PARALLEL, len(job.groups))):
@@ -216,6 +218,16 @@ class Translator(QObject):
             self._changed(job.view)
         else:
             self._send_next(job)
+
+    def _drop(self, key):
+        """A page closed mid-translation: stop its remaining requests (each one costs) and forget it."""
+        self._watched.discard(key)
+        self._translated.discard(key)
+        job = self._jobs.pop(key, None)
+        if job is not None:
+            job.cancelled = True
+            for request in job.requests:
+                request.cancel()
 
     def _cancel(self, view):
         job = self._jobs.pop(id(view), None)

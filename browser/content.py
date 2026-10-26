@@ -109,9 +109,17 @@ class FindBar(QFrame):
         btn.clicked.connect(slot)
         return btn
 
+    TOP = 12  # where it sits, below the page's top edge
+
     def open(self):
         for btn in (self.prev_btn, self.next_btn, self.close_btn):
             btn.setIcon(qta.icon(btn.property("icon_name"), color=self.browser.theme.panel_text))
+        if not self.isVisible() or getattr(self, "_closing", False):
+            # It slides down into place from just above the page
+            self._closing = False
+            if not self.isVisible():
+                self.move(self.x(), -self.height())
+            motion.animate(self, self.y(), self.TOP, lambda y: self.move(self.x(), round(y)), motion.FAST + 20)
         self.show()
         self.raise_()
         self.input.setFocus()
@@ -120,9 +128,15 @@ class FindBar(QFrame):
 
     def close_bar(self):
         self._cancel()
-        self.answer.hide()
-        self.hide()
         self.browser.find_in_page("")
+        self._closing = True
+
+        def gone():
+            if self._closing:
+                self._closing = False
+                self.answer.hide()
+                self.hide()
+        motion.animate(self, self.y(), -self.height() - 4, lambda y: self.move(self.x(), round(y)), motion.FAST, gone)
         self.count.setText("")
 
     def find(self, backward=False):
@@ -264,16 +278,21 @@ class PreviewCard(QFrame):
 
 
 class EmptyState(QWidget):
-    """What an empty page area shows: the few keys that get you anywhere, quietly."""
+    """What an empty page area shows: the eclipse, faintly, and the few keys that get you anywhere."""
 
-    HINTS = (("⌘T", "Search or open a site"), ("⌘L", "Change this tab's address"),
+    HINTS = (("⌘T", "Search or open a site"), ("⇧⌘T", "Reopen a closed tab"),
              ("⇧⌘P", "New private window"), ("⌘/", "All keyboard shortcuts"))
 
-    def __init__(self):
+    def __init__(self, settings=None):
         super().__init__()
         self.setObjectName("EmptyState")
         layout = QVBoxLayout(self)
         layout.addStretch(1)
+        self.mark = QLabel()
+        self.mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.show_mark(settings or {})
+        layout.addWidget(self.mark)
+        layout.addSpacing(26)
         grid = QWidget()
         rows = QVBoxLayout(grid)
         rows.setSpacing(10)
@@ -297,6 +316,23 @@ class EmptyState(QWidget):
         layout.addLayout(center)
         layout.addStretch(1)
 
+    def show_mark(self, settings):
+        """The eclipse from the app's icon (the look picked in Settings), without its tile, at half
+        strength: there, but quiet."""
+        from PyQt6.QtGui import QPainter, QPixmap
+        from . import brand
+        ratio = self.devicePixelRatioF() or 2.0
+        size = 96
+        icon = QPixmap.fromImage(brand.icon_image(round(size * ratio), brand.chosen_look(settings), tile=False))
+        faded = QPixmap(icon.size())
+        faded.fill(Qt.GlobalColor.transparent)
+        p = QPainter(faded)
+        p.setOpacity(0.5)
+        p.drawPixmap(0, 0, icon)
+        p.end()
+        faded.setDevicePixelRatio(ratio)
+        self.mark.setPixmap(faded)
+
 
 class ContentFrame(QFrame):
     def __init__(self, browser, parent=None):
@@ -306,7 +342,7 @@ class ContentFrame(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
 
         self.stack = QStackedWidget(self)
-        self.empty = EmptyState()
+        self.empty = EmptyState(browser.store.settings)
         self.stack.addWidget(self.empty)
 
         self.progress = QFrame(self)
@@ -455,7 +491,7 @@ class ContentFrame(QFrame):
         if self.drawer is not None:
             self.drawer.setGeometry(0, self.height() - drawer_h, self.width(), drawer_h)
         w, h = self.width(), self.height()
-        self.find_bar.move(w - self.find_bar.width() - 12, 12)
+        self.find_bar.move(w - self.find_bar.width() - 12, self.find_bar.y() if self.find_bar.isVisible() else FindBar.TOP)
         if self.preview_card.isVisible():
             self.preview_card.reposition()
         positions = {"tl": (0, 0), "tr": (w - RADIUS, 0), "bl": (0, h - RADIUS), "br": (w - RADIUS, h - RADIUS)}

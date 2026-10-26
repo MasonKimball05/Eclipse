@@ -62,6 +62,7 @@ class Tab(QObject):
         self.unread = None                # unread count from the page title ("3", "99+", "•"), not saved
         self.app_unread = None            # the same, from the site's own API (Parliament), not saved
         self.notified = False             # sent a notification you haven't looked at yet
+        self.scroll = None                # {"url", "x", "y"}: where its page was scrolled, to go back to
 
     @property
     def label(self) -> str:
@@ -75,12 +76,17 @@ class Tab(QObject):
         return {
             "id": self.id, "url": self.url, "title": self.title, "home_url": self.home_url,
             "custom_title": self.custom_title, "last_active": self.last_active,
+            **({"scroll": self.scroll} if self.scroll else {}),
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> "Tab":
-        return cls(d.get("url", ""), d.get("title", ""), d.get("home_url"), d.get("custom_title"),
-                   d.get("id"), d.get("last_active"))
+        tab = cls(d.get("url", ""), d.get("title", ""), d.get("home_url"), d.get("custom_title"),
+                  d.get("id"), d.get("last_active"))
+        scroll = d.get("scroll")
+        if isinstance(scroll, dict) and isinstance(scroll.get("y"), (int, float)):
+            tab.scroll = scroll
+        return tab
 
 
 class Folder:

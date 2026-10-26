@@ -5,9 +5,11 @@ import html
 import json
 import re
 
+from PyQt6 import sip
 from PyQt6.QtCore import QObject, Qt, QUrl
 from PyQt6.QtGui import QFont
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
+from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QLabel, QLineEdit,
                              QPlainTextEdit, QPushButton, QVBoxLayout, QWidget)
 
@@ -102,6 +104,7 @@ class AppsUI(QObject):
 
     def show_logs(self, name, title):
         dialog = _dialog(self.browser, f"{title} · Logs", 760)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)  # (shown, not exec'd: nothing reads it after)
         layout = QVBoxLayout(dialog)
         text = QPlainTextEdit()
         text.setReadOnly(True)
@@ -113,6 +116,8 @@ class AppsUI(QObject):
 
         def load():
             def got(lines, error):
+                if sip.isdeleted(text):
+                    return  # (the logs window was closed before they came)
                 if error:
                     text.setPlainText(f"Couldn't read the logs: {error}")
                     return
@@ -159,8 +164,19 @@ class AppsUI(QObject):
             if not choices:
                 self.browser.toast("homebase has no projects")
                 return
-            tab.view.page().runJavaScript(ISSUE_TEXT, 1, lambda found: self._confirm_away(
-                tab, owner, repo, number, found if isinstance(found, dict) else {}, choices, projects))
+            view = tab.view
+            if not isinstance(view, QWebEngineView):
+                self.browser.toast("The issue's tab was closed")  # (closed while homebase answered)
+                return
+
+            def read(found):
+                # (Qt answers even for a page that's been closed — with nothing, mid-teardown: then
+                # there's no dialog to show, and certainly not from inside that teardown)
+                if found is None or tab.view is not view:
+                    return
+                self._confirm_away(tab, owner, repo, number, found if isinstance(found, dict) else {},
+                                   choices, projects)
+            view.page().runJavaScript(ISSUE_TEXT, 1, read)
         hb.projects(got_projects)
 
     def _confirm_away(self, tab, owner, repo, number, found, choices, projects):
@@ -334,7 +350,9 @@ class AppsUI(QObject):
         model.setEditable(True)
         model.addItem(cfg["local_model"])
         model.currentTextChanged.connect(lambda text: text.strip() and self._save("local_model", text.strip()))
-        self.browser.local_ai.models(lambda names: [model.addItem(n) for n in names if n != cfg["local_model"]])
+        # (the answer can come after Settings has closed: then there's nothing to fill in)
+        self.browser.local_ai.models(lambda names: sip.isdeleted(model) or [
+            model.addItem(n) for n in names if n != cfg["local_model"]])
         ai.addRow("Questions answered by", who)
         ai.addRow("Local model", model)
         note = QLabel("For ⌘T questions and Ask on Page (⌘F, then a question). The other one is always a row "

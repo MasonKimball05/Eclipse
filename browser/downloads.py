@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, Q
                              QFileIconProvider, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QProgressBar,
                              QPushButton, QScrollArea, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
+from .motion import FadesIn
 from .theme import quiet_scrollbars, stylesheet
 
 HOMEBREW_BIN = "/opt/homebrew/bin"
@@ -569,7 +570,7 @@ class DownloadSettings(QDialog):
 
 # --- The panel ---------------------------------------------------------------------------------
 
-class DownloadsWindow(QWidget):
+class DownloadsWindow(FadesIn, QWidget):
     def __init__(self, browser):
         super().__init__(None, Qt.WindowType.Window)
         self.browser = browser

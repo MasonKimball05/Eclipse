@@ -190,3 +190,12 @@ def test_space_icons_render_for_symbols_emoji_and_none():
     from browser.models import Space
     for icon in ("ph.planet", "🎮", "", "ph.not-a-real-icon"):
         assert not space_icon(Space("S", "#3b82f6", icon), QColor("white")).isNull()
+
+
+def test_a_tabs_scroll_position_is_saved_and_a_bad_one_ignored():
+    tab = Tab("https://example.com/long", "Long")
+    assert "scroll" not in tab.to_dict()  # (nothing saved for a page at the top)
+    tab.scroll = {"url": "https://example.com/long", "x": 0, "y": 1800}
+    assert Tab.from_dict(tab.to_dict()).scroll == tab.scroll
+    assert Tab.from_dict({"url": "https://example.com", "scroll": "nonsense"}).scroll is None
+    assert Tab.from_dict({"url": "https://example.com", "scroll": {"y": "lots"}}).scroll is None

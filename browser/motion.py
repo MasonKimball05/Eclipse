@@ -152,3 +152,16 @@ def crossfade(host, widget, change, ms=FAST + 40):
         cover.opacity = value
         cover.update()
     animate(cover, 1.0, 0.0, step, ms, lambda: (cover.hide(), cover.deleteLater()))
+
+
+class FadesIn:
+    """Mixin for panel windows (Settings, the Library, Downloads…): a quick fade in when one appears,
+    instead of popping up. It starts see-through before it's ever drawn, so nothing flashes."""
+
+    def setVisible(self, visible):
+        appearing = visible and not self.isVisible() and self.isWindow() and not reduced()
+        if appearing:
+            self.setWindowOpacity(0.0)
+        super().setVisible(visible)
+        if appearing:
+            animate(self, 0.0, 1.0, self.setWindowOpacity, FAST + 30)

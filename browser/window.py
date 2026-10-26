@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (QApplication, QColorDialog, QDialog, QFileDialog,
 
 import qtawesome as qta
 
-from . import arc_import, backup, brand, clean_links, macos, motion, spelling, storage
+from . import arc_import, backup, brand, clean_links, dark_pages, macos, motion, spelling, storage
 from .adblock import AdBlocker
 from .ai import Claude, page_block
 from .browse import BrowseForMe, PageReader, answer_path, js_set, new_run_id, render_page
@@ -340,6 +340,7 @@ class MainWindow(QMainWindow):
 
     def create_view(self, profile=None) -> WebView:
         view = WebView(profile or self.profile)
+        view.page().dark_rule = lambda url: dark_pages.wanted(self.store.settings, url)
         self.extensions.attach_page(view.page())
         self.permissions.attach(view)
         self.swipes.attach(view)
@@ -551,8 +552,38 @@ class MainWindow(QMainWindow):
         if tab is self.current_tab:
             self.content.set_progress(5)
 
+    def _note_scroll(self, tab):
+        """Where its page is scrolled to, kept with the tab: a page that sleeps, or comes back after a
+        restart, reloads at the top otherwise."""
+        view = tab.view
+        if not isinstance(view, QWebEngineView) or not tab.url:
+            return
+        if view.page().lifecycleState() != QWebEnginePage.LifecycleState.Active:
+            return  # (asleep: what it noted before it slept still stands)
+        at = view.page().scrollPosition()
+        tab.scroll = {"url": view.url().toString(), "x": round(at.x()), "y": round(at.y())} if at.y() > 40 or at.x() > 40 else None
+
+    def _put_scroll_back(self, tab):
+        scroll, view = tab.scroll, tab.view
+        if not scroll or not isinstance(view, QWebEngineView):
+            return
+        tab.scroll = None  # (once, on the first load: after that it's wherever you scroll it)
+        if view.url().toString() != scroll.get("url"):
+            return  # it ended up somewhere else
+        x, y = int(scroll.get("x", 0)), int(scroll.get("y", 0))
+        page = view.page()
+        if page.scrollPosition().y() > 40:
+            return  # it scrolled itself (an anchor, the site's own restore): leave it
+        script = f"window.scrollTo({x}, {y})"
+        page.runJavaScript(script)
+        # A page that grows as it loads (images, feeds) may not be tall enough yet: once more, shortly
+        QTimer.singleShot(450, lambda v=view: not sip.isdeleted(v) and v.page().scrollPosition().y() < y - 40
+                          and v.page().runJavaScript(script))
+
     def _on_load_finished(self, tab, ok):
         tab.loading = False
+        if ok and tab.scroll:
+            self._put_scroll_back(tab)
         if ok:
             self.store.record_history(tab.url, tab.title)
         self.page_index.page_loaded(tab, ok)
@@ -755,11 +786,31 @@ class MainWindow(QMainWindow):
 
     # --- Ad blocking ----------------------------------------------------------------------------
 
+    def apply_dark_pages(self):
+        """Dark websites turned on or off (or a site changed): every open page, at once (no reload)."""
+        views = [t.view for t in self.store.all_tabs()]
+        for window in self.private.windows:  # (private windows' tabs, and Little windows' pages, too)
+            views += list(getattr(window, "views", []))
+        views += [getattr(window, "view", None) for window in self._extra_windows]
+        for view in views:
+            if isinstance(view, QWebEngineView) and not sip.isdeleted(view):
+                dark_pages.apply(view.page(), self.store.settings)
+
+    def _set_dark_here(self, host, dark):
+        dark_pages.set_skipped(self.store.settings, host, not dark)
+        self.store.schedule_save()
+        self.apply_dark_pages()
+
     def show_adblock_menu(self, pos):
         tab = self.current_tab
         host = QUrl(tab.url).host() if tab else ""
         blocker = self.adblock
         menu = self._menu()
+        if host and self.store.settings.get(dark_pages.SETTING, False):
+            dark = menu.addAction(f"Dark Pages on {display_host(tab.url)}")
+            dark.setCheckable(True)
+            dark.setChecked(dark_pages.wanted(self.store.settings, tab.url))
+            dark.triggered.connect(lambda on: self._set_dark_here(host, on))
         if host:
             self._site_permissions_menu(menu, tab)
             count = blocker.count_for(tab.url)
@@ -912,6 +963,8 @@ class MainWindow(QMainWindow):
         if space is not None and space.id != self.store.active_space_id:
             self._set_active_space(space)
         previous = self.current_tab
+        if previous is not tab and previous is not None:
+            self._note_scroll(previous)  # (to put it back if it sleeps, or after a restart)
         if (previous is not tab and isinstance(previous and previous.view, QWebEngineView) and previous.view.isVisible()
                 and self.store.settings.get("ctrl_tab", "recent") == "recent"):
             # A thumbnail of the page you're leaving, for the ⌃Tab switcher
@@ -1593,6 +1646,8 @@ class MainWindow(QMainWindow):
         ai = self.assistant() or self.claude
 
         def got_text(text):
+            if tab.view is None:
+                return  # (the tab closed while its text was being read)
             on_request(ai.ask(
                 page_block(tab.label, tab.url, text) +
                 "\n\nUsing the page above, answer the question below in at most 150 words, using Markdown "
@@ -1758,6 +1813,7 @@ class MainWindow(QMainWindow):
             if notifier.state() == QWebEnginePermission.State.Granted:  # asleep, it couldn't notify you
                 continue
             if force or tab.last_active < cutoff:
+                self._note_scroll(tab)
                 page.setLifecycleState(QWebEnginePage.LifecycleState.Discarded)
                 slept += 1
         return slept
@@ -1859,7 +1915,24 @@ class MainWindow(QMainWindow):
         run.partial.connect(lambda body: (state.__setitem__("body", body), update("answer", body)))
         run.finished.connect(finish)
         run.failed.connect(lambda message: finish(state["body"], f"Couldn't finish: {message}"))
+
+        def tab_gone():
+            # Its tab closed (or was archived): stop reading pages and asking Claude for nobody
+            if self.store.locate(tab) is None:
+                self.store.structure_changed.disconnect(tab_gone)
+                if run in self._browse_runs:
+                    self._browse_runs.discard(run)
+                    run.cancel()
+        self.store.structure_changed.connect(tab_gone)
+        run.finished.connect(lambda *_: self._stop_watching(tab_gone))
+        run.failed.connect(lambda *_: self._stop_watching(tab_gone))
         run.start()
+
+    def _stop_watching(self, slot):
+        try:
+            self.store.structure_changed.disconnect(slot)
+        except TypeError:
+            pass  # (already done)
 
     # --- Notes ------------------------------------------------------------------------------------
 
@@ -2452,6 +2525,8 @@ class MainWindow(QMainWindow):
     # --- Shutdown --------------------------------------------------------------------------
 
     def closeEvent(self, event):
+        for tab in self.store.all_tabs():
+            self._note_scroll(tab)
         self.store.window_geometry = bytes(self.saveGeometry().toBase64()).decode()
         self.store.save()
         super().closeEvent(event)

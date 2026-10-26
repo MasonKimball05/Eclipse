@@ -750,3 +750,123 @@ def test_a_little_window_fades_in_and_out(window, site):
     little.close()
     assert not closed and little.isVisible()  # fading out first…
     assert wait_until(lambda: closed, 1.5)  # …then gone
+
+
+def test_command_bar_results_have_text_for_voiceover(window, site):
+    window.store.record_history("https://github.com/", "GitHub")
+    open_page(window, f"{site}/index.html")
+    window.open_command_bar("new")
+    bar = window.command_bar
+    bar.input.setText("git")
+    bar.update_results()
+    texts = [bar.list.item(i).data(Qt.ItemDataRole.AccessibleTextRole) for i in range(bar.list.count())]
+    assert texts and all(texts)
+    bar.close_bar()
+
+
+def test_panels_fade_in_when_they_open(window):
+    window.open_settings("general")
+    panel = window._settings
+    assert panel.windowOpacity() < 0.5  # on its way in
+    assert wait_until(lambda: panel.windowOpacity() == 1.0, 1)
+    window.open_settings("privacy")  # already open: brought forward, no fade again
+    assert panel.windowOpacity() == 1.0
+    panel.close()
+
+
+def test_the_find_bar_slides_down_and_back_up(window, site):
+    open_page(window, f"{site}/article.html")
+    bar = window.content.find_bar
+    window.open_find()
+    assert bar.isVisible() and bar.y() < bar.TOP  # coming down from above the page
+    assert wait_until(lambda: bar.y() == bar.TOP, 1)
+    bar.close_bar()
+    assert bar.isVisible()  # on its way back up…
+    assert wait_until(lambda: not bar.isVisible(), 1)  # …then gone
+    window.open_find()  # and again
+    assert wait_until(lambda: bar.y() == bar.TOP and bar.isVisible(), 1)
+    bar.close_bar()
+
+
+def test_a_tab_keeps_its_place_through_sleep_and_restart(window, site, data_dir, qapp):
+    from browser import storage
+    from browser.models import Store
+    tab = open_page(window, f"{site}/long.html")
+    run_js(tab.view, "window.scrollTo(0, 3000)", 0)
+    pause(0.3)
+    open_page(window, f"{site}/index.html")  # away from it…
+    window.sleep_idle_tabs(force=True)  # …and it sleeps
+    assert wait_until(lambda: window.is_sleeping(tab), 2)
+    window.activate_tab(tab)  # back: it reloads…
+    assert wait_until(lambda: tab.view.page().scrollPosition().y() > 2900, 5)  # …where you were
+    # And after quitting and opening again
+    run_js(tab.view, "window.scrollTo(0, 5000)", 0)
+    pause(0.3)
+    window.close()  # (saves the session)
+    restored = Store(storage.session_path())
+    again = next(t for t in restored.all_tabs() if t.id == tab.id)
+    assert again.scroll and again.scroll["y"] >= 4900 and again.scroll["url"].endswith("long.html")
+
+
+def test_a_restored_tab_opens_where_it_was_left(window, site):
+    tab = open_page(window, f"{site}/long.html")
+    open_page(window, f"{site}/index.html")
+    window._destroy_view(tab)  # as after a restart: no page yet, just what was saved
+    tab.scroll = {"url": f"{site}/long.html", "x": 0, "y": 4000}
+    window.activate_tab(tab)
+    assert wait_until(lambda: tab.view is not None and tab.view.page().scrollPosition().y() > 3900, 6)
+    assert tab.scroll is None  # used once
+
+
+def test_closing_a_browse_for_me_tab_stops_its_search(window, monkeypatch):
+    from PyQt6.QtCore import QObject, pyqtSignal
+    from browser import window as window_module
+
+    class FakeRun(QObject):
+        status, sources_found, partial = pyqtSignal(str), pyqtSignal(list), pyqtSignal(str)
+        finished, failed = pyqtSignal(str, str), pyqtSignal(str)
+        made = []
+
+        def __init__(self, *args):
+            super().__init__()
+            self.cancelled = False
+            FakeRun.made.append(self)
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            self.cancelled = True
+    monkeypatch.setattr(window_module, "BrowseForMe", FakeRun)
+    monkeypatch.setattr(type(window.claude), "available", property(lambda self: True))
+    window.browse_for_me("best espresso grinder")
+    run = FakeRun.made[-1]
+    tab = window.current_tab
+    assert not run.cancelled
+    window.close_tab(tab)
+    assert wait_until(lambda: run.cancelled, 1)
+    assert run not in window._browse_runs
+
+
+def test_dark_websites_turn_on_at_once_and_a_site_can_stay_light(window, site):
+    from browser import dark_pages
+
+    def colour(tab):
+        image = tab.view.grab().toImage()
+        return image.pixelColor(image.width() // 2, image.height() - 20).lightness()
+    tab = open_page(window, f"{site}/index.html")
+    pause(0.4)
+    assert colour(tab) > 200  # a light page
+    window.open_settings("general")
+    window._settings.dark_box.setChecked(True)
+    window._settings.close()
+    assert wait_until(lambda: colour(tab) < 60, 2)  # darkened, no reload
+    window._set_dark_here(QUrl(tab.url).host(), False)  # this site: leave it light
+    assert wait_until(lambda: colour(tab) > 200, 2)
+    window._set_dark_here(QUrl(tab.url).host(), True)
+    fresh = open_page(window, f"{site}/links.html")  # a new page: dark from the start
+    pause(0.4)
+    assert colour(fresh) < 60
+    window.store.settings[dark_pages.SETTING] = False
+    window.apply_dark_pages()
+    assert wait_until(lambda: colour(fresh) > 200, 2)

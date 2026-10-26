@@ -715,6 +715,12 @@ class CommandBar(QWidget):
         for result in results:
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, result)
+            # (the row is painted by hand: these are what VoiceOver reads for it)
+            item.setText(result.title)
+            item.setData(Qt.ItemDataRole.AccessibleTextRole, result.title)
+            extra = ", ".join(part for part in (result.subtitle, result.badge) if part)
+            if extra:
+                item.setData(Qt.ItemDataRole.AccessibleDescriptionRole, extra)
             self.list.addItem(item)
         if self.list.count():
             self.list.setCurrentRow(0)

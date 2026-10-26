@@ -42,10 +42,14 @@ class WebPage(QWebEnginePage):
     navigation_filter = None
     # Set by the extension runtime: receives EXTENSION_CALL messages
     extension_messages = None
+    # Set by the window: url -> darken this page? (dark_pages.py), decided as each page starts loading
+    dark_rule = None
 
     def acceptNavigationRequest(self, url, nav_type, is_main_frame):
         if self.navigation_filter is not None and not self.navigation_filter(url, is_main_frame):
             return False
+        if is_main_frame and self.dark_rule is not None:
+            self.settings().setAttribute(QWebEngineSettings.WebAttribute.ForceDarkMode, self.dark_rule(url))
         return super().acceptNavigationRequest(url, nav_type, is_main_frame)
 
     def javaScriptConsoleMessage(self, level, message, line, source):
