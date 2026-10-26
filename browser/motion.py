@@ -117,3 +117,38 @@ class SidebarSlide:
                 done()
         if not hold:  # hold: just stand still over the strip until the caller replaces it
             animate(self.cover, self.cover.offset, 0 if showing else rect.width(), step, NORMAL, finished)
+
+
+def crossfade(host, widget, change, ms=FAST + 40):
+    """Run change() (which rearranges `widget`), fading a picture of how it looked away over the
+    new arrangement, so it doesn't jump (or flash half laid out on the way)."""
+    if reduced() or not widget.isVisible() or not host.isVisible():
+        change()
+        return
+    from PyQt6.QtCore import QPoint, QRect
+    from PyQt6.QtGui import QPainter
+    from PyQt6.QtWidgets import QWidget
+
+    rect = QRect(widget.mapTo(host, QPoint(0, 0)), widget.size())
+    picture = host.grab(rect)
+
+    class Cover(QWidget):
+        opacity = 1.0
+
+        def paintEvent(cover, event):
+            p = QPainter(cover)
+            p.setOpacity(cover.opacity)
+            p.drawPixmap(0, 0, picture)
+            p.end()
+
+    cover = Cover(host)
+    cover.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    cover.setGeometry(rect)
+    cover.show()
+    cover.raise_()
+    change()
+
+    def step(value):
+        cover.opacity = value
+        cover.update()
+    animate(cover, 1.0, 0.0, step, ms, lambda: (cover.hide(), cover.deleteLater()))

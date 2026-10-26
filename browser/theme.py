@@ -299,6 +299,13 @@ def switch_images(accent: QColor, dark: bool) -> tuple[str, str]:
     return names[0], names[1]
 
 
+def hover_color(t: Theme) -> QColor:
+    """The sidebar's hover highlight (rows paint it themselves, so it can fade)."""
+    color = QColor("white")
+    color.setAlphaF(0.07 if t.dark else 0.32)
+    return color
+
+
 def stylesheet(t: Theme) -> str:
     # A grey Space would make "on" look like "off": those switches (and sliders) use the system blue
     control = t.accent if t.accent.hsvSaturationF() > 0.25 else QColor("#0a84ff")
@@ -354,7 +361,6 @@ def stylesheet(t: Theme) -> str:
     QPushButton#UrlPill:hover {{ background: {hover}; }}
 
     QFrame#TabRow {{ background: transparent; border-radius: 9px; }}
-    QFrame#TabRow:hover {{ background: {hover}; }}
     QFrame#TabRow[selected="true"] {{ background: {selected}; }}
     QFrame#TabRow QLabel {{ font-size: 13px; }}
     QFrame#TabRow QLabel[unloaded="true"] {{ color: {rgba(t.text, 0.72)}; }}
@@ -369,6 +375,12 @@ def stylesheet(t: Theme) -> str:
     }}
     QToolButton#SpaceDot:hover {{ background: {hover}; }}
     QToolButton#SpaceDot[selected="true"] {{ background: {selected}; }}
+
+    QToolButton#IconChoice {{
+        background: transparent; border: 2px solid transparent; border-radius: 14px; padding: 2px;
+    }}
+    QToolButton#IconChoice:hover {{ background: {hover}; }}
+    QToolButton#IconChoice:checked {{ border-color: {rgba(t.accent)}; }}
 
     QFrame#DropLine {{ background: {text}; border-radius: 1px; }}
     QFrame#DropBox {{ background: transparent; border: 2px solid {text}; border-radius: 9px; }}
@@ -405,7 +417,13 @@ def stylesheet(t: Theme) -> str:
         background: {panel}; color: {panel_text}; border: 1px solid {panel_line};
         border-radius: 7px; padding: 4px 9px; font-size: 12px;
     }}
-    #Toast {{ font-size: 13px; padding: 7px 14px; border-radius: 10px; }}
+    #Toast {{ padding: 0; border-radius: 10px; }}
+    #ToastText {{ color: {panel_text}; font-size: 13px; background: transparent; border: none; padding: 1px 0; }}
+    QPushButton#ToastAction {{
+        background: {rgba(t.accent, 0.18)}; color: {panel_text}; border: none; border-radius: 6px;
+        padding: 3px 10px; font-size: 12px; font-weight: 600;
+    }}
+    QPushButton#ToastAction:hover {{ background: {rgba(t.accent, 0.32)}; }}
 
     #FindBar {{ background: {panel}; border: 1px solid {panel_line}; border-radius: 10px; }}
     #NotificationBanner {{ background: {panel}; border: 1px solid {panel_line}; border-radius: 12px; }}

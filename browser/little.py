@@ -10,7 +10,7 @@ from PyQt6.QtCore import QObject, QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
-from . import clean_links, macos, storage
+from . import clean_links, macos, motion, storage
 from .command_bar import search_url, to_url
 from .content import RADIUS, Corner
 from .models import display_host
@@ -37,6 +37,9 @@ class LittleWindow(QWidget):
             self.setWindowFlag(Qt.WindowType.NoTitleBarBackgroundHint, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ContentsMarginsRespectsSafeArea, False)
         self.browser = browser
+        self._appeared = self._closing = False
+        if not motion.reduced():
+            self.setWindowOpacity(0.0)  # (it fades in as it opens: see showEvent)
         theme = browser.theme
         self.setWindowTitle("Little Window")
         self.setMinimumSize(380, 320)
@@ -152,6 +155,14 @@ class LittleWindow(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
+        if not self._appeared:  # Arc's little window: a quick fade in, rising a touch into place
+            self._appeared = True
+            home = self.pos()
+
+            def step(t):
+                self.setWindowOpacity(t)
+                self.move(home.x(), round(home.y() + 14 * (1 - t)))
+            motion.animate(self, 0.0, 1.0, step, motion.FAST + 30)
         if MAC:
             macos.hide_title_text(self)
             lights = macos.traffic_lights(self)
@@ -159,6 +170,14 @@ class LittleWindow(QWidget):
                 right, centre = lights
                 self.header.setFixedHeight(max(round(centre * 2), 32))
                 self.header.layout().setContentsMargins(round(right + 12), 0, 2, 0)
+
+    def closeEvent(self, event):
+        if self._closing or motion.reduced() or not self.isVisible():
+            super().closeEvent(event)
+            return
+        event.ignore()  # a quick fade out first, then closed for real
+        self._closing = True
+        motion.animate(self, self.windowOpacity(), 0.0, self.setWindowOpacity, motion.FAST, self.close)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

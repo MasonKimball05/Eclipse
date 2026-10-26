@@ -12,7 +12,7 @@ import time
 
 from PyQt6 import sip
 from PyQt6.QtCore import QEasingCurve, QEvent, QObject, QPointF, QRectF, Qt, QTimer, QVariantAnimation
-from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath
+from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QRegion
 from PyQt6.QtWebEngineCore import QWebEngineScript
 from PyQt6.QtWidgets import QWidget
 
@@ -246,6 +246,7 @@ class SwipeNavigator(QObject):
         self.snapshots = Snapshots()
         self._landing = {}   # id(view) → PageSlide waiting for the page it went to
         self._gliding = set()  # id(view)s whose swipe is over but whose trackpad glide isn't
+        self._settling = {}  # id(view) → (PageSlide, its landing) while it animates there
 
     @property
     def enabled(self) -> bool:
@@ -294,6 +295,8 @@ class SwipeNavigator(QObject):
     def _forget(self, key):
         self._gestures.pop(key, None)
         self._landing.pop(key, None)
+        self._gliding.discard(key)  # (a new view can get the same id)
+        self._settling.pop(key, None)
         self.snapshots._shots = {k: v for k, v in self.snapshots._shots.items() if k[0] != key}
         arrow = self._arrows.pop(key, None)
         if arrow is not None:
@@ -315,8 +318,10 @@ class SwipeNavigator(QObject):
                 except RuntimeError:
                     return False  # the view went away mid-gesture
                 # Once it's plainly a swipe, the page stops seeing it (it would scroll under your fingers),
-                # and the glide after it too (the page would have moved when the picture lifts)
-                return self._sliding(view) or id(view) in self._gliding
+                # and the glide after it too (the page would have moved when the picture lifts) — but
+                # never a mouse wheel's scrolling
+                return self._sliding(view) or (id(view) in self._gliding
+                                               and event.phase() != Qt.ScrollPhase.NoScrollPhase)
         return False
 
     def _wheel(self, view, event):
@@ -324,17 +329,18 @@ class SwipeNavigator(QObject):
         key = id(view)
         if phase == Qt.ScrollPhase.ScrollBegin:
             self._gliding.discard(key)
+            self._settle_now(view)  # the last swipe, if it's still settling: done, before this one starts
             self._gestures[key] = _Gesture()
             return
         if key in self._gliding:
-            if phase == Qt.ScrollPhase.ScrollEnd:
-                self._gliding.discard(key)
+            if phase in (Qt.ScrollPhase.ScrollEnd, Qt.ScrollPhase.NoScrollPhase):
+                self._gliding.discard(key)  # (the glide's over; a mouse wheel was never part of it)
             return
         gesture = self._gestures.get(key)
         if gesture is None:
             return
         if phase in (Qt.ScrollPhase.ScrollEnd, Qt.ScrollPhase.ScrollMomentum):
-            self._release(view, gesture)
+            self._release(view, gesture, gliding=phase == Qt.ScrollPhase.ScrollMomentum)
             return
         if phase != Qt.ScrollPhase.ScrollUpdate:
             return
@@ -410,13 +416,15 @@ class SwipeNavigator(QObject):
         return PageSlide(view, back, current, other, title, storage.favicon(item.url().toString()),
                          self.browser.theme)
 
-    def _release(self, view, gesture):
+    def _release(self, view, gesture, gliding=False):
         if self._gestures.get(id(view)) is gesture:
             self._gestures.pop(id(view), None)
         if gesture.state == "probing":
             gesture.released = True  # the page's answer finishes this one
             return
         if gesture.slide is not None:
+            if gliding:  # (released into macOS's glide: its scrolling still belongs to the swipe)
+                self._gliding.add(id(view))
             self._release_slide(view, gesture)
             return
         arrow = self._arrows.get(id(view))
@@ -427,7 +435,6 @@ class SwipeNavigator(QObject):
 
     def _release_slide(self, view, gesture):
         slide = gesture.slide
-        self._gliding.add(id(view))
         width = max(view.width(), 1)
         speed = gesture.velocity.value()
         go = slide.travel > width * 0.35 and speed > -0.3 or speed > 0.5 and slide.travel > width * 0.05
@@ -435,11 +442,16 @@ class SwipeNavigator(QObject):
         ms = settle_ms(goal - slide.travel, abs(speed) if (goal > slide.travel) == (speed > 0) else 0)
 
         def done():
+            self._settling.pop(id(view), None)
             if not go:
                 slide.hide()
                 slide.deleteLater()
                 return
             self.snapshots.take(view, slide.current)  # this page, for swiping forward to it again
+            earlier = self._landing.pop(id(view), None)
+            if earlier is not None and earlier is not slide and not sip.isdeleted(earlier):
+                earlier.hide()  # (a picture from the swipe before, still waiting: this one replaces it)
+                earlier.deleteLater()
             self._landing[id(view)] = slide
             slide.load_started = False
             view.back() if gesture.back else view.forward()
@@ -447,7 +459,21 @@ class SwipeNavigator(QObject):
             QTimer.singleShot(150, lambda: self._landing.get(id(view)) is slide and not slide.load_started
                               and self._arrived(view))
             QTimer.singleShot(1500, lambda: self._landing.get(id(view)) is slide and self._arrived(view))
+        self._settling[id(view)] = (slide, done)
         slide.run(goal, ms, done)
+
+    def _settle_now(self, view):
+        """Finish a swipe that's still on its way to landing (or springing back), at once."""
+        settling = self._settling.pop(id(view), None)
+        if settling is None:
+            return
+        slide, done = settling
+        if sip.isdeleted(slide):
+            return
+        animation = getattr(slide, "_pb_animation", None)
+        if animation is not None:
+            animation.stop()
+        done()
 
     def _slide_away(self, arrow):
         start = arrow.progress
@@ -502,27 +528,45 @@ def _smooth(t: float, start=0.2, end=0.8) -> float:
 
 
 class SpaceSlide(QWidget):
-    """Switching Spaces, the way Arc does it: the Space's own tabs (its name, Pinned and Today) slide
-    across to the next Space's, while everything else (Favorites, the address, the bottom bar, the
-    window's colours) blends over underneath. The page stays put until the switch lands, then
-    crossfades. Driven by your fingers (set_travel) or on its own (run).
+    """Switching Spaces, the way Arc does it: the Space's own tabs and address slide across to the next
+    Space's, while everything else round the page (Favorites, the bottom bar, the window's colours)
+    blends over underneath. The page itself isn't covered: it stays live, and changes once the switch
+    lands. Driven by your fingers (set_travel) or on its own (run).
 
-    The switch itself happens at the start, under this cover, which shows pictures of before and
-    after; cancelling switches back before the cover lifts."""
+    The Space itself switches at the start, under this cover (which shows pictures of before and
+    after); cancelling switches back before the cover lifts."""
 
     def __init__(self, window, direction):
+        # The last switch's cover may still be fading out (swiping straight back, say): gone first,
+        # or this one's pictures would have it, and its Space's text, baked in
+        for old in window.findChildren(SpaceSlide):
+            animation = getattr(old, "_pb_animation", None)
+            if animation is not None:
+                animation.stop()
+            old.hide()
+            old.deleteLater()
         super().__init__(window)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.window_ = window
         self.direction = direction  # 1: the next Space comes in from the right
         self.width_ = window.sidebar.width()  # how far the tabs travel
-        self.content = QPainterPath()
-        self.content.addRoundedRect(content_rect(window), CONTENT_RADIUS, CONTENT_RADIUS)
+        page = content_rect(window)
+        everything = QRectF(window.rect())
+        # The window round the page: the sidebar's column and the thin frame above, beside and below
+        self.regions = [r for r in (
+            QRectF(0, 0, page.left(), everything.height()),
+            QRectF(page.left(), 0, everything.width() - page.left(), page.top()),
+            QRectF(page.right(), page.top(), everything.width() - page.right(), page.height()),
+            QRectF(page.left(), page.bottom(), everything.width() - page.left(), everything.height() - page.bottom()),
+        ) if r.width() > 0 and r.height() > 0]
+        hole = QPainterPath()
+        hole.addRoundedRect(page, CONTENT_RADIUS, CONTENT_RADIUS)
+        self.setMask(QRegion(window.rect()).subtracted(QRegion(hole.toFillPolygon().toPolygon())))
         self.lanes = [space_rect(window, w) for w in self._sliding_parts()]  # where each part slides
         self.before = self._capture()
         self.after = None
         self.travel = 0.0  # points the tabs have moved, toward the new Space
-        self.page = 0.0  # how far the page has crossfaded (once the switch has landed)
+        self.opacity = 1.0  # fades out as it lifts
         self.setGeometry(window.rect())
         self.show()
         self.raise_()
@@ -534,7 +578,8 @@ class SpaceSlide(QWidget):
         return [sidebar.url_pill, sidebar.scroll]
 
     def _capture(self):
-        """(the window without the sliding parts, [(each part on its own, nothing behind it, where it goes)])"""
+        """([(each region round the page, without the sliding parts)], [(each part on its own, where it goes)])
+        Small pictures only, never the page: they cost a millisecond or so each."""
         parts = self._sliding_parts()
         pictures = []
         for part in parts:
@@ -545,7 +590,7 @@ class SpaceSlide(QWidget):
             pictures.append((part.grab(), _in_window(self.window_, part).topLeft()))
         for part in parts:
             part.hide()  # (not on screen in between: nothing repaints until this returns)
-        backdrop = self.window_.grab()
+        backdrop = [(region, self.window_.grab(region.toAlignedRect())) for region in self.regions]
         for part in parts:
             part.show()
         return backdrop, pictures
@@ -573,34 +618,28 @@ class SpaceSlide(QWidget):
         from .motion import animate
         animate(self, self.travel, target, self.set_travel, ms, done, easing)
 
-    def land(self, done):
-        """The switch is staying: crossfade the page, then lift the cover."""
+    def lift(self):
+        """Fade away, showing the real thing underneath (the same, but for the new tab's highlight)."""
         from .motion import FAST, animate
+        if not self.isVisible():
+            return  # (already put away: a newer switch took over)
 
         def step(value):
-            self.page = value
+            self.opacity = value
             self.update()
-        animate(self, 0.0, 1.0, step, FAST, done)
+        animate(self, 1.0, 0.0, step, FAST, lambda: (self.hide(), self.deleteLater()))
 
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.drawPixmap(QPointF(0, 0), self.before[0])
-        if self.after is not None:
-            everything = QPainterPath()
-            everything.addRect(QRectF(self.rect()))
-            p.save()
-            p.setClipPath(everything.subtracted(self.content))  # round the page: blends as you go
-            p.setOpacity(_smooth(self.progress))
-            p.drawPixmap(QPointF(0, 0), self.after[0])
-            p.restore()
-            if self.page > 0:
-                p.save()
-                p.setClipPath(self.content)
-                p.setOpacity(self.page)
-                p.drawPixmap(QPointF(0, 0), self.after[0])
-                p.restore()
+        blend = _smooth(self.progress)
+        for i, (region, picture) in enumerate(self.before[0]):
+            p.setOpacity(self.opacity)
+            p.drawPixmap(region.topLeft(), picture)
+            if self.after is not None and blend > 0:
+                p.setOpacity(self.opacity * blend)
+                p.drawPixmap(region.topLeft(), self.after[0][i][1])
+        p.setOpacity(self.opacity)
         shift = self.travel * self.direction
         for i, lane in enumerate(self.lanes):
             p.save()
@@ -628,6 +667,7 @@ class SpaceSwipe(QObject):
         self.velocity = _Velocity()
         self.target = None  # the Space we're sliding to
         self.previous = None
+        self.switched = False
         self._last = (None, False)
 
     def wheel(self, event) -> bool:
@@ -635,7 +675,8 @@ class SpaceSwipe(QObject):
         # The same event can arrive twice while it's being delivered (a child's event filter, then the
         # sidebar as it bubbles up): the same event object, so the same address, until the next pass
         # of the event loop
-        key = sip.unwrapinstance(event)
+        key = (sip.unwrapinstance(event), event.phase(), event.pixelDelta().x(), event.pixelDelta().y(),
+               event.angleDelta().x(), event.angleDelta().y())  # (an address alone can be reused)
         if key == self._last[0]:
             return self._last[1]
         answer = self._wheel(event)
@@ -649,6 +690,8 @@ class SpaceSwipe(QObject):
 
     def _wheel(self, event) -> bool:
         phase = event.phase()
+        if self.slide is not None and sip.isdeleted(self.slide):
+            self._forget_slide()  # (taken away by another switch: start afresh, never stuck)
         if phase == Qt.ScrollPhase.NoScrollPhase:
             return self._mouse_wheel(event)
         if phase == Qt.ScrollPhase.ScrollBegin:
@@ -698,7 +741,9 @@ class SpaceSwipe(QObject):
         return True
 
     def _can_slide(self):
-        return self.browser.sidebar.isVisible() and self.browser.isVisible()
+        b = self.browser
+        floating = getattr(b, "floating_sidebar", None) is not None and b.floating_sidebar.active
+        return b.sidebar.isVisible() and b.isVisible() and not floating  # (floating: over the page, no lane)
 
     def _begin(self, direction):
         from .motion import reduced
@@ -712,12 +757,35 @@ class SpaceSwipe(QObject):
         self.previous = b.store.active_space
         self.target = spaces[(spaces.index(self.previous) + direction) % len(spaces)] if len(spaces) > 1 else None
         self.slide = SpaceSlide(b, direction)
+        self.switched = False
         if self.target is not None:
-            b._set_active_space(self.target)
-            b._restore_space_tab()
+            # The switch and the picture of the new Space each wait for a later pass of the event loop,
+            # so the first frames of the swipe aren't held up (the cover shows the old Space meanwhile)
             slide = self.slide
-            QTimer.singleShot(0, lambda: slide.after is None and self.slide is slide and slide.take_after())
+            QTimer.singleShot(0, lambda: self.slide is slide and self._switch(slide))
         self._follow()
+
+    def _switch(self, slide):
+        if self.switched:
+            return
+        self.switched = True
+        self.browser._set_active_space(self.target)  # (its page comes once the switch lands)
+        QTimer.singleShot(0, lambda: slide.after is None and not sip.isdeleted(slide) and self._picture_target(slide))
+
+    def _picture_target(self, slide):
+        """The new Space as it will look once it lands: its own tab's address in the pill and that
+        tab highlighted, though the page underneath is still the old one until then."""
+        b = self.browser
+        tab = b.store.find_tab(self.target.active_tab_id)
+        if tab in b.store.visible_tabs():
+            real = b.current_tab
+            b.current_tab = tab  # (only for drawing these: nothing else runs in between)
+            try:
+                b.sidebar.update_selection()
+                b.sidebar.update_nav()
+            finally:
+                b.current_tab = real
+        slide.take_after()
 
     def _travel(self):
         travel = -self.dx * self.slide.direction  # toward the new Space
@@ -753,25 +821,54 @@ class SpaceSwipe(QObject):
         if self.state == "settling":
             self.state = "glide"  # (until the trackpad's glide ends, its scrolling is still this swipe's)
         b = self.browser
-        if not done and self.target is not None:
+        if not done and self.target is not None and self.switched:
             b._set_active_space(self.previous)  # back where we were, still under the cover
-            b._restore_space_tab()
-            QTimer.singleShot(0, lambda: (slide.hide(), slide.deleteLater()))
         elif done:
-            slide.land(lambda: (slide.hide(), slide.deleteLater()))
-        else:
-            slide.hide()
-            slide.deleteLater()
+            if not self.switched:  # (let go before the switch had even happened)
+                self._switch(slide)
+            b._restore_space_tab()  # the new Space's page
+        QTimer.singleShot(0, lambda: not sip.isdeleted(slide) and slide.lift())  # once the sidebar has caught up
 
     def _finish_now(self):
         """A new gesture while the last one is still settling: let that one land at once."""
         slide = self.slide
+        if slide is not None and sip.isdeleted(slide):
+            self._forget_slide()
+            return
         if slide is not None and self.state == "settling":
             animation = getattr(slide, "_pb_animation", None)
             if animation is not None:
-                animation.stop()
+                try:
+                    animation.stop()
+                except RuntimeError:
+                    pass
             done = slide.travel >= slide.side.width() * 0.5 and self.target is not None
             self._settled(slide, done)
+
+    def abandon(self):
+        """Another switch is taking over (the keyboard, a Space dot) while a swipe is under way or still
+        settling: drop the swipe where it is. That switch decides the Space (and its page) now."""
+        slide = self.slide
+        if slide is None:
+            return
+        animation = getattr(slide, "_pb_animation", None) if not sip.isdeleted(slide) else None
+        if animation is not None:
+            try:
+                animation.stop()
+            except RuntimeError:
+                pass
+        if not sip.isdeleted(slide):
+            slide.hide()
+            slide.deleteLater()
+        fingers_down = self.state == "mine"
+        self._forget_slide()
+        if fingers_down:
+            self.state = "switched"  # (the rest of this swipe is used up, so it can't start another)
+
+    def _forget_slide(self):
+        self.slide = None
+        if self.state in ("mine", "settling"):
+            self.state = "idle"
 
 
 def _in_window(window, widget) -> QRectF:
@@ -799,6 +896,5 @@ def slide_region(window, widget, change, direction):
 
     def start():
         slide.take_after()
-        slide.run(slide.side.width(), NORMAL + 60,
-                  lambda: slide.land(lambda: (slide.hide(), slide.deleteLater())))
+        slide.run(slide.side.width(), NORMAL + 60, slide.lift)
     QTimer.singleShot(0, start)  # the sidebar rebuilds on the next pass of the event loop

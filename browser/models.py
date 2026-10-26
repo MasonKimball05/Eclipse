@@ -354,6 +354,29 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
         folder.expanded = expanded
         self._changed()
 
+    def today_shape(self, space):
+        """Today's tabs and folders as they are now, nested (folders lose children as tabs go)."""
+        def shape(nodes):
+            return [(node, shape(node.children) if isinstance(node, Folder) else None) for node in nodes]
+        return shape(space.today)
+
+    def restore_today(self, space, shape, archived=()):
+        """Put Today back the way today_shape() saw it, keeping anything added since (on top), and take
+        those tabs out of the archive again."""
+        def rebuild(saved):
+            nodes = []
+            for node, children in saved:
+                if isinstance(node, Folder):
+                    node.children = rebuild(children)
+                nodes.append(node)
+            return nodes
+        restored = rebuild(shape)
+        keep = {id(n) for n, _ in shape}
+        space.today[:] = [n for n in space.today if id(n) not in keep] + restored
+        gone = {id(entry) for entry in archived}
+        self.archive[:] = [entry for entry in self.archive if id(entry) not in gone]
+        self._changed()
+
     def archive_tab(self, tab, space):
         if tab.url:
             self.archive.insert(0, {"url": tab.url, "title": tab.label, "space_id": space.id,

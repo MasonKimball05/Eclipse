@@ -12,6 +12,8 @@ from PyQt6.QtGui import QColor, QConicalGradient, QImage, QLinearGradient, QPain
 
 NAME = "Eclipse"
 INTERNAL_NAME = "PythonBrowser"  # data folder, Keychain service, bundle; don't change
+ORGANIZATION = "MasonKimball05"  # (part of the data folder's path too)
+SETTING = "app_icon"  # which look you picked in Settings → General
 
 
 # The icon: a total eclipse. Each look is a few settings for icon_image (the variants sheet was drawn
@@ -32,7 +34,36 @@ LOOKS = {
     "earthshine": dict(sky=("#1e1b4b", "#020617"), corona="#ffd27a", moon="#0b1026", earthshine="#3b4a7a",
                        offset=(-14, 10)),
 }
-LOOK = "original"
+LOOK = "original"  # the default
+LABELS = {
+    "original": "Gold", "diamond": "Diamond Ring", "crescent": "Crescent", "white": "White", "violet": "Violet",
+    "cyan": "Cyan", "sunset": "Sunset", "aurora": "Aurora", "daylight": "Daylight", "rays": "Rays",
+    "small": "Small Sun", "earthshine": "Earthshine",
+}
+
+
+def chosen_look(settings) -> str:
+    look = settings.get(SETTING, LOOK)
+    return look if look in LOOKS else LOOK
+
+
+def saved_look() -> str:
+    """The look picked in Settings, read from the session file (for building the app, which runs
+    outside the browser)."""
+    from PyQt6.QtCore import QCoreApplication
+
+    from . import storage
+    if not QCoreApplication.applicationName() or QCoreApplication.organizationName() != ORGANIZATION:
+        QCoreApplication.setApplicationName(INTERNAL_NAME)  # (where storage finds the data folder)
+        QCoreApplication.setOrganizationName(ORGANIZATION)
+    session = storage.read_json(storage.session_path()) or {}
+    return chosen_look(session.get("settings", {}))
+
+
+def apply_icon(app, settings):
+    """The Dock icon, while the browser is running (the built app's own icon changes when it's rebuilt)."""
+    from PyQt6.QtGui import QIcon, QPixmap
+    app.setWindowIcon(QIcon(QPixmap.fromImage(icon_image(512, chosen_look(settings)))))
 
 
 def _blurred(draw, size, amount):

@@ -13,11 +13,12 @@ import sys
 from pathlib import Path
 
 import qtawesome as qta
-from PyQt6.QtCore import QObject, QProcess, QProcessEnvironment, QSize, QStandardPaths, Qt, pyqtSignal
-from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
-                             QFrame, QHBoxLayout, QLabel, QLineEdit, QProgressBar, QPushButton, QScrollArea,
-                             QSizePolicy, QToolButton, QVBoxLayout, QWidget)
+from PyQt6.QtCore import (QFileInfo, QMimeData, QObject, QProcess, QProcessEnvironment, QSize, QStandardPaths, Qt,
+                          QUrl, pyqtSignal)
+from PyQt6.QtGui import QColor, QDesktopServices, QDrag
+from PyQt6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+                             QFileIconProvider, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QProgressBar,
+                             QPushButton, QScrollArea, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
 from .theme import quiet_scrollbars, stylesheet
 
@@ -354,12 +355,49 @@ class DownloadRow(QFrame):
         self.action.clicked.connect(self._act)
         layout.addWidget(self.action, 0, Qt.AlignmentFlag.AlignTop)
         item.changed.connect(self.refresh)
+        self._press = None
         self.refresh()
+
+    def _file(self):
+        """The finished file, if there is one on disk."""
+        path = self.item.path
+        return path if self.item.state == "done" and path and os.path.exists(path) else None
+
+    # A finished download can be dragged straight into Finder, Mail, Messages… and double-clicked open
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._press = event.position().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        path = self._file()
+        if (self._press is None or path is None or not event.buttons() & Qt.MouseButton.LeftButton
+                or (event.position().toPoint() - self._press).manhattanLength() < QApplication.startDragDistance()):
+            return
+        self._press = None
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(path)])
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.setPixmap(QFileIconProvider().icon(QFileInfo(path)).pixmap(48, 48))
+        drag.exec(Qt.DropAction.CopyAction)
+
+    def mouseReleaseEvent(self, event):
+        self._press = None
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        path = self._file()
+        if path is not None:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
     def refresh(self):
         item = self.item
         self.title.setText(self.title.fontMetrics().elidedText(item.title, Qt.TextElideMode.ElideMiddle, 380))
         self.title.setToolTip(item.path or item.title)
+        if self._file():
+            self.setToolTip("Drag it into another app, or double-click to open it")
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.status.setText(item.status)
         self.bar.setVisible(item.state == "running")
         if item.fraction is None:

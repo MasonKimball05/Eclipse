@@ -5,10 +5,10 @@
 
 import qtawesome as qta
 from PyQt6.QtCore import QSize, Qt, QUrl
-from PyQt6.QtGui import QKeySequence
-from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QHBoxLayout,
-                             QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea,
-                             QStackedWidget, QVBoxLayout, QWidget)
+from PyQt6.QtGui import QIcon, QKeySequence, QPixmap
+from PyQt6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame,
+                             QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+                             QPushButton, QScrollArea, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
 from . import brand, clean_links, macos, spelling
 from .command_bar import CUSTOM_SETTING, SEARCH_ENGINES, use_custom_sites
@@ -246,6 +246,36 @@ class SettingsWindow(QWidget):
         self.store.settings[key] = value
         self.store.schedule_save()
 
+    def _icon_choices(self):
+        """Every look of the eclipse, to pick the app's icon from."""
+        box = QWidget()
+        grid = QGridLayout(box)
+        grid.setContentsMargins(0, 0, 0, 10)
+        grid.setSpacing(6)
+        self.icon_group = QButtonGroup(box)
+        self.icon_group.setExclusive(True)
+        current = brand.chosen_look(self.store.settings)
+        for i, look in enumerate(brand.LOOKS):
+            button = QToolButton()
+            button.setObjectName("IconChoice")
+            button.setCheckable(True)
+            button.setChecked(look == current)
+            button.setIcon(QIcon(QPixmap.fromImage(brand.icon_image(96, look))))
+            button.setIconSize(QSize(48, 48))
+            button.setToolTip(brand.LABELS[look])
+            button.setAccessibleName(f"{brand.LABELS[look]} icon")
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(lambda _=False, chosen=look: self._choose_icon(chosen))
+            self.icon_group.addButton(button)
+            grid.addWidget(button, i // 6, i % 6)
+        grid.setColumnStretch(6, 1)
+        return box
+
+    def _choose_icon(self, look):
+        from PyQt6.QtWidgets import QApplication
+        self._setting(brand.SETTING, look)
+        brand.apply_icon(QApplication.instance(), self.store.settings)
+
     def _toggle_spelling(self, on):
         lang = spelling.language(self.store.settings.get("spell_check_language"))
         if on and lang is None:
@@ -353,7 +383,10 @@ class SettingsWindow(QWidget):
                                   shortcut_buttons),
                         self.shortcut_list]),
             self._card([self._row("Look", "Each Space has its own name, icon, colour and theme. "
-                                          "Right-click a Space to change it.", appearance)]),
+                                          "Right-click a Space to change it.", appearance),
+                        self._row("App icon", "Changes in the Dock right away; Finder and Launchpad show it "
+                                              "after the next app build.", None),
+                        self._icon_choices()]),
             self._card([self._row("Backup", "Spaces, tabs, settings, notes, Boosts, userscripts and extensions in "
                                             "one file. Sign-ins and cookies aren't included.", backup_box),
                         self._row("Updates", f"Once a day, look for a newer {brand.NAME} on GitHub and offer to "

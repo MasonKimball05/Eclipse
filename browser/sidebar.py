@@ -13,13 +13,16 @@
 # Widgets here never change data directly; they call back into the MainWindow
 # (passed in as `browser`), which owns the Store and the web views.
 
+import re
 import sys
 
 import qtawesome as qta
-from PyQt6.QtCore import QEvent, QMimeData, QPoint, QRect, QRectF, QSize, Qt, QTimer, QUrl
-from PyQt6.QtGui import QColor, QDrag, QIcon, QPainter, QPixmap
-from PyQt6.QtWidgets import (QApplication, QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton,
-                             QScrollArea, QSizePolicy, QSpacerItem, QToolButton, QVBoxLayout, QWidget)
+from PyQt6.QtCore import QEvent, QMimeData, QObject, QPoint, QRect, QRectF, QSize, Qt, QTimer, QUrl
+from PyQt6.QtGui import QColor, QDrag, QIcon, QPainter, QPen, QPixmap
+from PyQt6.QtWidgets import (QApplication, QFrame, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QLabel,
+                             QPushButton, QScrollArea, QSizePolicy, QSpacerItem, QToolButton, QVBoxLayout, QWidget)
+
+from PyQt6 import sip
 
 from . import macos
 from .browse import is_answer_page
@@ -71,11 +74,42 @@ def faded(icon, opacity, size=32):
 
 
 def repolish(widget, **props):
-    # Qt only re-evaluates [prop="..."] stylesheet selectors after an unpolish/polish
+    # Qt only re-evaluates [prop="..."] stylesheet selectors after an unpolish/polish (and that's
+    # costly: skipped when nothing's changed, as on most sidebar refreshes)
+    if all(widget.property(name) == value for name, value in props.items()):
+        return
     for name, value in props.items():
         widget.setProperty(name, value)
     widget.style().unpolish(widget)
     widget.style().polish(widget)
+
+
+def set_shown(widget, shown):
+    """setVisible, skipped when it's already so (each call can restyle the widget)."""
+    if widget.isHidden() == bool(shown):
+        widget.setVisible(bool(shown))
+
+
+def spoken(text: str) -> str:
+    """A tooltip as VoiceOver should say it: without the keyboard shortcut in brackets."""
+    return re.sub(r"\s*\((?:[⌘⌥⇧⌃]+.*?|.*?⌘.*?)\)\s*$", "", text).strip()
+
+
+class SpokenTooltips(QObject):
+    """Keeps an icon-only button's name for VoiceOver in step with its tooltip."""
+
+    def watch(self, button):
+        button.installEventFilter(self)
+        self._sync(button)
+
+    def _sync(self, button):
+        if not button.text():
+            button.setAccessibleName(spoken(button.toolTip()))
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.ToolTipChange and isinstance(obj, QToolButton):
+            self._sync(obj)
+        return False
 
 
 class IconButton(QToolButton):
@@ -84,6 +118,7 @@ class IconButton(QToolButton):
         self.setObjectName("IconButton")
         self.icon_name = icon_name
         self.setToolTip(tooltip)
+        self.setAccessibleName(spoken(tooltip))  # (an icon alone says nothing to VoiceOver)
         self.setFixedSize(size, size)
         self.setIconSize(QSize(icon_size, icon_size))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -130,8 +165,23 @@ def start_drag(widget, node_id, press_pos):
     drag.setHotSpot(press_pos)
     split_drop = widget.browser.content.split_drop
     split_drop.activate(True)  # the page area accepts tabs too: drop one there to split
+    section = widget.parentWidget()
+    if isinstance(section, TabSection):
+        QTimer.singleShot(0, lambda: section.lift(widget))  # (once the drag has its picture of the row)
+    sidebar = widget.browser.sidebar
+    sidebar.drag_active = True  # rebuilds wait till it's over (they'd delete the row being dragged)
     drag.exec(Qt.DropAction.MoveAction)
+    sidebar.drag_active = False
     split_drop.activate(False)
+    if getattr(sidebar, "_rebuild_after_drag", False):
+        sidebar._rebuild_after_drag = False
+        QTimer.singleShot(0, sidebar.rebuild)
+    if isinstance(widget, FavoriteTile) and not sip.isdeleted(widget) and widget.press != 1.0:
+        from PyQt6.QtCore import QEasingCurve
+        widget._squeeze(1.0, 220, QEasingCurve.Type.OutBack)  # (the release went to the drag, not the tile)
+    if isinstance(section, TabSection):
+        # After the drop has had its chance to rebuild the list (it moves the tab a pass later)
+        QTimer.singleShot(120, lambda: not sip.isdeleted(section) and section.drag_ended(widget))
 
 
 class DraggableTab:
@@ -163,7 +213,44 @@ class DraggableTab:
         self.browser.show_tab_menu(self.tab, event.globalPos())
 
 
-class TabRow(DraggableTab, QFrame):
+class HoverFade:
+    """Mixin for sidebar rows: the hover highlight fades in quickly and out a touch slower, as in
+    Arc, instead of snapping on and off (a stylesheet :hover can only snap)."""
+
+    _hover = 0.0
+
+    def _fade_hover(self, target, ms):
+        from . import motion
+
+        def step(value):
+            self._hover = value
+            self.update()
+        motion.animate(self, self._hover, target, step, ms)
+
+    def enterEvent(self, event):
+        self._fade_hover(1.0, 90)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._fade_hover(0.0, 160)
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)  # (its stylesheet: the selected highlight, if it's selected)
+        if self._hover <= 0.001 or self.property("selected") is True:
+            return
+        from .theme import hover_color
+        color = hover_color(self.browser.theme)
+        color.setAlphaF(color.alphaF() * self._hover)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(color)
+        p.drawRoundedRect(QRectF(self.rect()), 9, 9)
+        p.end()
+
+
+class TabRow(HoverFade, DraggableTab, QFrame):
     def __init__(self, browser, tab, kind, depth=0, parent=None):
         super().__init__(parent)
         self._init_drag(browser, tab)
@@ -217,7 +304,7 @@ class TabRow(DraggableTab, QFrame):
     def refresh(self):
         theme = self.browser.theme
         self._paint_icon()
-        self.away_label.setVisible(self.away)
+        set_shown(self.away_label, self.away)
         self.icon_label.setToolTip("Back to the pinned page" if self.away else "")
         self.icon_label.setCursor(Qt.CursorShape.PointingHandCursor if self.away else Qt.CursorShape.ArrowCursor)
         self.title_label.set_full_text(self.tab.label)
@@ -228,12 +315,18 @@ class TabRow(DraggableTab, QFrame):
         self.close_btn.set_color(theme.text)
         badge = self.tab.unread or self.tab.app_unread or ("•" if self.tab.notified else "")
         self.unread_label.setText(badge)
-        self.unread_label.setVisible(bool(badge))
+        set_shown(self.unread_label, badge)
         audible, muted = self.browser.tab_audio(self.tab)
-        self.audio_btn.setVisible(audible or muted)
+        # What VoiceOver says for the row: its title, and anything its badges show
+        extras = [f"{badge} unread" if badge and badge != "•" else "new notification" if badge else "",
+                  "muted" if muted else "playing sound" if audible else "", "sleeping" if sleeping else ""]
+        self.setAccessibleName(", ".join([self.tab.label] + [e for e in extras if e]))
+        self.close_btn.setAccessibleName(("Unload " if self.kind == PINNED else "Close ") + self.tab.label)
+        set_shown(self.audio_btn, audible or muted)
         if audible or muted:
             self.audio_btn.icon_name = "ph.speaker-slash" if muted else "ph.speaker-high"
             self.audio_btn.setToolTip("Unmute Tab" if muted else "Mute Tab")
+            self.audio_btn.setAccessibleName(self.audio_btn.toolTip())
             self.audio_btn.set_color(theme.text)
         self._update_close()
 
@@ -268,16 +361,18 @@ class TabRow(DraggableTab, QFrame):
         visible = self.selected or self.underMouse()
         if self.kind == PINNED:
             visible = visible and self.tab.view is not None
-        self.close_btn.setVisible(visible)
+        set_shown(self.close_btn, visible)
 
     def enterEvent(self, event):
         self._update_close()
+        super().enterEvent(event)  # (HoverFade)
 
     def leaveEvent(self, event):
         self._update_close()
+        super().leaveEvent(event)
 
 
-class FolderRow(QFrame):
+class FolderRow(HoverFade, QFrame):
     """A pinned folder: click to open/close, drag to move, right-click for options."""
 
     def __init__(self, browser, folder, depth=0, parent=None):
@@ -312,6 +407,7 @@ class FolderRow(QFrame):
             icon = "ph.folder-open" if self.folder.expanded else "ph.folder"
             self.icon_label.setPixmap(qta.icon(icon, color=color).pixmap(16, 16))
         self.name_label.set_full_text(self.folder.name)
+        self.setAccessibleName(f"{self.folder.name}, folder, {'open' if self.folder.expanded else 'closed'}")
         fresh = sum(1 for t in walk_tabs(self.folder.children) if t.fresh)
         # Only a Live Folder's new items get a count, like Arc; how many tabs a folder holds is in its tooltip
         self.count_label.setText(f"{fresh} new" if fresh else "")
@@ -348,20 +444,63 @@ class FavoriteTile(DraggableTab, QToolButton):
         self.setFixedHeight(44)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setIconSize(QSize(20, 20))
+        self.press = 1.0  # the icon's size while pressed: a little smaller, springing back on release
         tab.changed.connect(self.refresh)
         self.refresh()
 
     def refresh(self):
         self.setIcon(tab_icon(self.tab, self.browser.theme))
         self.setToolTip(self.tab.label)
+        self.setAccessibleName(self.tab.label)
         self.update()  # the unread badge
+
+    def _squeeze(self, size, ms, easing):
+        from . import motion
+
+        def step(v):
+            self.press = v
+            self.update()
+        motion.animate(self, self.press, size, step, ms, easing=easing)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            from PyQt6.QtCore import QEasingCurve
+            self._squeeze(0.84, 90, QEasingCurve.Type.OutQuad)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        from PyQt6.QtCore import QEasingCurve
+        self._squeeze(1.0, 260, QEasingCurve.Type.OutBack)  # (a small overshoot: it springs)
+        super().mouseReleaseEvent(event)
+
+    def leaveEvent(self, event):
+        if self.press != 1.0:  # (dragged away instead of clicked)
+            from PyQt6.QtCore import QEasingCurve
+            self._squeeze(1.0, 200, QEasingCurve.Type.OutCubic)
+        super().leaveEvent(event)
 
     def set_selected(self, selected):
         if (self.property("selected") is True) != selected:
             repolish(self, selected=selected)
 
     def paintEvent(self, event):
-        super().paintEvent(event)
+        # The tile as styled, then its icon drawn by hand: scaled smoothly while pressed (Qt's own
+        # icon sizes are whole points, too coarse for a 3-point squeeze)
+        from PyQt6.QtWidgets import QStyle, QStyleOptionToolButton
+        option = QStyleOptionToolButton()
+        self.initStyleOption(option)
+        icon = self.icon()
+        option.icon = QIcon()
+        painter = QPainter(self)
+        self.style().drawComplexControl(QStyle.ComplexControl.CC_ToolButton, option, painter, self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        size = 20 * self.press
+        center = QRectF(self.rect()).center()
+        target = QRectF(center.x() - size / 2, center.y() - size / 2, size, size)
+        ratio = self.devicePixelRatioF()
+        picture = icon.pixmap(QSize(20, 20), ratio)
+        painter.drawPixmap(target, picture, QRectF(picture.rect()))  # (source: the picture's own pixels)
+        painter.end()
         badge = self.tab.unread or self.tab.app_unread or ("" if not self.tab.notified else "•")
         if not badge:
             return
@@ -452,6 +591,113 @@ class DropZone(QWidget):
         QTimer.singleShot(0, lambda: self.browser.move_tab(node, self.kind, index, folder))
 
 
+class RowReveal(QWidget):
+    """A row growing into the list (a new tab, a folder opening) or shrinking out of it (closed,
+    archived, picked up to drag): the row keeps its full size inside, clipped, while this box's height
+    changes, so the rows below glide instead of jumping. Fades as it goes; a row leaving also drifts
+    down a little, the way Arc's Clear sweeps tabs away. `keep`: stay folded up when done (a row
+    being dragged), ready to unfold again if it isn't dropped anywhere."""
+
+    MS = 190
+
+    def __init__(self, section, row, growing, delay=0, keep=False):
+        super().__init__(section)
+        self.section, self.row, self.keep = section, row, keep
+        self.full = row.height() or 34
+        self.shown = 0.0 if growing else 1.0
+        self.growing = growing
+        row.setParent(self)
+        row.move(0, 0)
+        row.show()
+        self.setFixedHeight(round(self.full * self.shown))
+        self.fade = QGraphicsOpacityEffect(self)
+        self.fade.setOpacity(self.shown)
+        self.setGraphicsEffect(self.fade)
+        target = 1.0 if growing else 0.0
+        if delay:
+            QTimer.singleShot(delay, lambda: not sip.isdeleted(self) and self._go(target))
+        else:
+            self._go(target)
+
+    def _go(self, target):
+        from . import motion
+        self.growing = target > self.shown
+        ms = max(1, round(self.MS * abs(target - self.shown)))
+        motion.animate(self, self.shown, target, self._set, ms, self._done)
+
+    def _set(self, shown):
+        if sip.isdeleted(self.row):
+            return
+        self.shown = shown
+        self.setFixedHeight(round(self.full * shown))
+        self.fade.setOpacity(shown)
+        self.row.move(0, 0 if self.growing else round(6 * (1 - shown)))
+
+    def unfold(self):
+        """A dragged row that wasn't dropped anywhere: back where it was."""
+        self.keep = False
+        self._go(1.0)
+
+    def resizeEvent(self, event):
+        if not sip.isdeleted(self.row):
+            self.row.resize(self.width(), self.full)
+
+    def _done(self):
+        if self.keep and self.shown == 0:
+            return  # (folded up out of the way until the drag ends)
+        self.section._reveal_done(self)
+
+    def settle(self):
+        """Jump to the end now (the list is being rebuilt again)."""
+        animation = getattr(self, "_pb_animation", None)
+        if animation is not None:
+            animation.stop()
+        self.keep = False
+        self.section._reveal_done(self)
+
+
+class DropGap(QWidget):
+    """Room opening up where a dragged tab will land, the rows either side parting for it: an empty,
+    faintly drawn slot, indented to the folder depth it'll land at."""
+
+    MS = 150
+
+    def __init__(self, section, indent):
+        super().__init__(section)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.section = section
+        self.indent = indent
+        self.setFixedHeight(0)
+
+    def open(self):
+        self._go(1.0)
+
+    def close(self, done=None):
+        self._go(0.0, done)
+
+    def _go(self, target, done=None):
+        from . import motion
+        start = self.height() / 34
+        motion.animate(self, start, target, self._set, max(1, round(self.MS * abs(target - start))), done)
+
+    def _set(self, value):
+        self.setFixedHeight(round(34 * value))
+        self.update()
+
+    def paintEvent(self, event):
+        if self.height() < 4:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        text = self.section.browser.theme.text
+        slot = QRectF(self.indent + 0.5, 1.5, self.width() - self.indent - 7, self.height() - 3.5)
+        p.setOpacity(self.height() / 34)
+        p.setPen(QPen(_with_alpha(text, 0.22), 1.2, Qt.PenStyle.DashLine))
+        p.setBrush(_with_alpha(text, 0.06))
+        p.drawRoundedRect(slot, 9, 9)
+        p.end()
+
+
 class TabSection(DropZone):
     def __init__(self, browser, kind, empty_hint="", parent=None):
         super().__init__(browser, kind, parent)
@@ -465,42 +711,163 @@ class TabSection(DropZone):
         self.hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.hint.setFixedHeight(30)
         self.layout_.addWidget(self.hint)
+        self.animate_changes = False  # set by the sidebar: only for changes within one Space
+        self._reveals = []
+        self._gap = None  # where a dragged tab would land (opening), with any older ones closing
+        self._gaps = []
+        self.dragging = None  # the node being dragged out of this list, folded up while it is
+        self.just_dropped = None  # the node dropped here, which takes its gap's place as the list rebuilds
 
     @property
     def rows(self) -> list[TabRow]:
         return [row for row, *_ in self.entries if isinstance(row, TabRow)]
 
     def set_tabs(self, nodes):
+        for reveal in list(self._reveals):
+            reveal.settle()
+        self._remove_gaps()  # (a dropped tab takes its gap's place in this same pass: nothing jumps)
+        self.dragging = None
+        dropped, self.just_dropped = self.just_dropped, None
+        old = [e for e in self.entries if not sip.isdeleted(e[0]) and not getattr(e[0], "_pb_gone", False)]
+        # Rows for tabs and folders that are still here are kept (refreshed, and put back in order)
+        # rather than built again: cheaper, and nothing about them flickers
+        reusable = {id(node): (row, depth) for row, node, _parent, depth in old}
+        self.nodes = nodes
+        self.entries = []
+        self._add_rows(nodes, None, 0, reusable)
+        reused = {id(row) for row, *_ in self.entries}
         for row, *_ in self.entries:
+            self.layout_.removeWidget(row)
+        for row, *_ in self.entries:
+            self.layout_.addWidget(row)
+            if row.isHidden() and self.isVisible():
+                row.show()  # now, in the same pass the old rows went (a layout would only show it on the next)
+        kept = {id(node) for _, node, *_ in self.entries}
+        before = {id(node) for _, node, *_ in old}
+        # (a tab just dropped here appears in its gap at once, rather than growing into it)
+        added = [row for row, node, *_ in self.entries if id(node) not in before and node is not dropped]
+        gone = [(i, row) for i, (row, node, *_) in enumerate(old) if id(node) not in kept]
+        from . import motion
+        animate = (self.animate_changes and old and not motion.reduced() and self.isVisible()
+                   and len(added) <= 8 and (len(gone) <= 8 or not self.entries))  # (more: a big change, just show it)
+        for i, (row, node, *_) in enumerate(old):
+            if id(row) in reused or (animate and (i, row) in gone):
+                continue  # still in the list, or shrinks away below
             # Out of sight and out of the layout now: deleteLater only happens on a later pass, and
             # until then the old rows would still show (and take up room) under the new ones
             row.hide()
             self.layout_.removeWidget(row)
             row.deleteLater()
-        self.nodes = nodes
-        self.entries = []
-        self._add_rows(nodes, None, 0)
-        self.hint.setVisible(not nodes and bool(self.hint.text()))
+        if animate:
+            self._animate(old, kept, added, gone)
+        self.hint.setVisible(not nodes and bool(self.hint.text()) and not (animate and gone))
         self.setMinimumHeight(0 if nodes or self.hint.text() else 12)
 
-    def _add_rows(self, nodes, parent, depth):
+    def _animate(self, old, kept, added, gone):
+        for row in added:
+            index = self.layout_.indexOf(row)
+            self.layout_.removeWidget(row)
+            reveal = RowReveal(self, row, growing=True)
+            self.layout_.insertWidget(index, reveal)
+            self._reveals.append(reveal)
+        # A row that's gone shrinks where it was: after the nearest row above it that's still here
+        position = {id(node): row for row, node, *_ in self.entries}
+        clearing = not self.entries  # everything going at once (Clear): a quick sweep, top to bottom
+        inserted_after = {}
+        for n, (i, row) in enumerate(gone):
+            anchor = next((position[id(old[k][1])] for k in range(i - 1, -1, -1) if id(old[k][1]) in kept), None)
+            self.layout_.removeWidget(row)
+            base = self.layout_.indexOf(anchor) + 1 if anchor is not None else 1  # (1: after the hint)
+            offset = inserted_after.get(id(anchor), 0)
+            inserted_after[id(anchor)] = offset + 1
+            reveal = RowReveal(self, row, growing=False, delay=n * 22 if clearing else 0)
+            self.layout_.insertWidget(base + offset, reveal)
+            self._reveals.append(reveal)
+
+    def _reveal_done(self, reveal):
+        if reveal not in self._reveals:
+            return
+        self._reveals.remove(reveal)
+        index = self.layout_.indexOf(reveal)
+        row = reveal.row
+        if reveal.growing and not sip.isdeleted(row) and any(r is row for r, *_ in self.entries):
+            row.setParent(self)
+            self.layout_.insertWidget(index, row)  # back into the list where it grew in
+            row.show()
+        elif not sip.isdeleted(row):
+            row.hide()
+            row._pb_gone = True  # (deleted on a later pass: set_tabs mustn't count it as still here)
+            row.deleteLater()
+        reveal.hide()
+        self.layout_.removeWidget(reveal)
+        reveal.setGraphicsEffect(None)
+        reveal.deleteLater()
+        if not self._reveals:
+            self.hint.setVisible(not self.nodes and bool(self.hint.text()))
+
+    def _add_rows(self, nodes, parent, depth, reusable=None):
         for node in nodes:
-            if isinstance(node, Folder):
+            kind = FolderRow if isinstance(node, Folder) else TabRow
+            row, was_depth = (reusable or {}).get(id(node), (None, None))
+            if row is not None and isinstance(row, kind) and was_depth == depth and row.parentWidget() is self:
+                row.refresh()
+            elif kind is FolderRow:
                 row = FolderRow(self.browser, node, depth, self)
             else:
                 row = TabRow(self.browser, node, self.kind, depth, self)
             self.entries.append((row, node, parent, depth))
-            self.layout_.addWidget(row)
             if isinstance(node, Folder) and node.expanded:
-                self._add_rows(node.children, node, depth + 1)
+                self._add_rows(node.children, node, depth + 1, reusable)
 
     def _line(self, y, depth):
         x = 6 + depth * INDENT
         return QRect(x, max(y, 0), self.width() - x - 6, 2)
 
-    def drop_target(self, pos):
+    # --- Dragging: the row lifts out, and the others part where it'll land -----------------------
+
+    def lift(self, row):
+        """A row picked up to drag: it folds out of the list (and unfolds if it's let go of nowhere)."""
+        entry = next((e for e in self.entries if e[0] is row), None)
+        if entry is None or sip.isdeleted(row) or isinstance(row.parentWidget(), RowReveal):
+            return
+        from . import motion
+        if motion.reduced():
+            return
+        self.dragging = entry[1]
+        index = self.layout_.indexOf(row)
+        self.layout_.removeWidget(row)
+        reveal = RowReveal(self, row, growing=False, keep=True)
+        self.layout_.insertWidget(index, reveal)
+        self._reveals.append(reveal)
+
+    def drag_ended(self, row):
+        """The drag is over. If nothing rebuilt this list (it wasn't moved), the row comes back."""
+        self.dragging = None
+        if not sip.isdeleted(row) and isinstance(row.parentWidget(), RowReveal) and row.parentWidget().keep:
+            row.parentWidget().unfold()
+        self._close_gaps()
+
+    def _holder(self, row):
+        parent = row.parentWidget()
+        return parent if isinstance(parent, RowReveal) else row
+
+    def _places(self):
+        """[(row, node, parent, depth, rect)] where each row would be with no gap open (so the target
+        doesn't jump about as the gap moves the rows), leaving out the one being dragged."""
+        gaps = [g for g in self._gaps if not sip.isdeleted(g)]
+        out = []
         for row, node, parent, depth in self.entries:
-            g = row.geometry()
+            if node is self.dragging or sip.isdeleted(row):
+                continue
+            rect = self._holder(row).geometry()
+            above = sum(g.height() + self.layout_.spacing() * (g.height() > 0) for g in gaps
+                        if g.geometry().top() < rect.top())
+            out.append((row, node, parent, depth, rect.translated(0, -above)))
+        return out
+
+    def drop_target(self, pos):
+        places = self._places()
+        for row, node, parent, depth, g in places:
             if pos.y() > g.bottom():
                 continue
             siblings = parent.children if parent else self.nodes
@@ -509,15 +876,79 @@ class TabSection(DropZone):
                 # The middle of a folder row means "put it inside"
                 third = g.height() / 3
                 if g.top() + third <= pos.y() <= g.bottom() - third:
-                    return node, len(node.children), g.adjusted(1, 0, -1, 0), True
+                    return node, len(node.children), self._holder(row).geometry().adjusted(1, 0, -1, 0), True
             if pos.y() < g.center().y():
                 return parent, i, self._line(g.top() - 2, depth), False
             if isinstance(node, Folder) and node.expanded:
                 return node, 0, self._line(g.bottom() + 1, depth + 1), False
             return parent, i + 1, self._line(g.bottom() + 1, depth), False
-        if self.entries:
-            return None, len(self.nodes), self._line(self.entries[-1][0].geometry().bottom() + 1, 0), False
+        if places:
+            return None, len(self.nodes), self._line(places[-1][4].bottom() + 1, 0), False
         return None, 0, self._line(self.height() // 2, 0), False
+
+    def dragMoveEvent(self, event):
+        node, target = self._dragged(event)
+        self._hide_indicators()
+        if node is None:
+            self._close_gaps()
+            event.ignore()
+            return
+        _, _, rect, into_folder = target
+        if into_folder:
+            self._close_gaps()
+            self.box.setGeometry(rect)
+            self.box.show()
+            self.box.raise_()
+        else:
+            # The gap goes before the first row that would sit below the line
+            after = next((self._holder(row) for row, _n, _p, _d, g in self._places() if g.top() >= rect.top()), None)
+            self._open_gap(after, rect.left())
+        event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event):
+        self._hide_indicators()
+        self._close_gaps()
+
+    def dropEvent(self, event):
+        node, _target = self._dragged(event)
+        self.just_dropped = node
+        super().dropEvent(event)
+        # The move rebuilds this list a moment later, and the tab takes the gap's place then; a drop
+        # that changes nothing (it was already there) still closes it
+        QTimer.singleShot(200, self._close_gaps)
+
+    def _open_gap(self, before, indent):
+        gap = self._gap
+        if gap is not None and not sip.isdeleted(gap) and gap.anchor is before and gap.indent == indent:
+            return
+        self._close_gaps()
+        gap = DropGap(self, indent)
+        gap.anchor = before
+        index = self.layout_.indexOf(before) if before is not None else -1
+        self.layout_.insertWidget(index if index >= 0 else self.layout_.count(), gap)
+        gap.show()
+        gap.open()
+        self._gap = gap
+        self._gaps.append(gap)
+
+    def _close_gaps(self):
+        self._gap = None
+        for gap in list(self._gaps):
+            if not sip.isdeleted(gap):
+                gap.close(lambda g=gap: self._drop_gap(g))
+
+    def _drop_gap(self, gap):
+        if gap in self._gaps:
+            self._gaps.remove(gap)
+        if not sip.isdeleted(gap):
+            gap.hide()
+            self.layout_.removeWidget(gap)
+            gap.deleteLater()
+
+    def _remove_gaps(self):
+        self._gap = None
+        for gap in list(self._gaps):
+            self._drop_gap(gap)
 
 
 class FavoritesGrid(DropZone):
@@ -541,6 +972,8 @@ class FavoritesGrid(DropZone):
         self.tiles = [FavoriteTile(self.browser, t, self) for t in tabs]
         for i, tile in enumerate(self.tiles):
             self.grid.addWidget(tile, i // FAVORITE_COLUMNS, i % FAVORITE_COLUMNS)
+            if self.isVisible():
+                tile.show()  # (see TabSection.set_tabs)
         if self.tiles:
             self.hint.hide()
             # Keep columns equal width even when the last row isn't full
@@ -574,7 +1007,7 @@ class FavoritesGrid(DropZone):
         return QRect(g.right() + 2, g.top() + 6, 2, g.height() - 12)
 
 
-class NewTabRow(QFrame):
+class NewTabRow(HoverFade, QFrame):
     def __init__(self, browser, parent=None):
         super().__init__(parent)
         self.browser = browser
@@ -582,6 +1015,7 @@ class NewTabRow(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
         self.setFixedHeight(34)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAccessibleName("New Tab")
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 0, 5, 0)
         layout.setSpacing(9)
@@ -805,6 +1239,11 @@ class Sidebar(QWidget):
         bottom.addStretch(1)
         bottom.addWidget(self.new_space_btn)
         layout.addLayout(bottom)
+        # Icon-only buttons say what their tooltip says (less any shortcut), and keep saying it as
+        # it changes (the shield's count, Homebase's status…)
+        self._spoken = SpokenTooltips(self)
+        for button in self.findChildren(QToolButton):
+            self._spoken.watch(button)
 
     # --- Rebuilding ----------------------------------------------------------
 
@@ -825,6 +1264,9 @@ class Sidebar(QWidget):
         layout.invalidate()
 
     def rebuild(self):
+        if getattr(self, "drag_active", False):
+            self._rebuild_after_drag = True  # (see start_drag)
+            return
         store = self.browser.store
         space = store.active_space
         theme = self.browser.theme
@@ -839,6 +1281,10 @@ class Sidebar(QWidget):
         self.profile_badge.setToolTip(f"This Space uses the “{space.profile}” profile (its own logins and cookies)")
         self.profile_badge.setVisible(space.profile != "default")
         self.favorites.set_tabs(store.favorites)
+        # Rows slide in and out for changes within a Space; switching Spaces just shows the new one
+        same_space = getattr(self, "_built_space", None) == space.id
+        self._built_space = space.id
+        self.pinned.animate_changes = self.today.animate_changes = same_space
         self.pinned.set_tabs(space.pinned)
         self.today.set_tabs(space.today)
         self.clear_btn.setVisible(bool(space.today))
@@ -886,6 +1332,7 @@ class Sidebar(QWidget):
             btn.setFixedSize(26, 26)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setToolTip(f"{space.name}  (⌃{i + 1})" if i < 9 else space.name)
+            btn.setAccessibleName(f"{space.name} Space" + (", current" if active else ""))
             # Quiet when inactive, full strength when it's the Space you're in
             icon = space_icon(space, text if active else _with_alpha(text, 0.5), 32)
             btn.setIcon(icon if active or is_symbol(space.icon) or not space.icon else faded(icon, 0.5))
@@ -896,6 +1343,8 @@ class Sidebar(QWidget):
             btn.customContextMenuRequested.connect(
                 lambda pos, s=space, b=btn: self.browser.show_space_menu(s, b.mapToGlobal(pos)))
             self.switcher.addWidget(btn)
+            if self.isVisible():
+                btn.show()  # (see TabSection.set_tabs)
             self.space_buttons.append(btn)
 
     # --- Cheap updates (no widget rebuild) ---------------------------------------
@@ -1049,8 +1498,11 @@ class Sidebar(QWidget):
                            letter_icon(ext.name, self.browser.theme.accent))
             button.setText(host.badge_text(ext, url))
             button.setToolTip(ext.name)
+            button.setAccessibleName(ext.name)
             button.clicked.connect(lambda _=False, e=ext, b=button: self.browser.click_extension(e, b))
             self.pinned_ext_layout.addWidget(button)
+            if self.isVisible():
+                button.show()
             self.pinned_ext_buttons.append(button)
         # The puzzle piece shows a badge only for extensions that aren't pinned (those show their own)
         badge = next((b for b in (host.badge_text(e, url) for e in host.extensions.values()

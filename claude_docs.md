@@ -57,11 +57,11 @@ Your session, favicons, cookies and cache normally live in `~/Library/Applicatio
 | **Favorites** | The icon grid at the top of the sidebar. Every Space shares them. |
 | **Spaces** | Separate sets of tabs, each with its own name, colour and emoji. The whole window takes on the Space's colour. |
 | **Pinned tabs** | Tabs kept above the divider. Each one remembers its home URL. Closing one only *unloads* it (the `—` button). |
-| **Today tabs** | Tabs below the divider. New tabs go on top. They're archived after 12 hours unused (you can change this from the archive button). |
-| **Command bar** | ⌘T or ⌘L. One box for URLs, searches, open tabs, history, archived tabs and app commands. |
-| **Little window** | Arc's "Little Arc": links from other apps, page popups, or ⌥⌘N open in a compact window. It has a slim header tinted with your Space theme, the site's name (click it or press ⌘L to edit the address), back/reload/copy-link buttons, and **Open** (⌘O), which moves the live page into the main window as a Today tab. To send outside links to a new tab instead, use *File → Open Links from Other Apps In*. |
+| **Today tabs** | Tabs below the divider. New tabs go on top. They're archived after 12 hours unused (you can change this from the archive button). Rows slide in when a tab opens, slide out when one closes (the ones below glide up), and *Clear* sweeps them away top to bottom (with **Undo** in the message that follows, for five seconds: everything comes back where it was, folders and all); folders opening and closing do the same. |
+| **Command bar** | ⌘T or ⌘L. One box for URLs, searches, open tabs, history, archived tabs and app commands. ↑ and ↓ move the highlight, which glides between rows. |
+| **Little window** | Arc's "Little Arc": links from other apps, page popups, or ⌥⌘N open in a compact window, fading in as it rises into place (and fading out as it closes). It has a slim header tinted with your Space theme, the site's name (click it or press ⌘L to edit the address), back/reload/copy-link buttons, and **Open** (⌘O), which moves the live page into the main window as a Today tab. To send outside links to a new tab instead, use *File → Open Links from Other Apps In*. |
 
-Drag tabs between Favorites, Pinned and Today to reorganise them. Right-click a tab or Space for more options. Swipe sideways with two fingers on the sidebar to switch Spaces.
+With VoiceOver, every tab, folder, Favorite and sidebar button reads out its name (and a tab what its badges say: unread, playing sound, sleeping). Drag tabs between Favorites, Pinned and Today to reorganise them: the tab lifts out of its place and the other rows part to show where it will land (drop on the middle of a folder to put it inside). Right-click a tab or Space for more options. Swipe sideways with two fingers on the sidebar to switch Spaces.
 
 ### Importing from Arc
 
@@ -83,10 +83,11 @@ Drag tabs between Favorites, Pinned and Today to reorganise them. Right-click a 
 |---|---|
 | **Editing a Space** | Click the Space's name at the top of its tabs, or right-click it or its icon in the switcher. A popover lets you rename it, pick an icon (line icons or emoji), choose a colour, switch its profile, open the theme editor, add a folder or delete the Space. Every change applies immediately. |
 | **Space themes** | Right-click a Space and choose *Edit Theme…*. Pick up to 3 colours for a gradient, set the intensity, choose light/dark/auto, and add optional grain. Changes preview live. |
-| **Split View** | Choose *Tabs → Split View…* (⌃⇧=), drag a tab from the sidebar onto the page, or right-click a tab and choose *Open in Split View*. Up to 4 panes. Click a pane to focus it; hover a pane and click × to take it out, or press ⌃⇧- to separate. |
-| **Peek** | Links that open a new tab from a pinned tab or favorite float in a card instead. Press Esc or click outside to close it, or use ⤢ to keep it as a tab. Turn it off with the "Turn Peek On / Off" command in ⌘T. |
+| **Split View** | Choose *Tabs → Split View…* (⌃⇧=), drag a tab from the sidebar onto the page, or right-click a tab and choose *Open in Split View*. Up to 4 panes. Click a pane to focus it; hover a pane and click × to take it out, or press ⌃⇧- to separate. Panes settle in with a short crossfade. |
+| **Peek** | Links that open a new tab from a pinned tab or favorite float in a card instead, rising into place as the page behind dims (and sinking away when closed). Press Esc or click outside to close it, or use ⤢ to keep it as a tab. Turn it off with the "Turn Peek On / Off" command in ⌘T. |
 | **Resizing the sidebar** | Drag its right edge, which highlights on hover. Double-click the edge to reset it. The width is kept between 190 and 420 pt and remembered. |
-| **Hidden sidebar** | After ⌘S hides it, touch the left edge of the window and the sidebar slides out over the page. |
+| **Light and dark** | When macOS switches between light and dark, the window crossfades into its new colours. Hovering a tab, folder or New Tab row fades its highlight in and out, as in Arc. |
+| **Hidden sidebar** | After ⌘S hides it, touch the left edge of the window and the sidebar slides out over the page. It stays while the pointer is anywhere between the edge and just past the sidebar (or one of its menus is open), slides back a moment after you move away, and turns round smoothly if you come back on its way out. |
 | **Boosts** | Use the *Boosts* menu, then *Boost This Site…*, to add your own CSS and JavaScript for a site. *Zap Elements* lets you click things on the page to hide them for good; press Esc when done. |
 | **Notes** | ⇧⌘N (*File → New Note*). A note is a tab with a text editor, saved as Markdown in your data folder. ⌘B / ⌘I / ⌘U format text, and typing "* " starts a list. |
 | **Easels** | *File → New Easel* (or ⌘T → "New Easel") opens a whiteboard tab: text, sticky notes, drawing, rectangles, ellipses and arrows in six colours (shortcuts V T S P R O A), plus images you paste or drop in. ⌘-scroll or pinch to zoom, ⌘0 fits everything, ⌘Z / ⇧⌘Z undo and redo, Backspace deletes. Click the name at the left of its toolbar to rename it. |
@@ -105,7 +106,7 @@ Drag tabs between Favorites, Pinned and Today to reorganise them. Right-click a 
 | **Recent-tab switching** | Hold ⌃ and tap Tab to go back through recently used tabs, shown as cards with a picture of each page; let go to switch. A quick ⌃Tab flips to the previous tab. Esc cancels. *Settings → Tabs* switches ⌃Tab back to sidebar order. |
 | **Per-site zoom** | ⌘= / ⌘- / ⌘0 zoom the page and remember it for that site. A chip in the URL pill shows the level; click it to reset. |
 | **Print, PDF & saving** | ⌘P prints, ⌥⌘P saves the page as a PDF, ⇧⌘S saves it as a web archive (.mhtml), and ⌥⇧⌘C copies the page as a Markdown link (`[Title](url)`). |
-| **Swipe gestures** | Both swipes follow your fingers, as far as you like and back again, and nothing happens until you let go. **On a page**, swipe right with two fingers to go back, left to go forward. The page slides with your fingers over a picture of the page you're going to (taken when you left it; a page that changed without loading shows its icon and title instead). Let go past about a third of the way, or flick, and it carries on at your speed; otherwise it springs back. Pages that scroll sideways themselves (carousels, code blocks, maps) keep the swipe. **On the sidebar**, the Space's tabs and its address slide across to the next or previous Space's while the window's colours blend over (Favorites, shared by every Space, stay put). The page swaps once the switch lands. Let go past halfway, or flick, to switch; with one Space it just gives a little. With macOS's Reduce Motion on, page swipes show an arrow instead and Spaces switch at once. Turn page swipes off in *Settings → Tabs*. |
+| **Swipe gestures** | Both swipes follow your fingers, as far as you like and back again, and nothing happens until you let go. **On a page**, swipe right with two fingers to go back, left to go forward. The page slides with your fingers over a picture of the page you're going to (taken when you left it; a page that changed without loading shows its icon and title instead). Let go past about a third of the way, or flick, and it carries on at your speed; otherwise it springs back. Pages that scroll sideways themselves (carousels, code blocks, maps) keep the swipe. **On the sidebar**, the Space's tabs and its address slide across to the next or previous Space's while the window's colours blend over (Favorites, shared by every Space, stay put). The page stays live while you swipe and swaps once the switch lands. Let go past halfway, or flick, to switch; with one Space it just gives a little. With macOS's Reduce Motion on, page swipes show an arrow instead and Spaces switch at once. Turn page swipes off in *Settings → Tabs*. |
 | **Developer Mode** | Pages you're building (localhost, 127.0.0.1, `*.localhost`, `*.test`, files) show their full address with port in the URL pill and a **DEV** chip that turns red with the page's error count. Click it (or ⌥⌘J) for the console drawer under the page: the page's log, a line to run JavaScript in it (↑ for history), DevTools, and **Reload on Save**: pick your project folder and the page reloads whenever a file in it changes (`node_modules`, `.git` and build folders are ignored). Pages opened from a file reload on save by themselves. |
 | **Now Playing** | When a tab you've left is playing music or a video, a card at the bottom of the sidebar shows the track and artist (from the site's media info), with play/pause, next track (YouTube, Spotify, SoundCloud, YouTube Music) and × to stop. Click it to go back to the tab. Videos still go to the mini player first. |
 | **Reader view** | ⌥⌘R (or ⌘T → "Reader View") shows just the article: a clean column with the site, title and reading time, in light, sepia or dark, with bigger or smaller text. It's rebuilt from safe tags and shown with JavaScript off. Esc closes it. |
@@ -155,7 +156,7 @@ Set up in *Settings → My Apps* (addresses default to your setup: homebase and 
 
 - **Settings** (⌘,, or *Eclipse → Settings…*) has a search box at the top ("sleep", "cookie", "qwen"): pages without a match step aside and matching settings light up; Return scrolls to the first. It has one page each for:
   - **General:** default browser, where outside links open, search engine (Google, DuckDuckGo, Bing, Brave, Kagi or Ecosia), and spell check (off until you turn it on; the first time, it downloads your language's dictionary, a few hundred KB, from Chrome's dictionary server).
-  - **General** also has Back Up / Restore, and Updates (automatic daily check, Check Now).
+  - **General** also has the **App icon** (twelve looks of the eclipse: the Dock changes right away, and Finder and Launchpad after the next `./run.sh --build-app`, which draws the one you picked), Back Up / Restore, and Updates (automatic daily check, Check Now).
   - **Tabs:** archive timing, tab sleeping, Peek, the mini player, ⌃Tab order, swipe to go back, notification banners.
   - **Air Traffic Control:** which Space outside links open in.
   - **Privacy & Ad Blocking:** blocking on/off, allowed sites, block lists, clearing history.
@@ -204,7 +205,7 @@ Qt WebEngine's own extension support crashes on macOS, so Eclipse has its **own 
 
 ### Downloads & yt-dlp
 
-**File → Downloads** (⌥⌘L) lists every download.
+**File → Downloads** (⌥⌘L) lists every download. Drag a finished one straight into Finder, Mail or Messages (it's the file itself), or double-click it to open it.
 
 **Download Video…** (⇧⌘D, or right-click a tab) works like this:
 1. Paste a link; it's prefilled with the current page.
@@ -301,7 +302,7 @@ The tests cover:
 
 They run headless and use a throwaway data folder.
 
-**Live tests** (`./run.sh --live-tests`, or `python -m pytest tests --live`) drive the real window against pages from a local server in `tests/live/site`, about 30 seconds with a window showing: swipes (and not over a carousel), cookie banners (and not other buttons), private windows keeping nothing, ⌘T completion, sums and page-text search, Reader, the Developer Mode console and Reload on Save, the crashed-page card, pinned tabs going home, Now Playing, menus showing "&", links losing their tracking tags, Space and page swipes following the fingers (and springing back when let go early), certificate warnings (against a local HTTPS server with a self-signed certificate), and spell check. The spell-check test needs a real dictionary: it uses yours once you've turned spell check on, or `PB_TEST_DICTIONARY=/path/to/en-US.bdic`, and is skipped otherwise. Plain `pytest` skips them.
+**Live tests** (`./run.sh --live-tests`, or `python -m pytest tests --live`) drive the real window against pages from a local server in `tests/live/site`, about a minute. The test windows open behind your other windows and the test app never becomes the active app, so you can keep working while they run. They cover: swipes (and not over a carousel), cookie banners (and not other buttons), private windows keeping nothing, ⌘T completion, sums and page-text search, Reader, the Developer Mode console and Reload on Save, the crashed-page card, pinned tabs going home, Now Playing, menus showing "&", links losing their tracking tags, Space and page swipes following the fingers (and springing back when let go early), rows sliding in and out (and Clear sweeping them), rows parting for a dragged tab, picking the app icon, the hidden sidebar staying out and turning round, the resize handle on the page edge, Peek easing in and out, Split View crossfading, Favorites springing when pressed, the command bar highlight gliding, every sidebar control having a name for VoiceOver, hover highlights fading, dragging finished downloads out, undoing Clear, Little windows fading in and out, and the tricky moments in between (a keyboard Space switch mid-swipe, dragging a tab to another section, a second swipe while the first lands, the mouse wheel after a swipe), certificate warnings (against a local HTTPS server with a self-signed certificate), and spell check. The spell-check test needs a real dictionary: it uses yours once you've turned spell check on, or `PB_TEST_DICTIONARY=/path/to/en-US.bdic`, and is skipped otherwise. Plain `pytest` skips them.
 
 ## Code layout (`browser/`)
 
@@ -318,13 +319,14 @@ They run headless and use a throwaway data folder.
 | `little.py` | Little windows. |
 | `app.py` | Startup, single-instance hand-off (local socket), and links arriving from macOS. |
 | `tools/build_app.py` | Builds `Eclipse.app`: a native launcher, `Info.plist` (registered for http/https and HTML files) and the icon, and retires an old `PythonBrowser.app`. |
-| `brand.py` | The name (Eclipse) and the icon: a total eclipse drawn in code, used by both the built app and `./run.sh`. `LOOKS` holds the variations and `LOOK` picks one. Also the internal name, which never changes. |
+| `brand.py` | The name (Eclipse) and the icon: a total eclipse drawn in code, used by both the built app and `./run.sh`. `LOOKS` holds the variations, `LOOK` is the default, and Settings → General → App icon picks another (`app_icon`, which the app build reads too). Also the internal name, which never changes. |
 | `webview.py` | Profile setup (one per name: persistent cookies, user agent), `WebPage` and `WebView`. |
 | `theme_editor.py` | The Space theme editor. |
 | `space_editor.py` | The Space popover (name, icon, colour, profile). |
 | `icons.py` | Space icons: line icons, emoji, or a colour dot. |
 | `split.py` | Split View panes. |
-| `peek.py` | The Peek overlay. |
+| `peek.py` | The Peek overlay (it moves, never resizes, as it opens: a page resized every frame would stutter). |
+| `floating_sidebar.py` | The hidden sidebar sliding out on hover: where the pointer counts as "still there", reversing mid-slide, and its painted shadow. |
 | `boosts.py` | Boosts (per-site CSS/JS) and the Zap tool. |
 | `notes.py` | Note tabs (Markdown editor). |
 | `adblock.py` | The request interceptor, block lists, and cosmetic/YouTube scripts. |
@@ -368,7 +370,7 @@ They run headless and use a throwaway data folder.
 | `cookies.py` | The cookie-banner rejecter (known consent tools, then a careful label match). |
 | `page_index.py` | The local full-text index of pages you've read (SQLite FTS5, written on its own thread). |
 | `answers.py` | The command bar's instant answers: safe arithmetic, unit conversion, world time, colours. |
-| `motion.py` | Animation helpers (eased values, fades, the sidebar slide); respects Reduce Motion. |
+| `motion.py` | Animation helpers (eased values, fades, the sidebar slide, crossfading a rearranged area such as Split View); respects Reduce Motion. |
 | `integrations.py` | My Apps: addresses, presets, homebase status and control, the local AI client, Send To links. |
 | `integrations_ui.py` | The homebase menu and logs, Send To actions, the security-grade card, the My Apps settings page. |
 | `live_folder_dialog.py` | The New Live Folder dialog (feed, GitHub, JSON API, page links, calendar, Repo Radar). |

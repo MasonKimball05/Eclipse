@@ -212,12 +212,23 @@ class ResultDelegate(QStyledItemDelegate):
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        if option.state & QStyle.StateFlag.State_Selected:
+        highlight = QColor(theme.accent)
+        highlight.setAlphaF(0.85 if not theme.dark else 0.65)
+        glide = self.bar.highlight_y
+        if glide is not None:
+            # The highlight on its way from one row to the next: each row paints its own slice of it
+            moving = QRectF(rect.left(), glide + 1, rect.width(), rect.height())
+            if moving.intersects(QRectF(option.rect)):
+                path = QPainterPath()
+                path.addRoundedRect(moving, 9, 9)
+                painter.setClipRect(option.rect)
+                painter.fillPath(path, highlight)
+                painter.setClipping(False)
+        elif option.state & QStyle.StateFlag.State_Selected:
             path = QPainterPath()
             path.addRoundedRect(rect, 9, 9)
-            highlight = QColor(theme.accent)
-            highlight.setAlphaF(0.85 if not theme.dark else 0.65)
             painter.fillPath(path, highlight)
+        if option.state & QStyle.StateFlag.State_Selected:
             text = QColor("white")
 
         icon_rect = QRectF(rect.left() + 12, rect.center().y() - 9, 18, 18)
@@ -305,6 +316,7 @@ class CommandBar(QWidget):
         self.list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.list.itemClicked.connect(self._run_item)
+        self.highlight_y = None  # where the highlight is while it glides between rows (None: on its row)
         layout.addWidget(self.input)
         layout.addWidget(self.divider)
         layout.addWidget(self.list)
@@ -417,7 +429,7 @@ class CommandBar(QWidget):
             if key in (Qt.Key.Key_Down, Qt.Key.Key_Up):
                 step = 1 if key == Qt.Key.Key_Down else -1
                 if self.list.count():
-                    self.list.setCurrentRow((self.list.currentRow() + step) % self.list.count())
+                    self._glide_to((self.list.currentRow() + step) % self.list.count())
                 return True
             if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
                 # ⌘↩: Browse for Me with whatever is typed
@@ -449,6 +461,30 @@ class CommandBar(QWidget):
             self.input.clear()
             self.input.setPlaceholderText(f"Search {name}…")
         self.update_results()
+
+    def _glide_to(self, row):
+        """Arrow keys: the highlight slides to the next row instead of jumping (wrapping round from
+        the last to the first, it just jumps)."""
+        old = self.list.currentItem()
+        start = self.highlight_y if self.highlight_y is not None else (
+            self.list.visualItemRect(old).top() if old is not None else None)
+        self.list.setCurrentRow(row)
+        end = self.list.visualItemRect(self.list.currentItem()).top()
+        if start is None or abs(end - start) > ROW_HEIGHT * 1.5:
+            self._settle_highlight()
+            return
+
+        def step(y):
+            self.highlight_y = y
+            self.list.viewport().update()
+        motion.animate(self.list, start, end, step, 110, self._settle_highlight)
+
+    def _settle_highlight(self):
+        animation = getattr(self.list, "_pb_animation", None)
+        if animation is not None:
+            animation.stop()
+        self.highlight_y = None
+        self.list.viewport().update()
 
     def _run_item(self, item: QListWidgetItem):
         result: Result = item.data(Qt.ItemDataRole.UserRole)
@@ -493,6 +529,7 @@ class CommandBar(QWidget):
         self.input.setText(shown)
         self.input.blockSignals(False)
         self._quiet = False
+        self._settle_highlight()  # (new results: the highlight starts on its row)
         self.list.clear()
         self.ask(shown, ai, prompt)
 
@@ -673,6 +710,7 @@ class CommandBar(QWidget):
         self.browser.toast(f"Copied {instant.text}")
 
     def _show(self, results):
+        self._settle_highlight()  # (new results: the highlight starts on its row)
         self.list.clear()
         for result in results:
             item = QListWidgetItem()

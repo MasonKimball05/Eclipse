@@ -15,7 +15,7 @@ from PyQt6.QtGui import (QAction, QColor, QCursor, QDesktopServices, QGuiApplica
 from PyQt6.QtWebEngineCore import (QWebEngineDownloadRequest, QWebEngineNewWindowRequest, QWebEnginePage,
                                    QWebEnginePermission)
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWidgets import (QApplication, QColorDialog, QDialog, QFileDialog, QGraphicsDropShadowEffect,
+from PyQt6.QtWidgets import (QApplication, QColorDialog, QDialog, QFileDialog,
                              QHBoxLayout, QInputDialog, QLineEdit, QMainWindow, QMenu, QMessageBox, QSplitter,
                              QVBoxLayout, QWidget)
 
@@ -52,6 +52,7 @@ from .private import PrivateSession
 from .reader import ReaderView
 from .self_update import SelfUpdater
 from .translate import Translator, target_language
+from .floating_sidebar import EDGE as FLOAT_EDGE, FloatingSidebar
 from .gestures import SpaceSwipe, SwipeNavigator, slide_region
 from .tab_switcher import TabSwitcher
 from .zoom import remember_zoom, step_zoom, zoom_for, zoom_key
@@ -144,7 +145,7 @@ class MainWindow(QMainWindow):
         self._last_easel = None  # where Capture (⇧⌘2) puts things
         self._printing = None  # (view, printer) while a page prints
         self._browse_runs: set = set()
-        self._sidebar_floating = False
+        self.floating_sidebar = FloatingSidebar(self)  # the hidden sidebar, out over the page on hover
 
         # One browser profile per name; Spaces can pick their own (separate logins)
         self._profiles = {}
@@ -193,7 +194,9 @@ class MainWindow(QMainWindow):
 
         store.structure_changed.connect(self._schedule_rebuild)
         QApplication.instance().focusChanged.connect(self._on_focus_changed)
-        QGuiApplication.styleHints().colorSchemeChanged.connect(lambda _: self.apply_theme())
+        # macOS switching between light and dark: the window crossfades into its new colours
+        QGuiApplication.styleHints().colorSchemeChanged.connect(
+            lambda _: motion.crossfade(self.centralWidget(), self.centralWidget(), self.apply_theme, ms=280))
         self.apply_theme()
         # The native macOS menu bar is slow to build (~150 ms), so draw the window first
         QTimer.singleShot(0, self._build_menus)
@@ -246,7 +249,7 @@ class MainWindow(QMainWindow):
     def _update_content_margins(self):
         if self._fullscreen:
             self.content_layout.setContentsMargins(0, 0, 0, 0)
-        elif self.sidebar.isVisible():
+        elif not self.sidebar.isHidden():  # (not isVisible(): before the window first shows, nothing is)
             self.content_layout.setContentsMargins(0, 8, 8, 8)
         else:
             # Leave a strip at the top for the traffic lights
@@ -265,7 +268,7 @@ class MainWindow(QMainWindow):
         self.command_bar.setGeometry(self.centralWidget().rect())
         if self.peek.isVisible():
             self.peek.setGeometry(self.centralWidget().rect())
-        if self._sidebar_floating:
+        if self.floating_sidebar.active:
             self._place_floating_sidebar()
         self.notifications.relayout()
 
@@ -833,8 +836,8 @@ class MainWindow(QMainWindow):
             host = QUrl(self.current_tab.url).host()
             self._allow_site(host, not self.adblock.is_allowed(host))
 
-    def toast(self, text):
-        self.content.show_toast(text)
+    def toast(self, text, action=None, label="Undo"):
+        self.content.show_toast(text, action, label)
 
     # --- Extensions --------------------------------------------------------------------------
 
@@ -1231,15 +1234,26 @@ class MainWindow(QMainWindow):
         tabs = list(walk_tabs(space.today))
         count = len(tabs)
         current_cleared = self.current_tab in tabs
+        shape = self.store.today_shape(space)  # (to put it all back, folders and all, if you Undo)
+        current = self.current_tab
         for tab in tabs:
             self._destroy_view(tab)
             self.store.archive_tab(tab, space)
+        archived = self.store.archive[:count]
         if current_cleared:
             self._activate_fallback()
         else:
             self._relayout_split()
         if count:
-            self.toast(f"Archived {count} tab{'s' if count != 1 else ''}")
+            self.toast(f"Archived {count} tab{'s' if count != 1 else ''}",
+                       lambda: self._undo_clear(space, shape, archived, current if current_cleared else None))
+
+    def _undo_clear(self, space, shape, archived, current):
+        """Clear, taken back: Today as it was (anything opened since stays on top), out of the archive."""
+        self.store.restore_today(space, shape, archived)
+        if current is not None and space is self.store.active_space:
+            self.activate_tab(current)
+        self.toast("Brought your tabs back")
 
     def archive_stale_tabs(self):
         on_screen = self.store.split_of(self.current_tab) or [self.current_tab] if self.current_tab else []
@@ -1482,7 +1496,7 @@ class MainWindow(QMainWindow):
             self.toast("macOS didn't accept the change")
 
     def toggle_sidebar(self):
-        if self._sidebar_floating:
+        if self.floating_sidebar.active:
             self._dock_sidebar()
             visible = True
         else:
@@ -1620,57 +1634,31 @@ class MainWindow(QMainWindow):
         elif kind == QEvent.Type.MouseMove and not self.sidebar.isVisible() and not self._fullscreen:
             # Arc: with the sidebar hidden, touching the left edge slides it out
             pos = self.mapFromGlobal(QCursor.pos())
-            if 0 <= pos.x() <= 6 and 0 <= pos.y() <= self.height() and self.isActiveWindow():
+            if 0 <= pos.x() <= FLOAT_EDGE and 0 <= pos.y() <= self.height() and self.isActiveWindow():
                 self._reveal_sidebar()
         return False
 
     # --- Hover-to-reveal sidebar ---------------------------------------------------------------
 
     def _reveal_sidebar(self):
-        if self._sidebar_floating or self.command_bar.isVisible():
-            return
-        self._sidebar_floating = True
+        self.floating_sidebar.edge_touched()  # (floating_sidebar.py: sliding out, staying, going back)
+
+    def _float_sidebar(self):
+        """Take the sidebar out of the layout to float over the page."""
         self.sidebar.setParent(self.centralWidget())
         self.sidebar.setProperty("floating", True)
         self.sidebar.style().unpolish(self.sidebar)
         self.sidebar.style().polish(self.sidebar)
-        shadow = QGraphicsDropShadowEffect(self.sidebar)
-        shadow.setBlurRadius(40)
-        shadow.setOffset(0, 8)
-        shadow.setColor(QColor(0, 0, 0, 90))
-        self.sidebar.setGraphicsEffect(shadow)
-        self._place_floating_sidebar()
-        self.sidebar.show()
-        self.sidebar.raise_()
-        self.sidebar.align_with_traffic_lights()
-        # It slides out from the edge, as in Arc
-        motion.animate(self.sidebar, -self.sidebar.width(), 6, lambda x: self.sidebar.move(round(x), 6),
-                       motion.NORMAL)
 
     def _place_floating_sidebar(self):
-        root = self.centralWidget()
-        self.sidebar.setGeometry(6, 6, self.store.settings.get("sidebar_width", 250), root.height() - 12)
+        self.floating_sidebar.place()
 
     def sidebar_mouse_left(self):
-        if self._sidebar_floating:
-            QTimer.singleShot(350, self._maybe_hide_floating)
-
-    def _maybe_hide_floating(self):
-        busy = QApplication.activePopupWidget() or QApplication.activeModalWidget()
-        if self._sidebar_floating and not self.sidebar.underMouse() and not busy:
-            def gone():
-                if self._sidebar_floating and not self.sidebar.underMouse():
-                    self._dock_sidebar()
-                    self.sidebar.hide()
-                elif self._sidebar_floating:
-                    self.sidebar.move(6, 6)  # the pointer came back on the way out: stay
-            motion.animate(self.sidebar, self.sidebar.x(), -self.sidebar.width() - 24,
-                           lambda x: self.sidebar.move(round(x), 6), motion.FAST, gone)
+        pass  # (the floating sidebar watches the pointer itself)
 
     def _dock_sidebar(self):
         # Put it back in its normal place in the layout (hidden or shown by the caller)
-        self._sidebar_floating = False
-        self.sidebar.setGraphicsEffect(None)
+        self.floating_sidebar.finish()
         self.sidebar.setProperty("floating", False)
         self.sidebar.style().unpolish(self.sidebar)
         self.sidebar.style().polish(self.sidebar)
@@ -1785,10 +1773,12 @@ class MainWindow(QMainWindow):
         if base is None or tab is base:
             self.activate_tab(tab)
             return
-        if not self.store.add_to_split(base, tab, MAX_PANES):
-            self.toast(f"Split View holds up to {MAX_PANES} tabs")
-            return
-        self.activate_tab(tab)
+        def change():
+            if not self.store.add_to_split(base, tab, MAX_PANES):
+                self.toast(f"Split View holds up to {MAX_PANES} tabs")
+                return
+            self.activate_tab(tab)
+        motion.crossfade(self.centralWidget(), self.content, change)  # (the panes settle in, not jump)
 
     def open_in_split(self, url):
         base = self.current_tab
@@ -1797,15 +1787,19 @@ class MainWindow(QMainWindow):
         self.add_to_split(tab, base)
 
     def remove_from_split(self, tab):
-        self.store.remove_from_split(tab)
-        current = self.current_tab
-        if current is not None:
-            self.activate_tab(tab if tab is current else current)
+        def change():
+            self.store.remove_from_split(tab)
+            current = self.current_tab
+            if current is not None:
+                self.activate_tab(tab if tab is current else current)
+        motion.crossfade(self.centralWidget(), self.content, change)
 
     def separate_split(self):
         if self.current_tab is not None and self.store.split_of(self.current_tab):
-            self.store.separate_split(self.current_tab)
-            self.activate_tab(self.current_tab)
+            def change():
+                self.store.separate_split(self.current_tab)
+                self.activate_tab(self.current_tab)
+            motion.crossfade(self.centralWidget(), self.content, change)
 
     def _on_focus_changed(self, old, new):
         # Clicking into another pane of a Split View makes that tab the current one
@@ -2117,7 +2111,9 @@ class MainWindow(QMainWindow):
         def change():
             self._set_active_space(space)
             self._restore_space_tab()
-        if self.sidebar.isVisible() and self.isVisible() and self.store.active_space in spaces:
+        self.space_swipe.abandon()  # (a swipe under way gives way to this switch)
+        if (self.sidebar.isVisible() and self.isVisible() and self.store.active_space in spaces
+                and not self.floating_sidebar.active):
             # The sidebar slides over to the new Space, like Arc's
             direction = direction or (1 if spaces.index(space) > spaces.index(self.store.active_space) else -1)
             slide_region(self, self.sidebar, change, direction)

@@ -128,8 +128,10 @@ def make_icon(dest: Path):
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PyQt6.QtGui import QGuiApplication
 
-    from browser.brand import icon_image
+    from browser.brand import LABELS, icon_image, saved_look
     app = QGuiApplication.instance() or QGuiApplication([])  # noqa: F841 (needed for painting)
+    look = saved_look()  # the one picked in Settings → General → App icon
+    print(f"Drawing the icon ({LABELS[look]})…")
     with tempfile.TemporaryDirectory() as tmp:
         iconset = Path(tmp) / "AppIcon.iconset"
         iconset.mkdir()
@@ -137,7 +139,7 @@ def make_icon(dest: Path):
             for scale in (1, 2):
                 px = points * scale
                 name = f"icon_{points}x{points}{'@2x' if scale == 2 else ''}.png"
-                icon_image(px).save(str(iconset / name))  # drawn at each size (small ones bolder)
+                icon_image(px, look).save(str(iconset / name))  # drawn at each size (small ones bolder)
         subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(dest)], check=True)
 
 
@@ -234,7 +236,6 @@ def build(app: Path, identity="-", notary_profile=None):
     (contents / "Info.plist").write_bytes(plistlib.dumps(info_plist()))
     print("Compiling the launcher…")
     compile_launcher(contents / "MacOS" / NAME)
-    print("Drawing the icon…")
     make_icon(contents / "Resources" / "AppIcon.icns")
     sign(app, identity)
     if notary_profile:

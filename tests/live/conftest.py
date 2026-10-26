@@ -25,6 +25,42 @@ class _Quiet(http.server.SimpleHTTPRequestHandler):
         pass
 
 
+def _keep_out_of_the_way(widget=None):
+    """The live tests mustn't take over the screen while you work: the test app can't become the
+    active app (no Dock icon, no focus taken), and its windows go behind everything else."""
+    import ctypes
+    from browser import macos
+    if not macos._cocoa():
+        return
+    app = macos._send(macos._objc.objc_getClass(b"NSApplication"), "sharedApplication")
+    macos._send(app, "setActivationPolicy:", 2, restype=ctypes.c_bool, argtypes=(ctypes.c_long,))  # prohibited
+    if widget is not None:
+        try:
+            if not widget.isWindow() or widget.windowHandle() is None:
+                return
+        except RuntimeError:
+            return  # (closed again already)
+        window = macos._send(ctypes.c_void_p(int(widget.winId())), "window")
+        if window:
+            macos._send(window, "orderBack:", None, restype=None, argtypes=(ctypes.c_void_p,))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def in_the_background(qapp):
+    from PyQt6.QtCore import QEvent, QObject, QTimer
+
+    class Behind(QObject):  # every window the tests open (private windows, Settings…) goes to the back too
+        def eventFilter(self, obj, event):
+            if event.type() == QEvent.Type.Show and getattr(obj, "isWindow", lambda: False)() and obj.isWindow():
+                QTimer.singleShot(0, lambda w=obj: _keep_out_of_the_way(w))
+            return False
+    _keep_out_of_the_way()
+    behind = Behind()
+    qapp.installEventFilter(behind)
+    yield
+    qapp.removeEventFilter(behind)
+
+
 @pytest.fixture(scope="session")
 def site(tmp_path_factory):
     """http://127.0.0.1:<port>/ serving tests/live/site (plus a generated sound for Now Playing)."""
@@ -72,8 +108,10 @@ def window(data_dir, qapp):
     w = MainWindow(store, build_profile(qapp))
     w.resize(1100, 760)
     w.show()
+    _keep_out_of_the_way(w)
     w.toasts = []
-    w.toast = lambda text: w.toasts.append(text)
+    w.real_toast = w.toast
+    w.toast = lambda text, action=None, label="Undo": (w.toasts.append(text), setattr(w, "toast_action", action))
     wait_until(lambda: False, 0.3)
     yield w
     w.shutdown()

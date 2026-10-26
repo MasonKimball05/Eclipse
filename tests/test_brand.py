@@ -56,3 +56,19 @@ def test_copies_in_the_trash_are_forgotten_by_launch_services(tmp_path, monkeypa
     _fake_app(tmp_path / ".Trash" / "Other.app", "com.someone.else")
     build_app.forget_trashed()
     assert forgotten == [str(tmp_path / ".Trash" / "Halo.app")]
+
+
+def test_the_chosen_icon_is_remembered_and_an_unknown_one_falls_back():
+    assert brand.chosen_look({}) == brand.LOOK
+    assert brand.chosen_look({brand.SETTING: "violet"}) == "violet"
+    assert brand.chosen_look({brand.SETTING: "neon-pink"}) == brand.LOOK  # (a look that's since been removed)
+    assert set(brand.LABELS) == set(brand.LOOKS)
+
+
+def test_building_the_app_uses_the_icon_picked_in_settings(qapp, data_dir):
+    import json
+    from browser import storage
+    storage.session_path().write_text(json.dumps({"settings": {brand.SETTING: "sunset"}}))
+    assert brand.saved_look() == "sunset"
+    a, b = brand.icon_image(64, "sunset"), brand.icon_image(64, "original")
+    assert a.pixelColor(20, 20) != b.pixelColor(20, 20)  # they really are different pictures

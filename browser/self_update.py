@@ -84,7 +84,18 @@ def apply_update() -> tuple[bool, str]:
         # The hash run.sh compares, so it doesn't install them all over again
         (VENV / ".requirements-hash").write_text(
             hashlib.sha1((REPO / "requirements.txt").read_bytes()).hexdigest() + "\n")
+    precompile()
     return True, "Updated"
+
+
+def precompile():
+    """Compile any changed code now, so the next launch doesn't spend a couple of seconds doing it
+    (Python compiles what's changed the first time it runs it). Quick when nothing has changed."""
+    import compileall
+    try:
+        compileall.compile_dir(str(REPO / "browser"), quiet=2)
+    except Exception:  # (never worth failing an update or a quit over)
+        pass
 
 
 def relaunch_command() -> list[str]:

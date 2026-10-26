@@ -4,7 +4,7 @@
 import qtawesome as qta
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
 from PyQt6.QtGui import QColor, QPainter, QPainterPath
-from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QStackedWidget, QTextBrowser,
+from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QStackedWidget, QTextBrowser,
                              QToolButton, QVBoxLayout, QWidget)
 
 from . import motion
@@ -318,12 +318,22 @@ class ContentFrame(QFrame):
         self.link_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.link_label.hide()
 
-        self.toast = QLabel(self)
+        self.toast = QFrame(self)
         self.toast.setObjectName("Toast")
-        self.toast.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        toast_layout = QHBoxLayout(self.toast)
+        toast_layout.setContentsMargins(14, 6, 8, 6)
+        toast_layout.setSpacing(12)
+        self.toast_text = QLabel()
+        self.toast_text.setObjectName("ToastText")
+        self.toast_button = QPushButton()  # an action to go with it, like Undo
+        self.toast_button.setObjectName("ToastAction")
+        self.toast_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.toast_button.clicked.connect(self._toast_action)
+        toast_layout.addWidget(self.toast_text)
+        toast_layout.addWidget(self.toast_button)
+        self._toast_do = None
         self.toast.hide()
-        self._toast_timer = QTimer(self, singleShot=True, interval=1800,
-                                   timeout=lambda: motion.fade(self.toast, False, motion.NORMAL))
+        self._toast_timer = QTimer(self, singleShot=True, interval=1800, timeout=self._hide_toast)
 
         self.find_bar = FindBar(browser, self)
         self.preview_card = PreviewCard(browser, self)
@@ -400,13 +410,33 @@ class ContentFrame(QFrame):
         self.link_label.show()
         self.link_label.raise_()
 
-    def show_toast(self, text):
-        self.toast.setText(text)
+    def show_toast(self, text, action=None, label="Undo"):
+        """A short message at the bottom of the page. With `action`, it has a button (Undo, say) and
+        stays a little longer to give you time for it."""
+        self.toast_text.setText(text)
+        self._toast_do = action
+        self.toast_button.setText(label)
+        self.toast_button.setVisible(action is not None)
+        # (clicks go through a plain message, to whatever's under it)
+        self.toast.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, action is None)
+        self._toast_timer.setInterval(5000 if action is not None else 1800)
+        self.toast.layout().setContentsMargins(14, 6, 8 if action is not None else 14, 6)
         self.toast.adjustSize()
         self.toast.move((self.width() - self.toast.width()) // 2, self.height() - self.toast.height() - 20)
         self.toast.raise_()
         motion.fade(self.toast, True)
         self._toast_timer.start()
+
+    def _toast_action(self):
+        action, self._toast_do = self._toast_do, None
+        self._hide_toast()
+        if action is not None:
+            action()
+
+    def _hide_toast(self):
+        self._toast_do = None
+        self._toast_timer.stop()
+        motion.fade(self.toast, False, motion.NORMAL)
 
     def set_drawer(self, drawer):
         if drawer is self.drawer:

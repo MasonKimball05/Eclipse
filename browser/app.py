@@ -5,7 +5,6 @@ from pathlib import Path
 # QtWebEngine must be imported before the QApplication is created
 from PyQt6.QtWebEngineWidgets import QWebEngineView  # noqa: F401
 from PyQt6.QtCore import QEvent, QObject, QTimer, QUrl
-from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication
 
@@ -85,13 +84,11 @@ def run() -> int:
     sys.excepthook = crash.log_exception
     QApplication.setApplicationName(brand.INTERNAL_NAME)  # where your data lives: never renamed
     QApplication.setApplicationDisplayName(brand.NAME)
-    QApplication.setOrganizationName("MasonKimball05")
+    QApplication.setOrganizationName(brand.ORGANIZATION)
     register_scheme()  # pbext:// (extension files) has to be known before the app starts
     spelling.prepare()  # where spell-check dictionaries live, also before the app starts
     macos.name_in_menu_bar(brand.NAME)
     app = QApplication(sys.argv)
-    if not macos.is_built_app():  # (the built app has the icon in its bundle)
-        app.setWindowIcon(QIcon(QPixmap.fromImage(brand.icon_image(512))))
 
     links = _links(sys.argv[1:])
     if _hand_off(links):
@@ -104,6 +101,8 @@ def run() -> int:
     crashed = crash.start()  # did the last run quit properly? (and catch hard crashes from here on)
     profile = build_profile(app)
     store = Store(storage.session_path())
+    if not macos.is_built_app() or brand.chosen_look(store.settings) != brand.LOOK:
+        brand.apply_icon(app, store.settings)  # (the built app has the default in its bundle already)
     window = MainWindow(store, profile)
     app.installEventFilter(LinkReceiver(window, server))
     window.show()
@@ -120,4 +119,6 @@ def run() -> int:
     code = app.exec()
     window.shutdown()
     crash.clean_exit()
+    from .self_update import precompile
+    precompile()  # (what changed while it ran, pulled from GitHub say: so the next launch is quick)
     return code

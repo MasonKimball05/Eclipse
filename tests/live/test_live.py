@@ -9,6 +9,7 @@ import threading
 import time
 
 import pytest
+from PyQt6 import sip
 
 from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt, QTimer, QUrl
 from PyQt6.QtGui import QMouseEvent, QWheelEvent
@@ -349,3 +350,403 @@ def test_the_page_follows_a_back_swipe_over_a_picture_of_the_last_one(window, si
     _swipe(tab.view, 420)  # far enough this time
     assert wait_until(lambda: tab.view.url().fileName() == "index.html", 5)
     assert wait_until(lambda: not window.swipes._landing, 3)  # the picture lifted once it arrived
+
+
+def test_closing_a_tab_and_clearing_today_slide_rows_away(window, site):
+    from browser.sidebar import RowReveal
+    first = open_page(window, f"{site}/index.html")
+    second = open_page(window, f"{site}/links.html")
+    third = open_page(window, f"{site}/img.html")
+    pause(0.4)
+    today = window.sidebar.today
+    window.close_tab(second)
+    assert wait_until(lambda: today.findChildren(RowReveal), 1)  # it shrinks away, not vanishes
+    pause(0.08)
+    window.grab().save("/private/tmp/claude-501/-Users-masonkimball-Documents-GitHub-PythonBrowser--claude-worktrees-arc-inspired-project-6bde43/54baf4d1-cb03-47ee-8e3f-a5154bdf41b6/scratchpad/row_close.png")
+    assert wait_until(lambda: not today._reveals, 2)
+    pause(0.1)
+    assert [row.tab for row in today.rows] == [third, first]
+    assert all(row.isVisible() and row.parentWidget() is today for row in today.rows)
+    window.open_url(f"{site}/article.html")
+    assert wait_until(lambda: any(r.growing for r in today._reveals), 1)  # the new one grows in
+    assert wait_until(lambda: not today._reveals, 2)
+    pause(0.1)
+    assert len(today.rows) == 3 and all(row.parentWidget() is today for row in today.rows)
+    window.clear_today()
+    assert wait_until(lambda: len(today._reveals) == 3, 1)
+    assert wait_until(lambda: not today._reveals, 3)
+    assert today.rows == [] and not today.findChildren(RowReveal)
+
+
+def test_picking_an_app_icon_changes_the_dock_icon(window):
+    from browser import brand
+    window.open_settings("general")
+    settings = window._settings
+    before = QApplication.windowIcon().pixmap(64).toImage()
+    violet = next(b for b in settings.icon_group.buttons() if b.toolTip() == "Violet")
+    violet.click()
+    assert window.store.settings[brand.SETTING] == "violet" and violet.isChecked()
+    after = QApplication.windowIcon().pixmap(64).toImage()
+    assert after != before
+    settings.grab().save("/private/tmp/claude-501/-Users-masonkimball-Documents-GitHub-PythonBrowser--claude-worktrees-arc-inspired-project-6bde43/54baf4d1-cb03-47ee-8e3f-a5154bdf41b6/scratchpad/settings_icons.png")
+    settings.close()
+
+
+def _drag_event(kind, section, y, tab):
+    from PyQt6.QtCore import QMimeData
+    from PyQt6.QtGui import QDragMoveEvent, QDropEvent
+    from browser.sidebar import TAB_MIME
+    mime = QMimeData()
+    mime.setData(TAB_MIME, tab.id.encode())
+    cls = QDragMoveEvent if kind == "move" else QDropEvent
+    event = cls(QPointF(60, y) if cls is QDropEvent else QPoint(60, int(y)), Qt.DropAction.MoveAction, mime,
+                Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    (section.dragMoveEvent if kind == "move" else section.dropEvent)(event)
+    return mime  # (kept alive while the event is used)
+
+
+def test_dragging_a_tab_parts_the_rows_where_it_will_land(window, site):
+    from browser.sidebar import DropGap
+    a = open_page(window, f"{site}/index.html")
+    b = open_page(window, f"{site}/links.html")
+    c = open_page(window, f"{site}/img.html")
+    pause(0.4)
+    today = window.sidebar.today
+    assert [r.tab for r in today.rows] == [c, b, a]  # (newest on top)
+    row_b = next(r for r in today.rows if r.tab is b)
+    today.lift(row_b)
+    assert wait_until(lambda: row_b.parentWidget().height() == 0, 1)  # picked up: its slot closes
+    rows = {r.tab: r for r in today.rows}
+    top_c, top_a = rows[c].geometry(), rows[a].geometry()
+    _drag_event("move", today, top_a.center().y() + 8, b)  # the lower half of A: below A
+    gap = today._gap
+    assert gap is not None and wait_until(lambda: gap.height() == 34, 1)
+    assert gap.geometry().top() > rows[a].geometry().top()  # after A, at the end
+    window.grab().save("/private/tmp/claude-501/-Users-masonkimball-Documents-GitHub-PythonBrowser--claude-worktrees-arc-inspired-project-6bde43/54baf4d1-cb03-47ee-8e3f-a5154bdf41b6/scratchpad/drag_gap.png")
+    _drag_event("move", today, top_a.center().y() + 9, b)  # a nudge: the same place, no new gap
+    assert today._gap is gap
+    _drag_event("move", today, top_c.center().y() - 6, b)  # the top half of C: before C
+    assert today._gap is not gap and wait_until(lambda: gap.height() == 0, 1)  # the old one closes
+    _drag_event("drop", today, top_c.center().y() - 6, b)
+    assert wait_until(lambda: [r.tab for r in today.rows] == [b, c, a], 2)
+    assert wait_until(lambda: not today.findChildren(DropGap), 2)
+    # Picked up and let go of nowhere: it comes back
+    row = next(r for r in today.rows if r.tab is a)
+    today.lift(row)
+    assert wait_until(lambda: row.parentWidget().height() == 0, 1)
+    today.drag_ended(row)
+    assert wait_until(lambda: row.parentWidget() is today and row.isVisible(), 1)
+    assert [r.tab for r in today.rows] == [b, c, a]
+
+
+def test_swiping_straight_back_shows_only_the_two_spaces(window, site):
+    from browser.gestures import SpaceSlide
+    first, second = _two_spaces(window)
+    open_page(window, f"{site}/index.html")
+    width = window.sidebar.width()
+    _sidebar_swipe(window, 14, -width * 0.05, gap=0.01)  # over to the second, let go
+    assert wait_until(lambda: window.space_swipe.slide is None, 2)
+    _sidebar_swipe(window, 6, width * 0.05, gap=0.01, end=False)  # straight back, while it's still fading
+    covers = [c for c in window.findChildren(SpaceSlide) if c.isVisible()]
+    assert covers == [window.space_swipe.slide]  # the last one's gone, not baked into this one's pictures
+    _sidebar_swipe(window, 8, width * 0.05, gap=0.01, begin=False)
+    assert wait_until(lambda: window.space_swipe.slide is None, 2)
+    pause(0.3)
+    assert window.store.active_space is first
+    assert not [c for c in window.findChildren(SpaceSlide) if c.isVisible()]
+
+
+def test_the_hidden_sidebar_slides_out_stays_and_turns_round(window, site, monkeypatch):
+    from browser import floating_sidebar
+    open_page(window, f"{site}/index.html")
+    window.toggle_sidebar()  # hide it
+    pause(0.4)
+    assert not window.sidebar.isVisible()
+    root = window.centralWidget()
+    pointer = {"at": QPoint(3, 300)}
+    monkeypatch.setattr(floating_sidebar.QCursor, "pos", staticmethod(lambda: root.mapToGlobal(pointer["at"])))
+    monkeypatch.setattr(window, "isActiveWindow", lambda: True)
+    window._reveal_sidebar()  # the pointer at the very edge
+    fs = window.floating_sidebar
+    assert wait_until(lambda: window.sidebar.x() == floating_sidebar.MARGIN, 1)
+    assert fs.shadow is not None and fs.shadow.isVisible()
+    pause(0.5)  # resting at the edge, left of the sidebar itself: it stays (it used to go and come back)
+    assert fs.state == "in" and window.sidebar.x() == floating_sidebar.MARGIN
+    window.grab().save("/private/tmp/claude-501/-Users-masonkimball-Documents-GitHub-PythonBrowser--claude-worktrees-arc-inspired-project-6bde43/54baf4d1-cb03-47ee-8e3f-a5154bdf41b6/scratchpad/float_out.png")
+    pointer["at"] = QPoint(window.sidebar.geometry().right() + 200, 300)  # off over the page
+    assert wait_until(lambda: fs.state == "out", 1.5)
+    pause(0.04)  # (a few frames into sliding away, which takes ~180 ms)
+    halfway = window.sidebar.x()
+    pointer["at"] = QPoint(4, 300)  # back before it's gone: it turns round from where it is
+    fs._check()  # (what its pointer watch does next; called now so the test doesn't race the slide)
+    assert fs.state == "in"
+    assert wait_until(lambda: window.sidebar.x() == floating_sidebar.MARGIN, 1)
+    assert halfway < floating_sidebar.MARGIN
+    pointer["at"] = QPoint(900, 300)
+    assert wait_until(lambda: fs.state is None, 2) and not window.sidebar.isVisible()
+    assert fs.shadow is None
+    window.toggle_sidebar()  # and showing it for good puts it back in its place
+    pause(0.4)
+    assert window.sidebar.isVisible() and window.sidebar.parentWidget() is window.splitter
+
+
+def test_the_sidebar_resize_handle_is_on_the_page_edge(window, site):
+    open_page(window, f"{site}/index.html")
+    handle = window.splitter.handle(1)
+    edge = handle.mapTo(window, handle.rect().topRight()).x()
+    page = window.content.mapTo(window, window.content.rect().topLeft()).x()
+    assert page == edge + 1  # the handle runs right up to the page: no dead strip in between
+    assert window.content.mapTo(window, window.content.rect().topLeft()).y() <= 10  # (not the hidden-sidebar top strip)
+
+
+def test_peek_eases_in_and_out(window, site):
+    peek = window.peek
+    peek.open(window.profile, url=f"{site}/article.html")
+    assert peek.isVisible() and peek.dim < 0.5  # (on its way, not there at once)
+    assert wait_until(lambda: peek.dim == 1.0 and peek.rise == 0.0, 1)
+    final = peek.card.pos()
+    peek.close_peek()
+    assert peek.isVisible() and peek.closing  # it sinks away first
+    assert wait_until(lambda: not peek.isVisible(), 1) and peek.view is None
+    peek.open(window.profile, url=f"{site}/article.html")
+    peek.close_peek()
+    peek.open(window.profile, url=f"{site}/index.html")  # opened again while closing: just opens
+    assert wait_until(lambda: peek.dim == 1.0, 1) and peek.isVisible() and peek.card.pos() == final
+    peek.close_peek(animate=False)
+    assert not peek.isVisible()
+
+
+def test_split_view_crossfades_and_tidies_up(window, site):
+    from PyQt6.QtWidgets import QWidget
+    a = open_page(window, f"{site}/index.html")
+    b = open_page(window, f"{site}/links.html")
+    covers = lambda: [w for w in window.centralWidget().children()
+                      if isinstance(w, QWidget) and type(w).__name__ == "Cover" and w.isVisible()]
+    window.add_to_split(a, b)
+    assert covers() and window.content.splitting  # the old look fades over the new panes
+    assert wait_until(lambda: not covers(), 1)
+    window.separate_split()
+    assert wait_until(lambda: not covers(), 1) and not window.content.splitting
+
+
+def test_a_favorite_squeezes_when_pressed_and_springs_back(window, site):
+    from PyQt6.QtGui import QMouseEvent
+    tab = open_page(window, f"{site}/index.html")
+    window.move_tab(tab, "favorites")
+    pause(0.3)
+    tile = next(t for t in window.sidebar.favorites.tiles if t.tab is tab)
+    at = QPointF(tile.rect().center())
+    press = QMouseEvent(QEvent.Type.MouseButtonPress, at, tile.mapToGlobal(at), Qt.MouseButton.LeftButton,
+                        Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    QApplication.sendEvent(tile, press)
+    assert wait_until(lambda: tile.press < 0.9, 0.5)
+    release = QMouseEvent(QEvent.Type.MouseButtonRelease, at, tile.mapToGlobal(at), Qt.MouseButton.LeftButton,
+                          Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier)
+    QApplication.sendEvent(tile, release)
+    overshoot = wait_until(lambda: tile.press > 1.0, 0.5)  # past full size for a moment: a spring
+    assert overshoot and wait_until(lambda: tile.press == 1.0, 1)
+    window.sidebar.favorites.grab().save("/private/tmp/claude-501/-Users-masonkimball-Documents-GitHub-PythonBrowser--claude-worktrees-arc-inspired-project-6bde43/54baf4d1-cb03-47ee-8e3f-a5154bdf41b6/scratchpad/favs.png")
+    image = tile.grab().toImage()
+    middle = {image.pixelColor(x, image.height() // 2).name() for x in range(image.width() // 2 - 12, image.width() // 2 + 12)}
+    assert len(middle) > 1  # the icon is still drawn in the middle of the tile (not just its background)
+
+
+def test_the_command_bar_highlight_glides_between_rows(window, site):
+    from PyQt6.QtGui import QKeyEvent
+    for url in ("https://github.com/", "https://gitlab.com/", "https://gitea.io/"):
+        window.store.record_history(url, url)
+    open_page(window, f"{site}/index.html")
+    window.open_command_bar("new")
+    bar = window.command_bar
+    bar.input.setText("git")
+    bar.update_results()
+    assert bar.list.count() >= 3
+    first = bar.list.visualItemRect(bar.list.item(0)).top()
+    QApplication.sendEvent(bar.input, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Down, Qt.KeyboardModifier.NoModifier))
+    assert bar.list.currentRow() == 1  # the choice moves at once…
+    second = bar.list.visualItemRect(bar.list.item(1)).top()
+    assert wait_until(lambda: bar.highlight_y is not None, 0.3)
+    assert first <= bar.highlight_y < second  # …and the highlight glides after it
+    assert wait_until(lambda: bar.highlight_y is None, 1)
+    bar.input.setText("gith")
+    bar.update_results()
+    assert bar.highlight_y is None
+    bar.close_bar()
+
+
+def test_a_keyboard_switch_mid_swipe_never_wedges_the_sidebar(window, site):
+    first, second = _two_spaces(window)
+    open_page(window, f"{site}/index.html")
+    width = window.sidebar.width()
+    _sidebar_swipe(window, 14, -width * 0.05, gap=0.01)  # let go: it's settling…
+    assert window.space_swipe.state == "settling"
+    window.cycle_space(1)  # …and ⌃⌥→ (or a Space dot) comes in now
+    pause(0.4)
+    assert window.space_swipe.slide is None and window.space_swipe.state not in ("mine", "settling")
+    # The tab list still scrolls, and Space swipes still work
+    target = window.sidebar.scroll.viewport()
+    at = QPointF(60, 200)
+    for phase, dy in ((Qt.ScrollPhase.ScrollBegin, 0), (Qt.ScrollPhase.ScrollUpdate, 20), (Qt.ScrollPhase.ScrollUpdate, 20)):
+        event = QWheelEvent(at, QPointF(target.mapToGlobal(at.toPoint())), QPoint(0, dy), QPoint(0, dy * 4),
+                            Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, phase, False)
+        used = window.space_swipe.wheel(event)
+        QApplication.processEvents()
+    assert used is False  # a vertical scroll is the tab list's, not swallowed
+    _sidebar_swipe(window, 0, 0, begin=False)
+    before = window.store.active_space
+    _sidebar_swipe(window, 14, -width * 0.05, gap=0.01)
+    assert wait_until(lambda: window.space_swipe.slide is None, 2)
+    assert window.store.active_space is not before
+
+
+def test_dragging_a_tab_to_pinned_leaves_no_gap_behind(window, site):
+    from browser.sidebar import RowReveal
+    a = open_page(window, f"{site}/index.html")
+    b = open_page(window, f"{site}/links.html")
+    pause(0.4)
+    today, pinned = window.sidebar.today, window.sidebar.pinned
+    row = next(r for r in today.rows if r.tab is b)
+    today.lift(row)
+    assert wait_until(lambda: row.parentWidget().height() == 0, 1)
+    _drag_event("move", pinned, 10, b)
+    _drag_event("drop", pinned, 10, b)
+    assert wait_until(lambda: any(r.tab is b for r in pinned.rows), 2)
+    pause(0.05)
+    shrinking = [r for r in today.findChildren(RowReveal) if not r.growing and not sip.isdeleted(r)]
+    assert not shrinking  # no empty 34-point slot reopening where it was
+    assert [r.tab for r in today.rows] == [a]
+
+
+def test_a_second_back_swipe_while_the_first_lands_leaves_no_old_picture(window, site):
+    from browser.gestures import PageSlide
+    tab = open_page(window, f"{site}/index.html")
+    for page in ("links.html", "img.html"):
+        tab.view.load(QUrl(f"{site}/{page}"))
+        assert loaded(tab.view)
+        pause(0.2)
+    target = tab.view.focusProxy()
+    at = QPoint(600, 450)
+
+    def send(phase, dx):
+        QApplication.sendEvent(target, QWheelEvent(QPointF(at), QPointF(target.mapToGlobal(at)), QPoint(int(dx), 0),
+                                                   QPoint(int(dx) * 4, 0), Qt.MouseButton.NoButton,
+                                                   Qt.KeyboardModifier.NoModifier, phase, False))
+    for _ in range(2):  # two quick flicks back, the second while the first is still landing
+        send(Qt.ScrollPhase.ScrollBegin, 0)
+        for _ in range(8):
+            send(Qt.ScrollPhase.ScrollUpdate, 60)
+            pause(0.016)
+        send(Qt.ScrollPhase.ScrollMomentum, 30)
+        pause(0.05)
+    assert wait_until(lambda: not [s for s in tab.view.findChildren(PageSlide) if s.isVisible()], 4)
+    assert tab.view.url().fileName() == "index.html"  # back twice
+
+
+def test_a_slow_page_swipe_doesnt_swallow_the_mouse_wheel(window, site):
+    tab = open_page(window, f"{site}/index.html")
+    tab.view.load(QUrl(f"{site}/links.html"))
+    assert loaded(tab.view)
+    _swipe(tab.view, 120)  # a short, slow swipe: it springs back, the fingers lift without a glide
+    pause(0.4)
+    assert id(tab.view) not in window.swipes._gliding
+
+
+def test_everything_in_the_sidebar_has_a_name_for_voiceover(window, site):
+    from PyQt6.QtWidgets import QAbstractButton, QFrame
+    open_page(window, f"{site}/index.html")
+    tab = open_page(window, f"{site}/links.html")
+    window.move_tab(tab, "favorites")
+    pause(0.4)
+    unnamed = []
+    controls = window.sidebar.findChildren(QAbstractButton) + [
+        f for f in window.sidebar.findChildren(QFrame) if f.objectName() == "TabRow"]
+    for w in controls:
+        if w.isVisible() and not (w.accessibleName() or (hasattr(w, "text") and w.text())):
+            unnamed.append(f"{type(w).__name__}[{w.objectName()}] {w.toolTip()!r}")
+    assert not unnamed, unnamed
+    row = window.sidebar.today.rows[0]
+    assert row.accessibleName().startswith(row.tab.label)
+    assert window.sidebar.back_btn.accessibleName() == "Back"  # (not "Back (⌘[)")
+
+
+def test_tab_row_hover_fades_in_and_out(window, site):
+    from PyQt6.QtGui import QEnterEvent
+    open_page(window, f"{site}/index.html")
+    other = open_page(window, f"{site}/links.html")
+    pause(0.3)
+    row = next(r for r in window.sidebar.today.rows if r.tab is not other)  # (not the selected one)
+    at = QPointF(row.rect().center())
+    QApplication.sendEvent(row, QEnterEvent(at, at, QPointF(row.mapToGlobal(at.toPoint()))))
+    assert wait_until(lambda: 0 < row._hover < 1, 0.2)  # fading in, not on at once
+    assert wait_until(lambda: row._hover == 1.0, 0.5)
+    window.sidebar.today.grab().save("/private/tmp/claude-501/-Users-masonkimball-Documents-GitHub-PythonBrowser--claude-worktrees-arc-inspired-project-6bde43/54baf4d1-cb03-47ee-8e3f-a5154bdf41b6/scratchpad/hover.png")
+    QApplication.sendEvent(row, QEvent(QEvent.Type.Leave))
+    assert wait_until(lambda: row._hover == 0.0, 0.6)
+
+
+def test_a_finished_download_can_be_dragged_out_or_opened(window, tmp_path, monkeypatch):
+    from browser import downloads
+    item = downloads.DownloadItem("report.pdf", "ph.file")
+    (tmp_path / "report.pdf").write_bytes(b"%PDF-1.4")
+    row = downloads.DownloadRow(item, "#888888")
+    assert row._file() is None  # still running: nothing to drag yet
+    item.state, item.path = "done", str(tmp_path / "report.pdf")
+    item.changed.emit()
+    assert row._file() == item.path and "Drag" in row.toolTip()
+    opened = []
+    monkeypatch.setattr(downloads.QDesktopServices, "openUrl", staticmethod(lambda url: opened.append(url)))
+    row.mouseDoubleClickEvent(None)
+    assert opened and opened[0].toLocalFile() == item.path
+    row.deleteLater()
+
+
+def test_clear_can_be_undone(window, site):
+    a = open_page(window, f"{site}/index.html")
+    b = open_page(window, f"{site}/links.html")
+    folder = window.store.add_folder(window.store.active_space, "Reading", kind="today")
+    window.move_tab(a, "today", 0, folder)
+    pause(0.3)
+    before = window.store.today_shape(window.store.active_space)
+    archived_before = len(window.store.archive)
+    window.clear_today()
+    assert wait_until(lambda: not window.store.active_space.today, 1)
+    assert len(window.store.archive) == archived_before + 2
+    assert window.toasts[-1].startswith("Archived 2") and window.toast_action is not None
+    fresh = open_page(window, f"{site}/img.html")  # opened in the meantime: kept
+    window.toast_action()  # Undo
+    today = window.store.active_space.today
+    assert today[0] is fresh and folder in today and b in today and a in folder.children
+    assert len(window.store.archive) == archived_before  # back out of the archive
+    assert window.current_tab is b
+
+
+def test_a_toast_with_a_button_takes_clicks(window):
+    pressed = []
+    window.real_toast("Archived 3 tabs", lambda: pressed.append(True))
+    toast = window.content.toast
+    assert wait_until(lambda: toast.isVisible(), 1)
+    button = window.content.toast_button
+    assert button.isVisible() and button.text() == "Undo"
+    assert not toast.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    window.grab().save("/private/tmp/claude-501/-Users-masonkimball-Documents-GitHub-PythonBrowser--claude-worktrees-arc-inspired-project-6bde43/54baf4d1-cb03-47ee-8e3f-a5154bdf41b6/scratchpad/toast.png")
+    button.click()
+    assert pressed == [True] and wait_until(lambda: not toast.isVisible(), 1)
+    window.real_toast("Copied URL to clipboard")  # a plain one lets clicks through to the page
+    assert toast.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    assert not window.content.toast_button.isVisibleTo(toast)
+
+
+def test_a_little_window_fades_in_and_out(window, site):
+    from browser.little import LittleWindow
+    little = window._track(LittleWindow(window, url=f"{site}/index.html"))
+    little.show()
+    assert little.windowOpacity() < 0.5  # on its way in, not there at once
+    assert wait_until(lambda: little.windowOpacity() == 1.0, 1)
+    home = little.pos()
+    pause(0.1)
+    assert little.pos() == home  # (and it's settled where it was placed)
+    closed = []
+    little.destroyed.connect(lambda: closed.append(True))
+    little.close()
+    assert not closed and little.isVisible()  # fading out first…
+    assert wait_until(lambda: closed, 1.5)  # …then gone
