@@ -293,6 +293,31 @@ def test_dragging_a_tab_parts_the_rows_where_it_will_land(window, site):
     assert [r.tab for r in today.rows] == [b, c, a]
 
 
+def test_with_no_tab_open_the_hidden_sidebar_comes_out_and_stays(window, site, monkeypatch):
+    from browser import floating_sidebar
+    tab = open_page(window, f"{site}/index.html")
+    root = window.centralWidget()
+    pointer = {"at": QPoint(root.width() - 50, 300)}  # (well away from the edge: over the page)
+    monkeypatch.setattr(floating_sidebar.QCursor, "pos", staticmethod(lambda: root.mapToGlobal(pointer["at"])))
+    window.toggle_sidebar()  # hide it, with a tab open: it stays hidden
+    pause(0.6)
+    fs = window.floating_sidebar
+    assert not window.sidebar.isVisible() and not fs.active
+    window.close_tab(tab)  # nothing open now: out it comes, and stays though the pointer's nowhere near
+    assert wait_until(lambda: fs.state == "in" and window.sidebar.x() == floating_sidebar.MARGIN, 2)
+    pause(0.6)
+    assert fs.state == "in" and fs.kept
+    tab = open_page(window, f"{site}/index.html")  # a tab again: it goes once the pointer's away
+    assert not fs.kept
+    assert wait_until(lambda: not fs.active and not window.sidebar.isVisible(), 2)
+    window.close_tab(tab)
+    assert wait_until(lambda: fs.state == "in", 2)
+    window.toggle_sidebar()  # ⌘S while it's out: docked, as usual
+    assert window.sidebar.isVisible() and not fs.active and not fs.kept
+    window.toggle_sidebar()  # and hidden again with nothing open: straight back out, floating
+    assert wait_until(lambda: fs.state == "in" and fs.kept, 2)
+
+
 def test_the_hidden_sidebar_slides_out_stays_and_turns_round(window, site, monkeypatch):
     from browser import floating_sidebar
     open_page(window, f"{site}/index.html")
@@ -969,10 +994,11 @@ def _lights_state(window):
             round(frame.x), round(frame.y))
 
 
-def test_traffic_lights_go_with_the_sidebar(window, monkeypatch):
+def test_traffic_lights_go_with_the_sidebar(window, site, monkeypatch):
     from browser import floating_sidebar, macos, traffic_lights
     if not macos._cocoa():
         pytest.skip("macOS's own window buttons")
+    open_page(window, f"{site}/index.html")  # (a tab open: with none, the hidden sidebar would come out by itself)
     pause(0.3)
     hidden, alpha, x, y = _lights_state(window)
     assert not hidden and alpha == traffic_lights.DIM  # docked: there, dim until pointed at

@@ -85,7 +85,9 @@ def fade(widget, show, ms=FAST, done=None):
 class SidebarSlide:
     """The sidebar sliding away (or back): a picture of it moves over a picture of what's left
     behind, while the real layout has already changed underneath. Moving pictures instead of the
-    widgets keeps the tab titles from squashing and reflowing on the way."""
+    widgets keeps the tab titles from squashing and reflowing on the way. With no picture of what's
+    behind (behind_image None), the sidebar's slides over the real thing instead: going away, the page
+    has just been made wider and hasn't drawn its new part yet, so a picture of it would be an empty box."""
 
     def __init__(self, window, rect, sidebar_image, behind_image, showing, done=None, hold=False, right=False):
         from PyQt6.QtCore import QPointF
@@ -95,7 +97,8 @@ class SidebarSlide:
         class Cover(QWidget):
             def paintEvent(cover, event):
                 p = QPainter(cover)
-                p.drawPixmap(QPointF(0, 0), behind_image)
+                if behind_image is not None:
+                    p.drawPixmap(QPointF(0, 0), behind_image)
                 p.drawPixmap(QPointF(cover.offset if right else -cover.offset, 0), sidebar_image)  # (off its own edge)
                 p.end()
 

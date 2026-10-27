@@ -6,6 +6,9 @@
 # Whether the pointer is still "in" is checked a few times a second instead of from enter/leave
 # events: those don't come when the sidebar slides in under a pointer that hasn't moved, or when the
 # pointer goes onto a menu.
+#
+# With no tab open there's nothing to hide it for: it comes out by itself and stays (keep), and goes back
+# to coming and going with the pointer once a tab opens.
 
 import time
 
@@ -67,6 +70,7 @@ class FloatingSidebar:
     def __init__(self, window):
         self.window = window
         self.state = None  # None (docked, or hidden) · "in" (coming out, or out) · "out" (going back)
+        self.kept = False  # (out while no tab is open, wherever the pointer is)
         self.shadow = None
         self._away_since = None
         self.timer = QTimer(window)
@@ -105,6 +109,16 @@ class FloatingSidebar:
         w = self.window
         if self.state == "in" or w.command_bar.isVisible() or not w.isActiveWindow():
             return
+        self._come_out()
+
+    def keep(self, on: bool):
+        """Out and staying out (no tab is open), or back to following the pointer."""
+        self.kept = on
+        if on and self.state != "in":
+            self._come_out()
+
+    def _come_out(self):
+        w = self.window
         if self.state is None:
             w._float_sidebar()  # out of the layout, over the page
             self.shadow = Shadow(w.centralWidget())
@@ -150,6 +164,8 @@ class FloatingSidebar:
         self.window.traffic_lights.place(showing, self._out_x(), MARGIN)
 
     def _wanted(self) -> bool:
+        if self.kept:
+            return True  # (no tab open: nothing to hide it for)
         if QApplication.activePopupWidget() or QApplication.activeModalWidget():
             return True  # a menu from it (or a dialog) is open
         pos = self.window.centralWidget().mapFromGlobal(QCursor.pos())
@@ -194,6 +210,7 @@ class FloatingSidebar:
     def finish(self):
         """Back to normal (docked by the window, or about to be)."""
         self.state = None
+        self.kept = False
         self.timer.stop()
         animation = getattr(self.sidebar, "_pb_animation", None)
         if animation is not None:

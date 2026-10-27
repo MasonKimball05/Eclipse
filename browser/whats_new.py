@@ -8,12 +8,14 @@ from . import brand
 from .motion import FadesIn
 from .theme import quiet_scrollbars, stylesheet
 
-EDITION = 14
+EDITION = 15
 SETTING = "whats_new_seen"
 
 NOTES = """
 ## Lately
 
+- **The hidden sidebar** comes out by itself when no tab is open, and hiding the sidebar no longer leaves a box
+  behind for a moment.
 - **Bring your things over**: File → Import from Another Browser… brings bookmarks, history and passwords from
   Chrome, Brave, Edge or Safari (and Arc, as before). New people see it when they first open Eclipse.
 - **Send Feedback** (Help menu): tell Eclipse's maker what went wrong, with the details that help fix it. After a

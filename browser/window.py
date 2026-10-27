@@ -1149,6 +1149,8 @@ class MainWindow(QMainWindow):
             tab.notified = False
             tab.changed.emit()
         self.mini_player.release(tab)  # coming back to the tab the mini player was showing
+        if self.floating_sidebar.kept:
+            self.floating_sidebar.kept = False  # (a tab's open: the hidden sidebar goes when the pointer does)
         view = self._ensure_view(tab)
         self._stamp_on_screen()  # (the tab you're leaving was in use until now, not since you opened it)
         self.current_tab = tab
@@ -1198,6 +1200,18 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(brand.NAME)
         self.sidebar.update_selection()
         self.sidebar.update_nav()
+        self._float_if_empty()
+
+    def _float_if_empty(self, tries=3):
+        """No tab open and the sidebar hidden: it comes out over the page, as if pointed at, and stays (there's
+        nothing to hide it for). Not in full screen, where a hidden sidebar is meant to keep out of the way."""
+        if self.current_tab is not None or not self.sidebar.isHidden() or self._fullscreen or self.isFullScreen():
+            return
+        if not self.isVisible():  # (still starting up: once the window's there)
+            if tries:
+                QTimer.singleShot(300, lambda: self._float_if_empty(tries - 1))
+            return
+        self.floating_sidebar.keep(True)
 
     def _activate_fallback(self):
         visible = self.store.visible_tabs()
@@ -1831,8 +1845,9 @@ class MainWindow(QMainWindow):
         self._update_content_margins()
         if animate:
             # …and after: then the sidebar slides over (or out of) the page that's there now
-            if not visible:
-                motion.SidebarSlide(root, rect, first, root.grab(rect), showing=False, right=self.sidebar_on_right)
+            if not visible:  # (over the page itself: see SidebarSlide)
+                motion.SidebarSlide(root, rect, first, None, showing=False, right=self.sidebar_on_right,
+                                    done=self._float_if_empty)  # (no tab open: it comes straight back, floating)
                 return
             # Coming back it has to be laid out before it can be pictured: hold the old look a moment
             hold = motion.SidebarSlide(root, rect, first, first, showing=False, hold=True, right=self.sidebar_on_right)
