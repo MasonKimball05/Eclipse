@@ -75,7 +75,8 @@ def inspect(bundle: Path, fetch=_fetch_json) -> dict:
     if not build or asset is None or build <= build_of(bundle):
         return {"state": "current", "behind": 0}
     found = {"behind": 1, "build": build, "url": asset["browser_download_url"], "size": asset.get("size", 0),
-             "version": release.get("name") or tag, "subjects": notes(release.get("body", ""))}
+             "version": release.get("name") or tag, "subjects": notes(release.get("body", "")),
+             "notes": (release.get("body") or "")[:6000]}  # (the whole of them, for the update window)
     if not (os.access(bundle, os.W_OK) and os.access(bundle.parent, os.W_OK)):
         return {**found, "state": "blocked", "reason": f"This account can't change {bundle}."}
     return {**found, "state": "available"}

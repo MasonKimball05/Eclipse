@@ -194,6 +194,10 @@ class HoverFade:
             p.end()
 
 
+LIGHTS_GAP = 16          # after the traffic lights, before the first button
+LIGHTS_ROW_SPACING = 8   # between the top row's buttons
+
+
 class IconButton(HoverFade, QToolButton):
     _hover_radius, _hover_under = 6, True
 
@@ -1274,7 +1278,7 @@ class Sidebar(QWidget):
         # Top row: room for the macOS traffic lights, then the navigation buttons.
         # align_with_traffic_lights() fine-tunes this once the window exists.
         top = QHBoxLayout()
-        top.setSpacing(2)
+        top.setSpacing(LIGHTS_ROW_SPACING)
         self._lights_gap = QSpacerItem(66 if sys.platform == "darwin" else 0, 0)
         top.addItem(self._lights_gap)
         self.toggle_btn = IconButton("msc.layout-sidebar-left", "Toggle Sidebar (⌘S)")
@@ -1290,7 +1294,7 @@ class Sidebar(QWidget):
         for btn in (self.back_btn, self.forward_btn, self.reload_btn):
             top.addWidget(btn)
         layout.addLayout(top)
-        layout.addSpacing(2)
+        layout.addSpacing(6)
 
         self.url_pill = QPushButton()
         self.url_pill.setObjectName("UrlPill")
@@ -1455,9 +1459,9 @@ class Sidebar(QWidget):
         margins = layout.contentsMargins()
         layout.setContentsMargins(margins.left(), max(round(centre - offset.y() - size / 2), 0),
                                   margins.right(), margins.bottom())
-        # The gap after the lights matches the lights' own spacing (~9pt), minus the button's padding (on
-        # the right too: they move over into the sidebar)
-        gap = max(round(right + 9 - offset.x() - margins.left() - 4), 0)
+        # A little more room after the lights than between them (~9pt), minus the button's padding (on the
+        # right too: they move over into the sidebar), so the row doesn't feel crammed
+        gap = max(round(right + LIGHTS_GAP - offset.x() - margins.left() - 4), 0)
         self._lights_gap.changeSize(gap, 0)
         layout.invalidate()
 

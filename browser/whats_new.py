@@ -8,12 +8,15 @@ from . import brand
 from .motion import FadesIn
 from .theme import quiet_scrollbars, stylesheet
 
-EDITION = 15
+EDITION = 16
 SETTING = "whats_new_seen"
 
 NOTES = """
 ## Lately
 
+- **Updates** come in a window of their own, with what's new, a progress bar, and Skip This Version. Eclipse
+  looks every few hours.
+- **More room** in the sidebar's top row, and the traffic lights stay put when you point at them.
 - **The hidden sidebar** comes out by itself when no tab is open, and hiding the sidebar no longer leaves a box
   behind for a moment.
 - **Bring your things over**: File → Import from Another Browser… brings bookmarks, history and passwords from

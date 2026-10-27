@@ -735,3 +735,39 @@ def test_an_address_fills_a_checkout_but_not_a_newsletter(window, site):
         "Arkan", "Example", "arkan@example.com", "already typed", "1 Main St", "Apt 4", "Springfield", "12345", "US"], 5)
     assert run_js(tab.view, "document.getElementById('newsletter').value", world=0) == ""  # (another form)
     addresses.delete(addresses.all_addresses()[0]["id"])
+
+
+def test_the_update_window_shows_whats_new_downloads_and_can_skip(window, monkeypatch):
+    from PyQt6.QtWidgets import QApplication, QLabel, QProgressBar, QPushButton
+    from browser.update_window import SKIP_SETTING
+    updater = window.feature("self_update").updater
+    found = {"state": "available", "build": 202611011200, "version": "Eclipse 2026.11.1", "size": 168_000_000,
+             "behind": 1, "subjects": ["Better tabs"], "notes": "- Better tabs\n- Passwords fill faster"}
+    asked = []
+    monkeypatch.setattr(updater, "update_and_restart", lambda: asked.append(1))
+    updater._manual = False
+    updater._offer(found)
+    page = updater.window
+    assert page is not None and page.isVisible()
+    words = " ".join(l.text() for l in page.findChildren(QLabel))
+    assert "Eclipse 2026.11.1 · 168 MB. You're running it from source." in words
+    assert "Passwords fill faster" in page.notes.toPlainText()
+    QApplication.processEvents()
+    page.grab().save("/private/tmp/claude-501/-Users-masonkimball-projects-GitHub-Eclipse/626a4f58-39ed-47a1-a72d-0f6fa337de5b/scratchpad/update-window.png")
+    next(b for b in page.findChildren(QPushButton) if b.text() == "Update && Restart").click()
+    assert asked == [1] and not page.go.isEnabled()
+    updater._set_status({**found, "state": "downloading", "percent": 40})
+    assert page.findChildren(QProgressBar)[0].value() == 40 and "40%" in page.state.text()
+    updater._set_status({"state": "failed", "reason": "The download didn't finish."})
+    assert page.go.isEnabled() and page.go.text() == "Try Again" and "didn't finish" in page.state.text()
+    page.skip.click()  # skipped: not offered again by itself...
+    assert window.store.settings[SKIP_SETTING] == 202611011200
+    QApplication.processEvents()
+    updater._offer(found)
+    from PyQt6 import sip
+    assert updater.window is None or sip.isdeleted(updater.window)  # (the closed one, not a new one)
+    updater._manual = True  # ...but Check Now still shows it
+    updater._offer(found)
+    assert updater.window.isVisible()
+    updater.window.close()
+    updater._set_status({"state": "idle"})

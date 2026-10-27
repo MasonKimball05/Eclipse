@@ -108,3 +108,11 @@ def test_a_release_copy_asks_github_releases(tmp_path, monkeypatch):
     monkeypatch.setattr(self_update, "REPO", code)
     monkeypatch.setattr(release_update, "inspect", lambda bundle: {"state": "current", "asked": bundle})
     assert self_update.release_bundle() == app and self_update.inspect()["asked"] == app
+
+
+def test_the_update_window_says_what_you_have_briefly():
+    from browser.update_window import notes_markdown, you_have
+    assert you_have("Eclipse 2026.10.27 (build 202610271716)") == "You have 2026.10.27."
+    assert you_have("From source, commit abc1234 (Oct 27)") == "You're running it from source."
+    assert notes_markdown({"notes": "- A\n- B"}) == "- A\n- B"
+    assert notes_markdown({"subjects": ["Fix", "Feature"], "behind": 5}) == "- Fix\n- Feature\n- …and 3 more"

@@ -20,6 +20,7 @@ import threading
 import time
 from pathlib import Path
 
+from PyQt6 import sip
 from PyQt6.QtCore import QObject, QProcess, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
@@ -28,8 +29,8 @@ from .features import Feature
 
 REPO = Path(__file__).resolve().parents[1]
 VENV = Path.home() / "Library" / "Application Support" / "Eclipse Build" / "venv"  # same as run.sh
-CHECK_EVERY_SECONDS = 24 * 3600
-FIRST_CHECK_MS = 120_000
+CHECK_EVERY_SECONDS = 6 * 3600  # (and once soon after it opens, if the last look was longer ago than that)
+FIRST_CHECK_MS = 20_000
 GIT_TIMEOUT = 60
 
 
@@ -146,6 +147,7 @@ class SelfUpdater(QObject):
         self._manual = False
         self._found = {}
         self._staged = None  # (a release: the checked new copy, swapped in after quitting)
+        self.window = None  # (the update window, while it's open)
         self.checked.connect(self._checked)
         self.applied.connect(self._applied)
         self.status = {"state": "idle"}  # (idle, checking, then what inspect found; downloading; failed)
@@ -204,25 +206,18 @@ class SelfUpdater(QObject):
                 self.browser.toast(result.get("reason") or "Couldn't check for updates")
 
     def _offer(self, result):
+        """The update window (one at a time). A version you skipped isn't offered again by itself."""
+        from .update_window import SKIP_SETTING, UpdateWindow
         self._found = result
-        subjects = "\n".join(f"• {s}" for s in result.get("subjects", []))
-        more = result["behind"] - len(result.get("subjects", []))
-        if more > 0:
-            subjects += f"\n…and {more} more"
-        box = QMessageBox(self.browser)
-        box.setWindowTitle("Update Available")
-        if "build" in result:  # (a release)
-            size = f", {result['size'] // 1_000_000} MB" if result.get("size") else ""
-            box.setText(f"{result['version']} is ready{size}.")
-        else:
-            box.setText(f"A new version of {brand.NAME} is ready ({result['behind']} "
-                        f"change{'s' if result['behind'] != 1 else ''}).")
-        box.setInformativeText(subjects + "\n\nYour tabs come back after the restart.")
-        update = box.addButton("Update && Restart", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton("Later", QMessageBox.ButtonRole.RejectRole)
-        box.exec()
-        if box.clickedButton() is update:
-            self.update_and_restart()
+        if not self._manual and result.get("build") and result.get("build") == self.settings.get(SKIP_SETTING):
+            return
+        if self.window is not None and not sip.isdeleted(self.window):
+            self.window.raise_()
+            self.window.activateWindow()
+            return
+        self.window = UpdateWindow(self, result, this_version())
+        self.window.show()
+        self.window.raise_()
 
     def update_and_restart(self):
         self.browser.toast(f"Updating {brand.NAME}…")
@@ -248,7 +243,8 @@ class SelfUpdater(QObject):
     def _applied(self, ok, message):
         if not ok:
             self._set_status({"state": "failed", "reason": message})
-            QMessageBox.warning(self.browser, "Couldn't Update", message)
+            if self.window is None or sip.isdeleted(self.window):  # (the update window says so itself)
+                QMessageBox.warning(self.browser, "Couldn't Update", message)
             return
         if message != "Updated":
             QMessageBox.information(self.browser, "Updated", message)

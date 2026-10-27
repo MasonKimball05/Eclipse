@@ -259,7 +259,10 @@ def style_traffic_lights(widget, hidden: bool, alpha: float = 1.0, animate=False
         button = _send(window, "standardWindowButton:", i, argtypes=(ctypes.c_long,))
         if not button:
             continue
-        _send(button, "setHidden:", hidden, restype=None, argtypes=(ctypes.c_bool,))
+        # Only when it changes: telling a showing button to show has macOS lay the title bar out again, which
+        # nudged the buttons under the pointer every time they lit up as it came near
+        if _send(button, "isHidden", restype=ctypes.c_bool) != hidden:
+            _send(button, "setHidden:", hidden, restype=None, argtypes=(ctypes.c_bool,))
         target = _send(button, "animator") if animate else button  # (Core Animation does the fade)
         _send(target, "setAlphaValue:", alpha, restype=None, argtypes=(ctypes.c_double,))
     return True
