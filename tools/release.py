@@ -277,6 +277,8 @@ for found in pkgutil.walk_packages(browser.__path__, "browser."):
     importlib.import_module(found.name)
 qtawesome.icon("ph.key")
 assert sys.modules["PyQt6.QtCore"].__file__.startswith(sys.argv[1]), "not the app's own Qt"
+from browser import net  # (its Python trusts no certificate on its own: updates would fail to connect)
+assert net.context().cert_store_stats()["x509_ca"] > 50, "no trusted certificates for HTTPS"
 view = QWebEngineView()
 view.loadFinished.connect(lambda ok: (print("loaded" if ok else "failed"), app.quit()))
 view.setHtml("<p>Eclipse</p>")

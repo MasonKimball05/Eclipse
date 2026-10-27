@@ -29,7 +29,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QUrl
 
-from . import recovery, secure_store, storage
+from . import net, recovery, secure_store, storage
 from .passkey_store import PUBLIC_SUFFIXES
 
 KEY_ACCOUNT = "passwords-key"
@@ -208,7 +208,7 @@ def _pwned_range(prefix: str) -> str:
     import urllib.request  # (here, not at launch: it brings in the whole web stack)
     request = urllib.request.Request(PWNED + prefix, headers={"User-Agent": "Eclipse browser",
                                                               "Add-Padding": "true"})
-    with urllib.request.urlopen(request, timeout=20) as response:
+    with net.urlopen(request, timeout=20) as response:  # (macOS's trusted certificates: see net.py)
         return response.read().decode()
 
 

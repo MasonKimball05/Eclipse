@@ -26,7 +26,7 @@ from PyQt6.QtCore import QObject, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtWebEngineCore import QWebEngineScript
 from PyQt6.QtWidgets import QPushButton
 
-from . import macos, password_store, passkey_store, recovery
+from . import macos, net, password_store, passkey_store, recovery
 from .passkeys import PageCard, _Answer, _escape, _gone
 from .webview import PASSWORD_CALL
 
@@ -760,7 +760,8 @@ def settings_page(settings):
     def check_breaches():
         def checked(found):
             if isinstance(found, Exception):
-                QMessageBox.warning(settings, "Breached Passwords", f"Couldn't reach Have I Been Pwned: {found}")
+                QMessageBox.warning(settings, "Breached Passwords",
+                                    f"Couldn't reach Have I Been Pwned: {net.describe(found)}.")
                 return
             entries = password_store.logins()
             state["breaches"] = {password_store.breach_key(p): n for p, n in found.items()}

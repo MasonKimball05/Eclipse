@@ -22,7 +22,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QStandardPaths
 
-from . import brand, macos, verified
+from . import brand, macos, net, verified
 
 REPOSITORY = f"{brand.ORGANIZATION}/{brand.NAME}"
 LATEST = f"https://api.github.com/repos/{REPOSITORY}/releases/latest"
@@ -51,7 +51,7 @@ def _fetch_json(url):
     import urllib.request  # (here, not at launch: it brings in the whole web stack, and the first look is later)
     request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
                                                    "User-Agent": f"{brand.NAME} updater"})
-    with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+    with net.urlopen(request, timeout=TIMEOUT) as response:  # (macOS's trusted certificates: see net.py)
         return json.loads(response.read())
 
 
@@ -68,7 +68,7 @@ def inspect(bundle: Path, fetch=_fetch_json) -> dict:
     try:
         release = fetch(LATEST)
     except Exception as error:  # (offline, GitHub down, rate limited: all just "try later")
-        return {"state": "unavailable", "reason": f"Couldn't reach GitHub ({error})"}
+        return {"state": "unavailable", "reason": f"Couldn't reach GitHub: {net.describe(error)}."}
     tag = str(release.get("tag_name", ""))
     build = int(tag[len(TAG_PREFIX):]) if tag.startswith(TAG_PREFIX) and tag[len(TAG_PREFIX):].isdigit() else 0
     asset = next((a for a in release.get("assets", []) if a.get("name") == ASSET), None)
@@ -85,7 +85,7 @@ def inspect(bundle: Path, fetch=_fetch_json) -> dict:
 def download(url: str, to: Path, progress=None, opener=None) -> Path:
     """Fetch the zip to `to`; progress(fraction) as it comes in."""
     import urllib.request
-    opener = opener or urllib.request.urlopen
+    opener = opener or net.urlopen
     to.parent.mkdir(parents=True, exist_ok=True)
     request = urllib.request.Request(url, headers={"User-Agent": f"{brand.NAME} updater"})
     with opener(request, timeout=TIMEOUT) as response, open(to, "wb") as out:
@@ -142,7 +142,7 @@ def prepare(found: dict, bundle: Path, progress=None) -> tuple[Path | None, str]
     try:
         archive = download(found["url"], folder / ASSET, progress)
     except Exception as error:
-        return None, f"The download didn't finish ({error})."
+        return None, f"The download didn't finish: {net.describe(error)}."
     app = unpack(archive, folder / "new")
     archive.unlink(missing_ok=True)
     if app is None:
