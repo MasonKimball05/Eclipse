@@ -420,20 +420,3 @@ def verify_owner(reason: str, done, interactive=True) -> bool:
     _send(context, "evaluatePolicy:localizedReason:reply:", _OWNER_POLICY, _cfstr(reason), ctypes.byref(block),
           restype=None, argtypes=(ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p))
     return True
-
-
-# --- Idle: how long since you last touched the Mac ------------------------------------------------
-
-_cg = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics") \
-    if sys.platform == "darwin" else None
-if _cg is not None:
-    _cg.CGEventSourceSecondsSinceLastEventType.restype = ctypes.c_double
-    _cg.CGEventSourceSecondsSinceLastEventType.argtypes = [ctypes.c_int32, ctypes.c_uint32]
-
-
-def idle_seconds() -> float:
-    """Seconds since the last key, click, scroll or pointer move anywhere on the Mac (0 off macOS)."""
-    if _cg is None:
-        return 0.0
-    # (the combined session state, any input event: what the screen saver goes by)
-    return float(_cg.CGEventSourceSecondsSinceLastEventType(1, 0xFFFFFFFF))

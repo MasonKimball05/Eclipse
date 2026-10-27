@@ -17,7 +17,7 @@ import traceback
 
 # The feature modules, in the order they're loaded (later ones can find earlier ones)
 FEATURE_MODULES = [
-    "self_update", "arc_import", "member_card", "notes", "easel", "gestures", "now_playing", "upnext", "browsing_time",
+    "self_update", "arc_import", "welcome", "addresses", "member_card", "notes", "easel", "gestures", "now_playing", "upnext",
     "integrations_ui", "github_status", "live_folder_dialog", "boosts", "claude_feature", "page_chat",
     "ext.ui",
 ]
@@ -69,7 +69,8 @@ class Feature:
     # --- Pages ----------------------------------------------------------------------------------------
 
     def profile_ready(self, profile):
-        """A browser profile was made (the default one, a Space's, a private window's)."""
+        """A browser profile was made (the default one, or a Space's; not a private window's, which keeps
+        features such as extensions out)."""
 
     def view_created(self, view, tab):
         """A web page was made for a tab."""

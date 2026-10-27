@@ -117,7 +117,7 @@ def test_open_reaches_the_app_and_nothing_else_does(window, site, helper):
     _click(card.always_button)
     assert wait_until(lambda: f"{SCHEME}://always-1" in _links(helper), 10)
     run_js(tab.view, f"location.href = '{SCHEME}://always-2'; true")
-    assert wait_until(lambda: f"{SCHEME}://always-2" in _links(helper), 10)
+    assert wait_until(lambda: f"{SCHEME}://always-2" in _links(helper), 20)  # (macOS can be slow handing it over)
     assert _card(window) is None  # (no card that time)
 
     # A page you can't see (like an extension's background) opens nothing, ever

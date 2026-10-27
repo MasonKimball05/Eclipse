@@ -31,8 +31,19 @@ def test_the_data_folder_moves_to_its_new_name(tmp_path):
     assert (new / "session.json").read_text() == "{}" and (new / "profile").is_dir() and not old.exists()
     assert not caches.with_name("PythonBrowser").exists()
     (old / "late").mkdir(parents=True)
-    storage._move_old_folder(new, caches)  # (a new folder's never replaced by an old one)
+    storage._move_old_folder(new, caches)  # (a new folder in use is never replaced by an old one)
     assert old.exists() and not (new / "late").exists()
+
+
+def test_an_empty_new_folder_made_too_early_doesnt_strand_your_data(tmp_path):
+    from browser import storage
+    old, new = tmp_path / "PythonBrowser", tmp_path / "Eclipse"
+    old.mkdir()
+    (old / "session.json").write_text("{\"yours\": 1}")
+    (new / "dictionaries").mkdir(parents=True)  # (something called data_dir() before the move)
+    storage._move_old_folder(new, tmp_path / "Caches" / "Eclipse")
+    assert (new / "session.json").read_text() == '{"yours": 1}' and not old.exists()
+    assert (tmp_path / "Eclipse (made before the move)" / "dictionaries").is_dir()
 
 
 def _build_app_module():

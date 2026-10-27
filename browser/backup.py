@@ -14,7 +14,6 @@
 import json
 import shutil
 import time
-import zipfile
 from pathlib import Path
 
 from . import brand, storage
@@ -28,6 +27,7 @@ PENDING = "restore-pending"
 
 def create(dest: Path) -> int:
     """Write a backup to dest; returns how many files it holds."""
+    import zipfile  # (here, not at launch: only backing up and restoring need it)
     root = storage.data_dir()
     count = 0
     with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -44,6 +44,7 @@ def create(dest: Path) -> int:
 
 def describe(path: Path) -> dict:
     """What's in a backup (for the confirmation), or raises ValueError if it isn't one."""
+    import zipfile
     try:
         with zipfile.ZipFile(path) as archive:
             info = json.loads(archive.read("backup.json"))
@@ -60,6 +61,7 @@ def describe(path: Path) -> dict:
 
 def stage(path: Path):
     """Unpack a backup so the next launch restores it."""
+    import zipfile
     describe(path)  # refuses anything that isn't a backup
     pending = storage.data_dir() / PENDING
     if pending.exists():

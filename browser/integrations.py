@@ -548,22 +548,8 @@ def job_tracker_url(cfg, page_url) -> str:
 
 
 def daybook_url(title, page_url) -> QUrl:
-    return daybook_task_url(f"{title} — {page_url}" if title else page_url)
-
-
-def daybook_task_url(text) -> QUrl:
-    """A link Daybook answers by adding `text` as a task, reading its date and time the way its own Quick Add
-    does ("call mom friday 5pm")."""
+    text = f"{title} — {page_url}" if title else page_url
     return QUrl("daybook://add-task?text=" + QUrl.toPercentEncoding(text).data().decode())
-
-
-TASK_COMMAND = re.compile(r"^task\s+(\S.*)$", re.IGNORECASE | re.DOTALL)
-
-
-def task_text(query: str) -> str | None:
-    """What a ⌘T query of "task <text>" asks Daybook to add, or None for any other query."""
-    found = TASK_COMMAND.match(query.strip())
-    return found.group(1).strip() if found else None
 
 
 def local_clone(page_url: str, root: str) -> str | None:

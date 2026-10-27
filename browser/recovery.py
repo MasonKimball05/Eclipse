@@ -11,7 +11,6 @@
 import hashlib
 import os
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from . import secure_store, storage
 
@@ -49,12 +48,14 @@ def _derive(pin: str, salt: bytes, n: int, r: int, p: int) -> bytes:
 
 
 def seal(key: bytes, data: bytes, label: bytes) -> dict:
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # (here: it takes a moment to load)
     nonce = os.urandom(12)
     return {"nonce": nonce.hex(), "sealed": AESGCM(key).encrypt(nonce, data, label).hex()}
 
 
 def unseal(key: bytes, sealed: dict, label: bytes) -> bytes:
     """What was sealed (cryptography's InvalidTag if it's the wrong key or the file was changed)."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     return AESGCM(key).decrypt(bytes.fromhex(sealed["nonce"]), bytes.fromhex(sealed["sealed"]), label)
 
 

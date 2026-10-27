@@ -137,8 +137,11 @@ def copy_python(contents: Path):
 def thin(contents: Path):
     """Apple-silicon code only: python.org's Python is built for Intel Macs too, which Qt here isn't."""
     for path in [p for p in contents.rglob("*") if is_macho(p)]:
-        if run("lipo", "-archs", path).split() not in (["arm64"], []):
+        archs = run("lipo", "-archs", path).split()
+        if len(archs) > 1 and "arm64" in archs:
             run("lipo", path, "-thin", "arm64", "-output", path)
+        elif archs and "arm64" not in archs:
+            raise SystemExit(f"{path.name} has no Apple-silicon code ({', '.join(archs)})")
 
 
 def copy_packages(contents: Path):
@@ -298,9 +301,14 @@ def minimum_macos(contents: Path) -> str:
     newest = (13, 0)
     for path in contents.rglob("*"):
         if is_macho(path):
-            for line in run("otool", "-l", path).splitlines():
-                if line.strip().startswith("minos "):
-                    newest = max(newest, tuple(int(n) for n in line.split()[1].split(".")[:2]))
+            loads = run("otool", "-l", path).splitlines()
+            for i, line in enumerate(loads):
+                # (minos in newer libraries; older ones say "version" under LC_VERSION_MIN_MACOSX)
+                old_style = line.strip() == "cmd LC_VERSION_MIN_MACOSX"
+                for candidate in (loads[i + 2:i + 3] if old_style else [line]):
+                    words = candidate.split()
+                    if words and words[0] in ("minos", "version") and (old_style or words[0] == "minos"):
+                        newest = max(newest, tuple(int(n) for n in words[1].split(".")[:2]))
     return ".".join(map(str, newest))
 
 
@@ -372,6 +380,8 @@ def publishable() -> str | None:
     GitHub, so anyone can see exactly what code is in it."""
     if git("status", "--porcelain", "--untracked-files=no"):
         return "the checkout has changes that aren't committed"
+    if loose := git("ls-files", "--others", "--exclude-standard", "--", "browser", "main.py"):
+        return "these files aren't committed (git add them first): " + ", ".join(loose.split()[:5])
     head = git("rev-parse", "HEAD")
     if not head or not git("branch", "-r", "--contains", head):
         return "the commit isn't pushed to GitHub"
@@ -380,6 +390,7 @@ def publishable() -> str | None:
 
 def release_notes() -> str:
     """What's changed since the last release: the commit subjects."""
+    git("fetch", "--quiet", "--tags")  # (releases are tagged on GitHub: the latest isn't here otherwise)
     last = git("describe", "--tags", "--abbrev=0", "--match", "release-*")
     log = git("log", "--format=- %s", "-n", "30", f"{last}..HEAD" if last else "HEAD")
     return log or "- Small fixes"
@@ -394,9 +405,12 @@ def publish(archive: Path, build: str, version: str):
 
 
 def differences(built: Path, source: Path) -> list[str]:
-    """Eclipse's code files that differ between an app's copy and a checkout (or are only in one)."""
+    """Eclipse's files (code and what it loads: scripts, styles…) that differ between an app's copy and a checkout,
+    or are only in one. (Compiled .pyc files left out: the app has its own.)"""
     def code(root):
-        return {str(p.relative_to(root)): p for p in [root / "main.py", *(root / "browser").rglob("*.py")] if p.exists()}
+        files = [root / "main.py", *(p for p in (root / "browser").rglob("*") if p.is_file())]
+        return {str(p.relative_to(root)): p for p in files
+                if p.exists() and p.suffix != ".pyc" and "__pycache__" not in p.parts and p.name != ".DS_Store"}
     ours, theirs = code(built), code(source)
     return sorted(name for name in ours.keys() | theirs.keys()
                   if name not in ours or name not in theirs or ours[name].read_bytes() != theirs[name].read_bytes())

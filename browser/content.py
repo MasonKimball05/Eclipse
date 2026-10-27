@@ -406,16 +406,16 @@ class ContentFrame(QFrame):
         self.link_label.show()
         self.link_label.raise_()
 
-    def show_toast(self, text, action=None, label="Undo", seconds=None):
+    def show_toast(self, text, action=None, label="Undo"):
         """A short message at the bottom of the page. With `action`, it has a button (Undo, say) and
-        stays a little longer to give you time for it (or `seconds`)."""
+        stays a little longer to give you time for it."""
         self.toast_text.setText(text)
         self._toast_do = action
         self.toast_button.setText(label)
         self.toast_button.setVisible(action is not None)
         # (clicks go through a plain message, to whatever's under it)
         self.toast.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, action is None)
-        self._toast_timer.setInterval(int(seconds * 1000) if seconds else 5000 if action is not None else 1800)
+        self._toast_timer.setInterval(5000 if action is not None else 1800)
         self.toast.layout().setContentsMargins(14, 6, 8 if action is not None else 14, 6)
         self.toast.adjustSize()
         self.toast.move((self.width() - self.toast.width()) // 2, self.height() - self.toast.height() - 20)

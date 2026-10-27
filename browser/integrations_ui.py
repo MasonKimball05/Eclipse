@@ -492,20 +492,6 @@ class IntegrationsFeature(Feature):
                 cmds.append((f"Logs: {title}", "ph.file-text", lambda n=name, t=title: apps.show_logs(n, t)))
         return cmds
 
-    def query_rows(self, bar, query, results, url):
-        """"task <text>": a Daybook task, first, with Daybook reading its date ("task call mom friday 5pm")."""
-        text = integrations.task_text(query)
-        if text is None or not self.config().get("daybook"):
-            return
-        import qtawesome as qta
-        from .command_bar import Result
-
-        def add():
-            if open_external(integrations.daybook_task_url(text)):
-                self.window.toast("Added to Daybook")
-        results.insert(0, Result(text, "Add to Daybook as a task", "Add Task",
-                                 qta.icon("ph.calendar-check", color=self.window.theme.accent_text), add))
-
     def settings_pages(self):
         return [("apps", "ph.hard-drives", "My Apps", self.apps.settings_page, "extensions")]
 

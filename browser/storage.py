@@ -28,10 +28,15 @@ def _move_old_folder(path: Path, caches: Path | None = None):
     time: your tabs, passwords and settings come along. Its cache, which is only a cache, is dropped."""
     from . import brand
     old = path.with_name(brand.OLD_INTERNAL_NAME)
-    if path.name != brand.OLD_INTERNAL_NAME and old.is_dir() and not path.exists():
-        old.rename(path)
-        caches = caches or Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation))
-        shutil.rmtree(caches.with_name(brand.OLD_INTERNAL_NAME), ignore_errors=True)
+    if path.name == brand.OLD_INTERNAL_NAME or not old.is_dir():
+        return
+    if path.exists():
+        if (path / "session.json").exists() or not (old / "session.json").exists():
+            return  # (the new folder is in use: the old one is left as it is)
+        path.rename(path.with_name(f"{path.name} (made before the move)"))  # (something made it early: kept)
+    old.rename(path)
+    caches = caches or Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation))
+    shutil.rmtree(caches.with_name(brand.OLD_INTERNAL_NAME), ignore_errors=True)
 
 
 def throwaway() -> bool:

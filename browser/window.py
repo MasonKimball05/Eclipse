@@ -1120,8 +1120,8 @@ class MainWindow(QMainWindow):
             host = QUrl(self.current_tab.url).host()
             self._allow_site(host, not self.adblock.is_allowed(host))
 
-    def toast(self, text, action=None, label="Undo", seconds=None):
-        self.content.show_toast(text, action, label, seconds)
+    def toast(self, text, action=None, label="Undo"):
+        self.content.show_toast(text, action, label)
 
     # --- Tabs ------------------------------------------------------------------------------
 
@@ -1721,6 +1721,11 @@ class MainWindow(QMainWindow):
     def show_crash_logs(self):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(crash_logs_dir())))
 
+    def send_feedback(self, crashed=False):
+        from .feedback import FeedbackWindow
+        self._feedback = FeedbackWindow(self, crashed)
+        self._feedback.show()
+
     def toggle_reader(self):
         if self.reader.isVisible():
             self.reader.close_reader()
@@ -2278,6 +2283,7 @@ class MainWindow(QMainWindow):
             ("Reader View", "ph.book-open-text", self.toggle_reader),
             ("What's New", "ph.gift", self.show_whats_new),
             ("Show Crash Logs", "ph.bug", self.show_crash_logs),
+            ("Send Feedback…", "ph.chat-teardrop-text", self.send_feedback),
             ("Open Developer Tools", "ph.terminal-window", self.open_devtools),
             ("Edit Space (Name, Icon, Colour, Profile)", "ph.pencil-simple", self.edit_space),
             ("Edit Space Theme", "ph.paint-brush", self.edit_space_theme),
@@ -2418,8 +2424,13 @@ class MainWindow(QMainWindow):
         spaces.addSeparator()
         for n in range(1, 10):
             add(spaces, f"Space {n}", f"{CONTROL}+{n}", lambda n=n: self.switch_to_space_number(n))
+        help_menu = bar.addMenu("Help")
+        add(help_menu, "Send Feedback…", "", self.send_feedback)
+        add(help_menu, "What's New", "", self.show_whats_new)
+        add(help_menu, "Show Crash Logs", "", self.show_crash_logs)
         # The features' own items (and menus)
-        menus = {"File": file, "Edit": edit, "View": view, "History": history, "Tabs": tabs, "Spaces": spaces}
+        menus = {"File": file, "Edit": edit, "View": view, "History": history, "Tabs": tabs, "Spaces": spaces,
+                 "Help": help_menu}
         self.emit("menus", add, menus, bar)
 
     # --- Shutdown --------------------------------------------------------------------------

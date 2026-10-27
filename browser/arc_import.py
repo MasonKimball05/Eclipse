@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from PyQt6.QtCore import QTimer, QUrl
+from PyQt6.QtCore import QUrl
 from PyQt6.QtWidgets import QMessageBox
 
 from . import brand, storage
@@ -231,13 +231,9 @@ def apply(store, arc: ArcImport):
 
 
 class ArcImportFeature(Feature):
-    """Bring Spaces, tabs, Favorites, history and icons over from Arc: offered on a first launch with Arc on
-    this Mac, and any time from the File menu or ⌘T."""
+    """Bring Spaces, tabs, Favorites, history and icons over from Arc: from the welcome on a first launch
+    (welcome.py), and any time from the File menu or ⌘T."""
     name = "arc_import"
-
-    def ready(self):
-        if self.window.store.is_new and arc_installed() and not storage.throwaway():
-            QTimer.singleShot(800, self.import_from_arc)  # (not in a throwaway profile: tests, --fresh)
 
     def commands(self):
         return [("Import from Arc", "ph.arrow-square-in", self.import_from_arc)]
@@ -278,7 +274,11 @@ class ArcImportFeature(Feature):
         box.exec()
         if box.clickedButton() is not import_btn:
             return
+        self.bring_in(arc)
 
+    def bring_in(self, arc: ArcImport):
+        """Put a read import in place: the tabs it replaces lose their pages, and the window catches up."""
+        window = self.window
         before = list(window.store.all_tabs())
         apply(window.store, arc)
         remaining = set(map(id, window.store.all_tabs()))

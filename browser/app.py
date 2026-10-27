@@ -111,8 +111,8 @@ def run() -> int:
     if restored is not None:
         window.toast(f"Restored your backup · what you had before is in {restored.name}")
     elif crashed:
-        window.toast(f"{brand.NAME} didn't quit properly last time. Your tabs are back "
-                     "(⌘T → Show Crash Logs for details).")
+        window.toast(f"{brand.NAME} didn't quit properly last time. Your tabs are back.",
+                     lambda: window.send_feedback(crashed=True), "Report It")
     for link in links:
         window.open_external(link)
     # After an update with something new, a short tour of it (once)

@@ -18,7 +18,6 @@ import os
 import plistlib
 import shutil
 import subprocess
-import urllib.request
 from pathlib import Path
 
 from PyQt6.QtCore import QStandardPaths
@@ -49,6 +48,7 @@ def build_of(bundle: Path) -> int:
 
 
 def _fetch_json(url):
+    import urllib.request  # (here, not at launch: it brings in the whole web stack, and the first look is later)
     request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json",
                                                    "User-Agent": f"{brand.NAME} updater"})
     with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
@@ -81,8 +81,10 @@ def inspect(bundle: Path, fetch=_fetch_json) -> dict:
     return {**found, "state": "available"}
 
 
-def download(url: str, to: Path, progress=None, opener=urllib.request.urlopen) -> Path:
+def download(url: str, to: Path, progress=None, opener=None) -> Path:
     """Fetch the zip to `to`; progress(fraction) as it comes in."""
+    import urllib.request
+    opener = opener or urllib.request.urlopen
     to.parent.mkdir(parents=True, exist_ok=True)
     request = urllib.request.Request(url, headers={"User-Agent": f"{brand.NAME} updater"})
     with opener(request, timeout=TIMEOUT) as response, open(to, "wb") as out:

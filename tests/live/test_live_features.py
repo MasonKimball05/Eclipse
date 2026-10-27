@@ -626,3 +626,112 @@ def test_settings_shows_the_version_and_an_updates_progress(window):
     assert line.text().endswith("Up to date.") and bar.isHidden()
     updater._set_status({"state": "idle"})
     settings.close()
+
+
+def test_the_welcome_brings_bookmarks_history_and_passwords_over(window, tmp_path, monkeypatch):
+    import hashlib
+    import json
+    import sqlite3
+    from cryptography.hazmat.primitives import padding
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from PyQt6.QtWidgets import QCheckBox, QLabel, QPushButton
+    from browser import arc_import, browser_import, password_store, welcome
+    from test_live import _stand_ins
+    _stand_ins(monkeypatch)
+    chrome = tmp_path / "Chrome" / "Default"
+    chrome.mkdir(parents=True)
+    (chrome / "Bookmarks").write_text(json.dumps({"roots": {"bookmark_bar": {"children": [
+        {"type": "url", "name": "Docs", "url": "https://docs.example/"}]}}}))
+    with sqlite3.connect(chrome / "History") as db:
+        db.execute("CREATE TABLE urls (url TEXT, title TEXT, last_visit_time INTEGER, visit_count INTEGER, hidden INTEGER)")
+        db.execute("INSERT INTO urls VALUES ('https://docs.example/', 'Docs', 13340000000000000, 9, 0)")
+    key = hashlib.pbkdf2_hmac("sha1", b"chrome-key", b"saltysalt", 1003, 16)
+    padder = padding.PKCS7(128).padder()
+    sealed = Cipher(algorithms.AES(key), modes.CBC(b" " * 16)).encryptor()
+    value = b"v10" + sealed.update(padder.update(b"from chrome") + padder.finalize()) + sealed.finalize()
+    with sqlite3.connect(chrome / "Login Data") as db:
+        db.execute("CREATE TABLE logins (origin_url TEXT, username_value TEXT, password_value BLOB, "
+                   "blacklisted_by_user INTEGER)")
+        db.execute("INSERT INTO logins VALUES ('https://docs.example/login', 'me', ?, 0)", (value,))
+    monkeypatch.setattr(password_store, "CHROMIUM_BROWSERS", {"Chrome": (tmp_path / "Chrome", "Chrome Safe Storage")})
+    monkeypatch.setattr(browser_import, "CHROMIUM_BROWSERS", password_store.CHROMIUM_BROWSERS)
+    monkeypatch.setattr(browser_import, "safari_installed", lambda: False)
+    monkeypatch.setattr(arc_import, "arc_installed", lambda: False)
+    monkeypatch.setattr(password_store, "browser_secret", lambda name: b"chrome-key")
+    page = welcome.Welcome(window)
+    page.show()
+    boxes = [b.text() for b in page.findChildren(QCheckBox)]
+    assert boxes[0] == "Chrome: Bookmarks and history" and boxes[1].startswith("Chrome's saved passwords")
+    next(b for b in page.findChildren(QPushButton) if b.text() == "Import").click()
+    assert wait_until(lambda: page.pages.currentIndex() == 1, 5), "didn't get to Make it yours"
+    space = window.store.space("import-chrome-default")
+    assert space is not None and space.pinned[0].url == "https://docs.example/"
+    assert window.store.history[0]["url"] == "https://docs.example/"
+    assert [(e["username"], e["password"]) for e in password_store.logins()] == [("me", "from chrome")]
+    assert page.result.text() == ("Brought over: Chrome: 1 bookmark and 1 page of history; "
+                                  "Chrome's passwords: 1 saved.")
+    from PyQt6.QtWidgets import QApplication
+    QApplication.processEvents()
+    page.swatches[2].click()  # (Mint)
+    assert window.store.active_space.color == "#14b8a6"
+    page.close()
+
+
+def test_feedback_copies_a_report_and_starts_a_github_issue(window, monkeypatch):
+    from PyQt6.QtWidgets import QApplication, QPushButton
+    from browser import feedback
+    opened = []
+    monkeypatch.setattr(window, "open_url", opened.append)  # (the issue page isn't loaded from a test)
+    window.send_feedback(crashed=True)
+    page = window._feedback
+    page.said.setPlainText("Opened Settings and it closed")
+    next(b for b in page.findChildren(QPushButton) if b.text() == "Copy Report").click()
+    copied = QApplication.clipboard().text()
+    assert copied.startswith("Crash: Opened Settings and it closed\n\nOpened Settings and it closed\n\n---\nEclipse ")
+    page.include.setChecked(False)
+    assert page.text() == "Opened Settings and it closed"
+    next(b for b in page.findChildren(QPushButton) if b.text() == "Open GitHub Issue").click()
+    assert len(opened) == 1 and opened[0].startswith(feedback.ISSUES + "?title=Crash")
+
+
+def test_settings_checks_for_breached_passwords_and_flags_them(window, monkeypatch):
+    from PyQt6.QtWidgets import QLabel, QPushButton
+    from browser import password_store
+    from test_live import _stand_ins
+    _stand_ins(monkeypatch)
+    password_store.add("https://leaky.example", "me", "password1")
+    password_store.add("https://safe.example", "me", "Long-Unique-Pass-1")
+    sent = []
+    monkeypatch.setattr(password_store, "breached", lambda passwords: sent.append(sorted(passwords))
+                        or {"password1": 2413945})
+    window.open_settings("passwords")
+    settings = window._settings
+    title = next(l for l in settings.findChildren(QLabel, "SettingTitle") if l.text() == "Breached passwords")
+    next(b for b in title.parentWidget().findChildren(QPushButton) if b.text() == "Check").click()
+    flagged = lambda: [l.text() for l in settings.findChildren(QLabel) if "in a data breach" in l.text()]  # noqa: E731
+    assert wait_until(lambda: flagged(), 5), "nothing flagged"
+    assert flagged() == ["me · ⚠︎ in a data breach · ⚠︎ easy to guess"]
+    assert sent == [["Long-Unique-Pass-1", "password1"]]
+    settings.close()
+
+
+def test_an_address_fills_a_checkout_but_not_a_newsletter(window, site):
+    from browser import addresses
+    addresses.save({"label": "Home", "name": "Arkan Example", "email": "arkan@example.com", "tel": "555 0100",
+                    "street": "1 Main St\nApt 4", "city": "Springfield", "postal": "12345",
+                    "country": "United States"})
+    manager = window.feature("addresses").addresses
+    tab = open_page(window, site.replace("127.0.0.1", "localhost") + "/checkout.html")
+    press = "document.getElementById('%s').dispatchEvent(new PointerEvent('pointerdown', {bubbles: true})); 1"
+    run_js(tab.view, press % "newsletter", world=0)  # (just an email: not worth a card)
+    pause(0.6)
+    assert manager.card_for(tab.view) is None
+    run_js(tab.view, press % "city", world=0)
+    assert wait_until(lambda: manager.card_for(tab.view) is not None, 5), "no card for the checkout"
+    from test_live import _click_when_ready
+    _click_when_ready(manager.card_for(tab.view), "Home · Arkan Example, 1 Main St")
+    values = "['first','last','email','phone','line1','line2','city','zip','country'].map(i => document.getElementById(i).value)"
+    assert wait_until(lambda: run_js(tab.view, values, world=0) == [
+        "Arkan", "Example", "arkan@example.com", "already typed", "1 Main St", "Apt 4", "Springfield", "12345", "US"], 5)
+    assert run_js(tab.view, "document.getElementById('newsletter').value", world=0) == ""  # (another form)
+    addresses.delete(addresses.all_addresses()[0]["id"])

@@ -8,12 +8,21 @@ from . import brand
 from .motion import FadesIn
 from .theme import quiet_scrollbars, stylesheet
 
-EDITION = 13
+EDITION = 14
 SETTING = "whats_new_seen"
 
 NOTES = """
 ## Lately
 
+- **Bring your things over**: File → Import from Another Browser… brings bookmarks, history and passwords from
+  Chrome, Brave, Edge or Safari (and Arc, as before). New people see it when they first open Eclipse.
+- **Send Feedback** (Help menu): tell Eclipse's maker what went wrong, with the details that help fix it. After a
+  crash, the note when Eclipse opens again has Report It.
+- **Breached passwords**: Settings → Passwords & Passkeys → Check looks your passwords up in known data breaches
+  without ever sending them, and flags the ones worth changing.
+- **Addresses** (Settings → Addresses): save your name, email, phone and address once, and a card offers to
+  fill them into checkouts and sign-up forms.
+- **Opens a little quicker**.
 - **Verification codes**: Eclipse can keep a login's two-factor setup key and fill in the 6-digit code after
   Touch ID. Exported from Apple's Passwords, they come along when you import.
 - **Import from Chrome, Brave or Edge** (Settings → Passwords & Passkeys → Import), and **Export** your passwords

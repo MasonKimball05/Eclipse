@@ -17,7 +17,6 @@
 import hashlib
 import json
 import os
-import subprocess
 import pwd
 import random
 from datetime import date, datetime, timedelta, timezone
@@ -68,18 +67,35 @@ def random_title(rng=random) -> str:
     return f"{rng.choice(ADJECTIVES)} {rng.choice(NOUNS)}"
 
 
+def _git_email(config: Path) -> str:
+    """user.email from a git settings file ("" if it hasn't one)."""
+    try:
+        text = config.read_text(errors="replace")
+    except OSError:
+        return ""
+    section = ""
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("["):
+            section = line.strip("[]").split()[0].lower() if line.strip("[]").split() else ""
+        elif section == "user" and "=" in line:
+            key, _, value = line.partition("=")
+            if key.strip().lower() == "email":
+                return value.split("#")[0].split(";")[0].strip().strip('"').lower()
+    return ""
+
+
 def is_maker() -> bool:
     """Whether this is Eclipse's maker, by the email git signs this checkout's commits with (asked once)."""
     global _maker
     if _maker is None:
+        # The checkout's, or (in a release app, which has no checkout) the Mac's own git settings: read from git's
+        # files rather than asking git (twice), which held up the window opening
         email = ""
-        # The checkout's, or (in a release app, which has no checkout) the Mac's own git settings
-        for where in (["-C", str(Path(__file__).resolve().parent.parent)], ["-C", str(Path.home())]):
-            try:
-                email = subprocess.run(["git", *where, "config", "user.email"], capture_output=True, text=True,
-                                       timeout=3).stdout.strip().lower()
-            except (OSError, subprocess.SubprocessError):
-                email = ""
+        home = Path.home()
+        for config in (Path(__file__).resolve().parent.parent / ".git" / "config", home / ".gitconfig",
+                       home / ".config" / "git" / "config"):
+            email = _git_email(config)
             if email:
                 break
         _maker = bool(email) and hashlib.sha256(email.encode()).hexdigest() == _MAKER

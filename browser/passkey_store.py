@@ -17,9 +17,6 @@ import os
 import struct
 import time
 
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from . import recovery, secure_store, storage
 
@@ -79,7 +76,7 @@ def cbor(value) -> bytes:
     raise TypeError(type(value))
 
 
-def cose_key(public: ec.EllipticCurvePublicKey) -> bytes:
+def cose_key(public: "ec.EllipticCurvePublicKey") -> bytes:
     numbers = public.public_numbers()
     return cbor({1: 2, 3: ES256, -1: 1, -2: numbers.x.to_bytes(32, "big"), -3: numbers.y.to_bytes(32, "big")})
 
@@ -135,7 +132,8 @@ def for_site(rp_id: str, allowed: list[str] | None = None) -> list[dict]:
     return sorted(found, key=lambda p: p.get("last_used") or p.get("created", 0), reverse=True)
 
 
-def _private_key(passkey) -> ec.EllipticCurvePrivateKey | None:
+def _private_key(passkey) -> "ec.EllipticCurvePrivateKey | None":
+    from cryptography.hazmat.primitives import serialization
     stored = secure_store.load(KEY_ACCOUNT.format(passkey["id"]))
     if not stored:
         return None
@@ -153,6 +151,8 @@ def create(rp_id: str, rp_name: str, user_id: str, user_name: str, display_name:
            verified: bool) -> dict:
     """A new passkey for the site, saved; and what the site gets back (all base64url):
     {id, clientDataJSON, attestationObject, authenticatorData, publicKey}."""
+    from cryptography.hazmat.primitives import serialization  # (here, not at launch: it takes a moment to load)
+    from cryptography.hazmat.primitives.asymmetric import ec
     private = ec.generate_private_key(ec.SECP256R1())
     credential = os.urandom(16)
     passkey = {"id": b64url(credential), "rp_id": rp_id, "rp_name": rp_name[:100], "user_id": user_id,
@@ -182,6 +182,8 @@ def create(rp_id: str, rp_name: str, user_id: str, user_name: str, display_name:
 def sign_in(passkey_id: str, challenge: str, origin: str, verified: bool) -> dict:
     """A signature from one of the site's passkeys, and what the site gets back (all base64url):
     {id, clientDataJSON, authenticatorData, signature, userHandle}."""
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
     passkeys = all_passkeys()
     passkey = next(p for p in passkeys if p["id"] == passkey_id)
     private = _private_key(passkey)

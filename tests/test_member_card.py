@@ -102,8 +102,16 @@ def test_absolute_eclipse_is_the_makers_alone(qapp, tmp_path, monkeypatch, data_
     assert card_image(card, 1).width() == 300
     # Only an email whose fingerprint matches is the maker's
     monkeypatch.setattr(mc, "_maker", None)
-    monkeypatch.setattr(mc.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": "someone@example.com\n"})())
+    monkeypatch.setattr(mc, "_git_email", lambda config: "someone@example.com")
     assert not mc.is_maker()
+
+
+def test_the_email_is_read_from_gits_own_settings(tmp_path):
+    config = tmp_path / "config"
+    config.write_text('[core]\n\temail = not-this@example.com\n[user "x"]\n[user]\n\tname = Someone\n'
+                      '\tEmail = Someone@Example.com  # a comment\n')
+    assert mc._git_email(config) == "someone@example.com"
+    assert mc._git_email(tmp_path / "missing") == ""
 
 
 def test_an_eclipse_card_gets_its_own_look(qapp, tmp_path, monkeypatch, data_dir):

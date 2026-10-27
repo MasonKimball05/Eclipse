@@ -27,8 +27,6 @@ import time
 import urllib.parse
 from pathlib import Path
 
-from cryptography.hazmat.primitives import padding
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from PyQt6.QtCore import QUrl
 
 from . import recovery, secure_store, storage
@@ -151,6 +149,11 @@ def otp_link(text: str) -> str | None:
     params = {k.lower(): v for k, v in urllib.parse.parse_qsl(q.query)}
     if q.netloc.lower() != "totp" or _otp_key(params.get("secret", "")) is None:
         return None  # (hotp, counter-based, is rare enough to leave out)
+    period, digits = params.get("period", "30"), params.get("digits", "6")
+    if not (period.isdigit() and 0 < int(period) <= 300 and digits.isdigit() and 6 <= int(digits) <= 10):
+        return None
+    if params.get("algorithm", "SHA1").upper() not in ("SHA1", "SHA256", "SHA512"):
+        return None  # (anything else would make the wrong codes)
     return text
 
 
@@ -198,9 +201,46 @@ def weak(password: str) -> bool:
     return kinds == 1 and len(password) < 14
 
 
-def health(entries: list[dict]) -> dict[str, list[str]]:
-    """What's worth changing, by login: "reused" (the same password on another site), "weak". Worked out here,
-    on this Mac: nothing's sent anywhere to check."""
+PWNED = "https://api.pwnedpasswords.com/range/"
+
+
+def _pwned_range(prefix: str) -> str:
+    import urllib.request  # (here, not at launch: it brings in the whole web stack)
+    request = urllib.request.Request(PWNED + prefix, headers={"User-Agent": "Eclipse browser",
+                                                              "Add-Padding": "true"})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return response.read().decode()
+
+
+def breached(passwords, fetch=_pwned_range) -> dict[str, int]:
+    """Which passwords have turned up in a known data breach, and how often: Have I Been Pwned's range check.
+    Only the first 5 characters of each password's SHA-1 hash are sent; the answer is every breached hash that
+    starts with them (padded with made-up ones, so even its size says nothing), and the match is found here."""
+    by_prefix = {}
+    for password in set(passwords):
+        digest = hashlib.sha1(password.encode()).hexdigest().upper()
+        by_prefix.setdefault(digest[:5], []).append((digest[5:], password))
+    found = {}
+    for prefix, waiting in by_prefix.items():
+        counts = {}
+        for line in fetch(prefix).splitlines():
+            suffix, _, count = line.strip().partition(":")
+            if count.isdigit():
+                counts[suffix.upper()] = int(count)
+        for suffix, password in waiting:
+            if counts.get(suffix, 0) > 0:  # (the padding's made-up hashes all count 0)
+                found[password] = counts[suffix]
+    return found
+
+
+def breach_key(password: str) -> str:
+    """How a breach check's findings remember a password (its SHA-1, as the check uses: never the password)."""
+    return hashlib.sha1(password.encode()).hexdigest()
+
+
+def health(entries: list[dict], breaches: dict[str, int] | None = None) -> dict[str, list[str]]:
+    """What's worth changing, by login: "reused" (the same password on another site), "weak", and (from a check
+    you ran: `breaches`, breach_key → times seen) "breached". Reused and weak are worked out here, on this Mac."""
     sites_by_password = {}
     for entry in entries:
         sites_by_password.setdefault(entry["password"], set()).add(site_of(entry["origin"]))
@@ -211,6 +251,8 @@ def health(entries: list[dict]) -> dict[str, list[str]]:
             issues.append("reused")
         if weak(entry["password"]):
             issues.append("weak")
+        if breaches and breaches.get(breach_key(entry["password"])):
+            issues.insert(0, "breached")
         if issues:
             found[entry["id"]] = issues
     return found
@@ -401,6 +443,8 @@ def chromium_decrypt(value: bytes, secret: bytes) -> str | None:
     """A Chromium browser's saved password, as macOS versions keep it ("v10", AES-128-CBC)."""
     if not value.startswith(b"v10"):
         return None
+    from cryptography.hazmat.primitives import padding  # (only for importing: not loaded at launch)
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     key = hashlib.pbkdf2_hmac("sha1", secret, b"saltysalt", 1003, 16)
     decryptor = Cipher(algorithms.AES(key), modes.CBC(b" " * 16)).decryptor()
     try:

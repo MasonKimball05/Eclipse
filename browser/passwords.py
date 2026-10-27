@@ -648,7 +648,7 @@ def settings_page(settings):
     page = QWidget()
     outer = QVBoxLayout(page)
     outer.setContentsMargins(0, 0, 0, 0)
-    state = {"shown": False, "search": ""}
+    state = {"shown": False, "search": "", "breaches": None}  # (breaches: login id → times seen, once checked)
 
     def busy(work):
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
@@ -738,7 +738,8 @@ def settings_page(settings):
                     QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Save:
                 return
             path, _ = QFileDialog.getSaveFileName(settings, "Export Passwords",
-                                                  str(Path.home() / "Documents" / "Eclipse Passwords.csv"),
+                                                  # (not Documents: often synced to iCloud, in plain text)
+                                                  str(Path.home() / "Downloads" / "Eclipse Passwords.csv"),
                                                   "Passwords export (*.csv)")
             if not path:
                 return
@@ -754,6 +755,38 @@ def settings_page(settings):
         if not macos.can_verify_owner():
             chosen()
         elif not macos.verify_owner("export your saved passwords", answer.answered.emit):
+            browser.toast("This Mac couldn't check it's you")
+
+    def check_breaches():
+        def checked(found):
+            if isinstance(found, Exception):
+                QMessageBox.warning(settings, "Breached Passwords", f"Couldn't reach Have I Been Pwned: {found}")
+                return
+            entries = password_store.logins()
+            state["breaches"] = {password_store.breach_key(p): n for p, n in found.items()}
+            count = sum(1 for e in entries if e["password"] in found)
+            browser.toast(f"{count} of your passwords {'has' if count == 1 else 'have'} turned up in data breaches: "
+                          "worth changing" if count else "None of your passwords have turned up in a known breach")
+            state["shown"] = True
+            fill()
+
+        def check():
+            passwords = [e["password"] for e in password_store.logins()]
+            finished = _Done(page)
+            finished.done.connect(checked)
+
+            def work():
+                try:
+                    finished.done.emit(password_store.breached(passwords))
+                except Exception as error:  # (offline, the service down: say so)
+                    finished.done.emit(error)
+            threading.Thread(target=work, daemon=True).start()
+            browser.toast("Checking your passwords against known breaches…")
+        answer = page._checking = _Answer(page)
+        answer.answered.connect(lambda ok: ok and check())
+        if not macos.can_verify_owner():
+            check()
+        elif not macos.verify_owner("check your passwords against known breaches", answer.answered.emit):
             browser.toast("This Mac couldn't check it's you")
 
     def show_passwords():
@@ -890,6 +923,17 @@ def settings_page(settings):
                               fill_box),
                 settings._row("Offer to save passwords", "After you sign in somewhere new.", save_box),
                 settings._row("Ask for Touch ID before filling", None, ask)]
+        breach_button = QPushButton("Check")
+        breach_button.clicked.connect(check_breaches)
+        breach_button.setEnabled(bool(logins))
+        found = state["breaches"]
+        rows.append(settings._row(
+            "Breached passwords",
+            ("Checked: " + (f"{sum(1 for e in logins if password_store.breach_key(e['password']) in found)} turned "
+                            f"up in known data breaches (flagged below)." if found else
+                            "none turned up in a known breach.") + " " if found is not None else "") +
+            "Asks Have I Been Pwned, sending only the first 5 characters of each password's SHA-1 hash, never the "
+            "password: the match is found on this Mac.", breach_button))
         never = store_settings.get(NEVER_SETTING, [])
         if never:
             clear = QPushButton("Clear")
@@ -902,10 +946,12 @@ def settings_page(settings):
             search.setPlaceholderText("Search")
             search.textChanged.connect(lambda text: (state.__setitem__("search", text), refill_later.start()))
             wanted = state["search"].lower()
-            issues = password_store.health(logins)
+            issues = password_store.health(logins, state["breaches"])
             reused = sum("reused" in found for found in issues.values())
             weak = sum("weak" in found for found in issues.values())
-            summary = (f"{reused} reused on more than one site, {weak} easy to guess. Worth changing on those sites "
+            leaked = sum("breached" in found for found in issues.values())
+            summary = ((f"{leaked} in data breaches, " if leaked else "") +
+                       f"{reused} reused on more than one site, {weak} easy to guess. Worth changing on those sites "
                        f"(Edit, then Suggest a Strong One)." if issues else "None reused, none easy to guess.")
             listed = [settings._row("", summary, search)]
             for login in sorted(logins, key=lambda e: (password_store.site_of(e["origin"]), e["username"])):
@@ -922,7 +968,7 @@ def settings_page(settings):
                     button = QPushButton(label)
                     button.clicked.connect(act)
                     a.addWidget(button)
-                flags = {"reused": "⚠︎ reused", "weak": "⚠︎ easy to guess"}
+                flags = {"breached": "⚠︎ in a data breach", "reused": "⚠︎ reused", "weak": "⚠︎ easy to guess"}
                 note = "".join(f" · {flags[i]}" for i in issues.get(login["id"], []))
                 note += " · verification codes" if login.get("otp") else ""
                 listed.append(settings._row(site, (login["username"] or "No username") + note, actions))

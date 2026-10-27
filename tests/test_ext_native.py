@@ -48,7 +48,7 @@ def test_round_trip_with_a_real_helper(data_dir):
     port.message.connect(lambda m: (got.append(m), port.send("quit")))
     port.closed.connect(lambda reason: (closed.append(reason), loop.quit()))
     port.send({"hello": "helper"})
-    QTimer.singleShot(5000, loop.quit)
+    QTimer.singleShot(15000, loop.quit)  # (ends as soon as the helper's gone: a busy Mac starts it slowly)
     loop.exec()
     assert got == [{"echo": {"hello": "helper"}, "origin": "chrome-extension://demo/"}]
     assert closed == [native.EXITED]

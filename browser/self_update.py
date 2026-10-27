@@ -190,6 +190,10 @@ class SelfUpdater(QObject):
         elif self._manual:
             if state == "current":
                 self.browser.toast(f"{brand.NAME} is up to date")
+            elif state == "blocked" and "build" in result:  # (a release this account can't replace)
+                QMessageBox.information(self.browser, "Update Available",
+                                        f"{result.get('version', 'A new version')} is ready, but it can't be "
+                                        f"installed: {result['reason']}")
             elif state == "blocked":
                 QMessageBox.information(self.browser, "Update Available",
                                         f"There {'is' if result['behind'] == 1 else 'are'} {result['behind']} new "
@@ -223,6 +227,9 @@ class SelfUpdater(QObject):
     def update_and_restart(self):
         self.browser.toast(f"Updating {brand.NAME}…")
         if (bundle := release_bundle()) is not None and "build" in self._found:
+            if self.status.get("state") == "downloading":
+                return  # (already on its way)
+            self._set_status({**self._found, "state": "downloading", "percent": 0})
             threading.Thread(target=lambda: self._prepare(bundle), daemon=True).start()  # (a few hundred MB)
             return
         threading.Thread(target=lambda: self.applied.emit(*apply_update()), daemon=True).start()  # pip can be slow

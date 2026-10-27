@@ -105,7 +105,9 @@ def test_codes_from_a_bare_key_or_a_link():
     assert pw.otp_code(pw.otp_link(RFC_KEY), 59)[0] == "287082"  # (6 digits unless the link says otherwise)
     link = "otpauth://totp/GitHub:arkan?secret=" + RFC_KEY + "&issuer=GitHub&algorithm=SHA256&period=60"
     assert pw.otp_link(link) == link and pw.otp_code(link, 59) == ("875740", 1)  # (counter 0, worked out with hmac directly)
-    for wrong in ("", "not a key!", "otpauth://hotp/x?secret=" + RFC_KEY, "otpauth://totp/x?issuer=nokey"):
+    for wrong in ("", "not a key!", "otpauth://hotp/x?secret=" + RFC_KEY, "otpauth://totp/x?issuer=nokey",
+                  f"otpauth://totp/x?secret={RFC_KEY}&period=0", f"otpauth://totp/x?secret={RFC_KEY}&digits=abc",
+                  f"otpauth://totp/x?secret={RFC_KEY}&algorithm=MD5"):
         assert pw.otp_link(wrong) is None
 
 
@@ -201,3 +203,29 @@ def test_an_export_reads_back_the_same_and_only_you_can_open_it(tmp_path):
     key = lambda e: (pw._origin(e.get("url") or e["origin"]), e["username"])  # noqa: E731
     assert sorted((key(r), r["password"], r["note"], r["otp"] or "") for r in back) == sorted(
         (key(e), e["password"], e.get("note", ""), e.get("otp", "")) for e in pw.logins())
+
+
+def test_the_breach_check_sends_only_hash_prefixes_and_matches_here():
+    sha = lambda p: hashlib.sha1(p.encode()).hexdigest().upper()  # noqa: E731
+    asked = []
+
+    def service(prefix):
+        asked.append(prefix)
+        lines = [f"{'0' * 35}:0", f"{'F' * 35}:0"]  # (the padding: made-up hashes, seen 0 times)
+        if prefix == sha("password1")[:5]:
+            lines.append(f"{sha('password1')[5:]}:2413945")
+        return "\r\n".join(lines)
+    found = pw.breached(["password1", "a-strong-one-9Xq", "password1"], fetch=service)
+    assert found == {"password1": 2413945}
+    assert sorted(asked) == sorted({sha("password1")[:5], sha("a-strong-one-9Xq")[:5]})
+    assert all(len(prefix) == 5 for prefix in asked)  # (never more of the hash, never the password)
+
+
+def test_a_breached_password_is_flagged_first():
+    entries = [{"id": "a", "origin": "https://a.example", "password": "Long-Unique-Pass-1"},
+               {"id": "b", "origin": "https://b.example", "password": "short"}]
+    assert pw.health(entries) == {"b": ["weak"]}
+    found = {pw.breach_key("Long-Unique-Pass-1"): 12, pw.breach_key("short"): 3}
+    assert pw.health(entries, found) == {"a": ["breached"], "b": ["breached", "weak"]}
+    entries[0]["password"] = "Changed-Since-1"  # (changed after the check: not flagged any more)
+    assert pw.health(entries, found) == {"b": ["breached", "weak"]}
