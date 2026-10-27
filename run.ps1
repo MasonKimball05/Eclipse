@@ -40,6 +40,7 @@ if (-not (Test-Path $Stamp) -or (Get-Content $Stamp -Raw).Trim() -ne $Hash) {
 }
 
 Set-Location $Root
+$env:PYTHONUTF8 = "1"  # (text files in UTF-8, as on a Mac: otherwise an emoji in a tab title stops saving)
 if ($Tests) {
     & $Python -m pip install --quiet --disable-pip-version-check -r (Join-Path $Root "requirements-dev.txt")
     & $Python -m pytest tests -q

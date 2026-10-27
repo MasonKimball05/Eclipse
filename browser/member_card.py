@@ -17,7 +17,6 @@
 import hashlib
 import json
 import os
-import pwd
 import random
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -108,11 +107,15 @@ def allowed_title(title: str) -> bool:
 
 
 def _first_name() -> str:
+    """Your first name, from your account's full name (a Mac's, or Linux's; Windows only gives the account's)."""
+    full = ""
     try:
+        import pwd  # (Unix only)
         full = pwd.getpwuid(os.getuid()).pw_gecos.split(",")[0].strip()
-    except (KeyError, OSError):
-        full = ""
-    return (full.split() or [os.environ.get("USER", "You").capitalize()])[0]
+    except (ImportError, KeyError, OSError, AttributeError):
+        pass
+    account = os.environ.get("USER") or os.environ.get("USERNAME") or "You"  # (USERNAME: Windows's)
+    return (full.split() or [account.capitalize()])[0]
 
 
 def started_with_eclipse() -> str:

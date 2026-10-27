@@ -5,9 +5,17 @@
 # The browser is modelled on Arc (sidebar, Spaces, command bar). The code lives in the
 # `browser/` package — see claude_docs.md for a tour.
 
+import os
 import sys
 
-from browser.app import run
+if sys.platform == "win32" and not sys.flags.utf8_mode:
+    # Windows Python reads and writes text in the old Windows character set unless told otherwise, and an emoji
+    # in a tab's title would then stop the session saving: start again in UTF-8 mode (run.ps1 starts in it)
+    import subprocess
+    os.environ["PYTHONUTF8"] = "1"
+    sys.exit(subprocess.call([sys.executable, *sys.argv]))
+
+from browser.app import run  # noqa: E402
 
 if __name__ == "__main__":
     sys.exit(run())

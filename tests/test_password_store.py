@@ -3,6 +3,7 @@ pages, and importing from exported CSVs and a fake Arc profile (never your real 
 
 import hashlib
 import sqlite3
+import sys
 
 import pytest
 from cryptography.hazmat.primitives import padding
@@ -162,7 +163,8 @@ def test_only_your_account_can_read_the_files(data_dir):
     recovery.set_pin("a long enough pin")
     for path in ("passwords", "passwords/logins.json", "passwords/recovery.json", "recovery.json"):
         mode = stat.S_IMODE(os.stat(data_dir / path).st_mode)
-        assert mode == (0o700 if path == "passwords" else 0o600), (path, oct(mode))
+        if sys.platform != "win32":  # (Windows has no Unix permissions to check)
+            assert mode == (0o700 if path == "passwords" else 0o600), (path, oct(mode))
 
 
 def test_reused_and_weak_passwords_are_pointed_out():
@@ -198,7 +200,8 @@ def test_an_export_reads_back_the_same_and_only_you_can_open_it(tmp_path):
     path.write_text("old")
     path.chmod(0o644)
     pw.write_export(str(path), pw.logins())
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    if sys.platform != "win32":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
     back = pw.parse_csv(path.read_text())
     key = lambda e: (pw._origin(e.get("url") or e["origin"]), e["username"])  # noqa: E731
     assert sorted((key(r), r["password"], r["note"], r["otp"] or "") for r in back) == sorted(
