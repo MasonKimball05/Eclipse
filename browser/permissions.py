@@ -12,7 +12,7 @@
 # allowed or blocked can be changed in Site Controls (the shield in the URL pill) or in
 # Settings → Privacy.
 
-from PyQt6.QtCore import QEvent, QObject, Qt, QUrl
+from PyQt6.QtCore import QEvent, QObject, Qt, QTimer, QUrl
 from PyQt6.QtWebEngineCore import QWebEnginePermission, QWebEngineProfile
 from PyQt6.QtWidgets import (QDialog, QDialogButtonBox, QFrame, QHBoxLayout, QLabel, QListWidget, QPushButton,
                              QTabWidget, QVBoxLayout)
@@ -37,6 +37,7 @@ KINDS = {
 }
 # Answers we remember ourselves (Qt forgets them); screen sharing deliberately isn't one of them
 REMEMBERED = {T.MediaAudioCapture, T.MediaVideoCapture, T.MediaAudioVideoCapture}
+ARM_MS = 600  # a new question on the card: how long before Allow can be clicked
 SCREEN = {T.DesktopVideoCapture, T.DesktopAudioVideoCapture}
 SETTING = "site_permissions"
 
@@ -91,8 +92,9 @@ class PermissionPrompt(QFrame):
         self.text.setTextFormat(Qt.TextFormat.RichText)
         self.text.setWordWrap(True)
         deny = QPushButton("Don't Allow")
-        allow = QPushButton("Allow")
+        allow = self.allow = QPushButton("Allow")
         allow.setObjectName("PermissionAllow")
+        self.shown: set = set()  # what the card asks about now: only that is answered
         allow.setDefault(True)
         close = QPushButton()
         close.setObjectName("PermissionClose")
@@ -106,19 +108,32 @@ class PermissionPrompt(QFrame):
         row.addWidget(deny)
         row.addWidget(allow)
         row.addWidget(close)
+        # One timer, started again by every new question, so an earlier one can't arm a later one
+        self._arm = QTimer(self, singleShot=True, interval=ARM_MS, timeout=lambda: self.allow.setEnabled(True))
         host.installEventFilter(self)
 
     def update_text(self, types):
+        if set(types) != self.shown:
+            # It's asking something new (or for the first time): a moment before Allow can be clicked, so
+            # a page can't change the question under a click meant for the last one
+            self.shown = set(types)
+            self.allow.setEnabled(False)
+            self._arm.start()
         host = QUrl(self.origin).host().removeprefix("www.") or "This page"
         self.text.setText(f"<b>{host}</b> wants to {describe(types)}")
         icon = KINDS.get(min(types, key=lambda t: t.value), ("", "ph.shield-check"))[1]
-        self.icon.setPixmap(qta.icon(icon, color=self.manager.browser.theme.accent).pixmap(20, 20))
+        self.icon.setPixmap(qta.icon(icon, color=self.manager.browser.theme.accent_text).pixmap(20, 20))
         self.place()
 
     def place(self):
         width = min(560, self.host_widget.width() - 40)
         self.setFixedWidth(max(width, 280))
-        self.adjustSize()
+        # (adjustSize() guesses a wrapped label's height too generously: the layout knows, at this width)
+        height = self.layout().heightForWidth(self.width())
+        if height > 0:
+            self.setFixedHeight(height)
+        else:
+            self.adjustSize()
         self.move((self.host_widget.width() - self.width()) // 2, 12)
         # The page area is shared by every tab: only show while the asking tab is the one on screen
         if self.view.isVisible() and not self.isVisible() and not getattr(self, "_shown_once", False):
@@ -269,7 +284,9 @@ class PermissionManager(QObject):
 
     def answer(self, prompt, allow):
         key = id(prompt.view)
-        answered = [(v, p) for v, p in self._waiting.get(key, []) if origin_key(p.origin()) == prompt.origin]
+        # Only what the card was showing: something asked since waits for a card of its own
+        answered = [(v, p) for v, p in self._waiting.get(key, [])
+                    if origin_key(p.origin()) == prompt.origin and p.permissionType() in prompt.shown]
         for view, permission in answered:
             kind = permission.permissionType()
             if permission.isValid():

@@ -131,10 +131,72 @@ def name_in_menu_bar(name):
     _send(info, "setObject:forKey:", value, key, restype=None, argtypes=(ctypes.c_void_p, ctypes.c_void_p))
 
 
+def activate_app():
+    """Become the active app, so the keyboard comes here (⌘T and the rest). Qt asks the old way,
+    which macOS 14 and later ignore: a window that took a moment to appear (Python starting up)
+    could open without the app becoming active, and its first shortcut went to the app behind."""
+    if not _cocoa():
+        return
+    app = _send(_objc.objc_getClass(b"NSApplication"), "sharedApplication")
+    if not app:
+        return
+    if _send(app, "respondsToSelector:", _objc.sel_registerName(b"activate"), restype=ctypes.c_bool,
+             argtypes=(ctypes.c_void_p,)):
+        _send(app, "activate", restype=None)  # (macOS 14+: the launching app hands over to us)
+    else:
+        _send(app, "activateIgnoringOtherApps:", True, restype=None, argtypes=(ctypes.c_bool,))
+
+
+# --- Other apps' links -------------------------------------------------------------------------------
+
+def app_for_url(url: str) -> str | None:
+    """The name of the app macOS would open `url` with ("zoom.us" for zoommtg:…, "Mail" for mailto:…),
+    or None when no app on this Mac handles it."""
+    if _objc is None:
+        return None
+    text = _cfstr(url)
+    link = _send(_objc.objc_getClass(b"NSURL"), "URLWithString:", text, argtypes=(ctypes.c_void_p,))
+    _cf.CFRelease(text)
+    if not link:
+        return None
+    workspace = _send(_objc.objc_getClass(b"NSWorkspace"), "sharedWorkspace")
+    app = _send(workspace, "URLForApplicationToOpenURL:", link, argtypes=(ctypes.c_void_p,)) if workspace else None
+    if not app:
+        return None
+    path = _pystr(_send(app, "path"))
+    if not path:
+        return None
+    manager = _send(_objc.objc_getClass(b"NSFileManager"), "defaultManager")
+    shown = _pystr(_send(manager, "displayNameAtPath:", _send(app, "path"), argtypes=(ctypes.c_void_p,)))
+    name = shown or path.rstrip("/").rsplit("/", 1)[-1]
+    return name.removesuffix(".app")
+
+
+# --- Quarantine ------------------------------------------------------------------------------------
+
+_libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True) if sys.platform == "darwin" else None
+
+
+def quarantine(path: str) -> bool:
+    """Mark a downloaded file the way Safari and Chrome do, so that opening it (an app, a script, an
+    installer in a .zip) goes through Gatekeeper's check first. Qt WebEngine doesn't, and nor does yt-dlp."""
+    if _libc is None or not path:
+        return False
+    import time
+    value = f"0081;{int(time.time()):08x};Eclipse;".encode()
+    _libc.setxattr.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t,
+                               ctypes.c_uint32, ctypes.c_int]
+    return _libc.setxattr(path.encode(), b"com.apple.quarantine", value, len(value), 0, 0) == 0
+
+
 # --- Traffic lights -------------------------------------------------------------------------
 
 class _CGRect(ctypes.Structure):
     _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double), ("w", ctypes.c_double), ("h", ctypes.c_double)]
+
+
+class _NSPoint(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double)]
 
 
 def traffic_lights(widget) -> tuple[float, float] | None:
@@ -150,6 +212,57 @@ def traffic_lights(widget) -> tuple[float, float] | None:
     frame = _send(zoom, "convertRect:toView:", bounds, None, restype=_CGRect, argtypes=(_CGRect, ctypes.c_void_p))
     height = widget.window().height()
     return frame.x + frame.w, height - (frame.y + frame.h / 2)  # Cocoa measures y from the bottom
+
+
+_lights_home: dict[int, list[tuple[float, float]]] = {}   # per window: where macOS put each light
+_lights_shift: dict[int, tuple[float, float]] = {}         # and how far we've moved them (Cocoa's way up)
+
+
+def shift_traffic_lights(widget, dx: float, dy: float) -> bool:
+    """Move the window's traffic lights `dx` right and `dy` down from where macOS puts them (0, 0 puts
+    them back), e.g. to sit inside the hidden sidebar when it slides out, 6pt in from the corner.
+
+    macOS lays them out again now and then (a resize, full screen): calling this again afterwards
+    puts them right, telling its own layout from ours by where they are."""
+    if not _cocoa():
+        return False
+    window = _send(ctypes.c_void_p(int(widget.window().winId())), "window")
+    buttons = [_send(window, "standardWindowButton:", i, argtypes=(ctypes.c_long,)) for i in range(3)] if window else []
+    if not all(buttons):
+        return False
+    key = int(window)
+    now = [(f.x, f.y) for f in (_send(b, "frame", restype=_CGRect) for b in buttons)]
+    flipped = _send(_send(buttons[0], "superview"), "isFlipped", restype=ctypes.c_bool)
+    move = (dx, dy if flipped else -dy)  # (Cocoa measures y from the bottom, unless the view's flipped)
+    home, (mx, my) = _lights_home.get(key), _lights_shift.get(key, (0.0, 0.0))
+    if move == (0, 0) and (mx, my) == (0, 0):
+        return True  # (where macOS keeps them, and it hasn't been told otherwise: leave its layout be)
+    ours = home is not None and all(abs(x - (hx + mx)) < 0.5 and abs(y - (hy + my)) < 0.5
+                                    for (x, y), (hx, hy) in zip(now, home))
+    if not ours:  # (where macOS has them now is home: it's laid them out since, or it's the first time)
+        home = _lights_home[key] = now
+    for button, (hx, hy) in zip(buttons, home):
+        _send(button, "setFrameOrigin:", _NSPoint(hx + move[0], hy + move[1]), restype=None, argtypes=(_NSPoint,))
+    _lights_shift[key] = move
+    return True
+
+
+def style_traffic_lights(widget, hidden: bool, alpha: float = 1.0, animate=False) -> bool:
+    """Show or hide the window's traffic lights, at `alpha` (dim until you point at them, like Arc);
+    `animate` fades to it."""
+    if not _cocoa():
+        return False
+    window = _send(ctypes.c_void_p(int(widget.window().winId())), "window")
+    if not window:
+        return False
+    for i in range(3):
+        button = _send(window, "standardWindowButton:", i, argtypes=(ctypes.c_long,))
+        if not button:
+            continue
+        _send(button, "setHidden:", hidden, restype=None, argtypes=(ctypes.c_bool,))
+        target = _send(button, "animator") if animate else button  # (Core Animation does the fade)
+        _send(target, "setAlphaValue:", alpha, restype=None, argtypes=(ctypes.c_double,))
+    return True
 
 
 # --- Dock badge --------------------------------------------------------------------------------

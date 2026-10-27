@@ -72,7 +72,9 @@ def calculate(text: str) -> Answer | None:
     if m:
         value = float(m.group(1)) / 100 * float(m.group(2))
         return Answer(_number(value), f"{m.group(1)}% of {m.group(2)}", "math")
-    q = re.sub(r"(\d)\s*%", r"(\1/100)", q)  # "20% * 50"
+    if re.fullmatch(r"\d{4}-\d{1,2}-\d{1,2}|(?:\d{3}-)?\d{3}-\d{4}|1-\d{3}-\d{3}-\d{4}", q):
+        return None  # a date (2024-10-26) or a phone number (555-1234), not a sum
+    q = re.sub(r"(\d+(?:\.\d+)?)\s*%(?!\s*[\d(])", r"(\1/100)", q)  # "20% * 50" (but "10 % 3" is a remainder)
     # Worth answering only if there's arithmetic in it: "2024" or "pi" alone isn't a question
     if not re.search(r"\d", q) or not re.search(r"[-+*/%(]|\b(?:" + "|".join(_FUNCS) + r")\b", q):
         return None
@@ -211,8 +213,21 @@ def find_zone(place: str) -> str | None:
     if place in _ALIASES:
         return _ALIASES[place]
     if _zones is None:
-        _zones = {z.rsplit("/", 1)[-1].replace("_", " ").lower(): z for z in available_timezones() if "/" in z}
+        # (not Etc/GMT+5 and the like: those count backwards, so "gmt+5" would be five hours behind)
+        _zones = {z.rsplit("/", 1)[-1].replace("_", " ").lower(): z for z in available_timezones()
+                  if "/" in z and not z.startswith("Etc/")}
     return _zones.get(place)
+
+
+def fixed_zone(place: str) -> datetime.timezone | None:
+    """"utc+5", "gmt-3:30": a fixed offset from UTC, the way people write it."""
+    m = re.fullmatch(r"(?:utc|gmt)\s*([+-])\s*(\d{1,2})(?::?(\d{2}))?", place.strip().lower())
+    if not m:
+        return None
+    minutes = int(m.group(2)) * 60 + int(m.group(3) or 0)
+    if minutes > 14 * 60:
+        return None
+    return datetime.timezone(datetime.timedelta(minutes=minutes if m.group(1) == "+" else -minutes))
 
 
 def world_time(text: str, now: datetime.datetime | None = None) -> Answer | None:
@@ -220,15 +235,17 @@ def world_time(text: str, now: datetime.datetime | None = None) -> Answer | None
          or re.fullmatch(r"\s*(.+?)\s+time\s*\??", text.lower()))
     if not m:
         return None
-    zone = find_zone(m.group(1))
+    zone = fixed_zone(m.group(1)) or find_zone(m.group(1))
     if zone is None:
         return None
-    now = (now or datetime.datetime.now(datetime.timezone.utc)).astimezone(ZoneInfo(zone))
+    now = (now or datetime.datetime.now(datetime.timezone.utc)).astimezone(
+        zone if isinstance(zone, datetime.timezone) else ZoneInfo(zone))
     local = datetime.datetime.now().astimezone()
     offset = (now.utcoffset() - local.utcoffset()).total_seconds() / 3600
     diff = "same as here" if offset == 0 else f"{abs(offset):g} hour{'s' if abs(offset) != 1 else ''} " \
                                               f"{'ahead' if offset > 0 else 'behind'}"
-    place = m.group(1).strip().title() if len(m.group(1)) > 3 else m.group(1).upper()
+    place = m.group(1).strip()
+    place = place.upper() if len(place) <= 3 or isinstance(zone, datetime.timezone) else place.title()
     return Answer(now.strftime("%-I:%M %p · %a %b %-d"), f"Time in {place} ({diff})", "time")
 
 

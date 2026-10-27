@@ -102,7 +102,7 @@ class CrashedCard(QFrame):
         layout.setContentsMargins(28, 24, 28, 24)
         layout.setSpacing(8)
         icon = QLabel()
-        icon.setPixmap(qta.icon("ph.smiley-sad", color=theme.accent).pixmap(40, 40))
+        icon.setPixmap(qta.icon("ph.smiley-sad", color=theme.accent_text).pixmap(40, 40))
         icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title = QLabel("This page crashed" if reason == "crash" else "This page stopped unexpectedly")
         title.setObjectName("CrashedTitle")

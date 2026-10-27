@@ -14,7 +14,10 @@ from PyQt6.QtWebEngineCore import QWebEngineScript
 WORLD = QWebEngineScript.ScriptWorldId.ApplicationWorld
 MAX_PIXELS = 50_000_000  # about 200 MB of picture: a very long page is cut off there
 SETTLE_MS = 60           # after the page says it scrolled, for the new part to be painted
+RECHECK_MS = 50          # then pictures this far apart until two agree: a busy Mac paints late
+RECHECKS = 8             # (a page that never sits still, a video say, is taken as it is after these)
 SCROLL_TIMEOUT_MS = 500  # a page that doesn't report scrolling (it was already there)
+DEADLINE_MS = 45_000     # the whole thing, however the page behaves
 
 PREPARE = r"""
 (() => {
@@ -32,10 +35,14 @@ SCROLL = "window.scrollTo({left: 0, top: %d, behavior: 'instant'}); scrollY"
 
 HIDE_FIXED = r"""
 (() => {
-  const hidden = [];
+  // Fixed things, and sticky ones stuck at the top or bottom of the screen (a header): not sticky
+  // headings further down the page, which belong where they are
+  const hidden = [], band = innerHeight * 0.25;
   for (const e of document.querySelectorAll('body *')) {
     const position = getComputedStyle(e).position;
-    if (position === 'fixed' || position === 'sticky') {
+    const r = position === 'sticky' ? e.getBoundingClientRect() : null;
+    const stuck = r && r.height > 0 && r.top < innerHeight && r.bottom > 0 && (r.top < band || r.bottom > innerHeight - band);
+    if (position === 'fixed' || stuck) {
       hidden.push([e, e.style.getPropertyValue('visibility'), e.style.getPropertyPriority('visibility')]);
       e.style.setProperty('visibility', 'hidden', 'important');
     }
@@ -79,6 +86,13 @@ class PageShot(QObject):
         self.image = None
         self.painter = None
         self._waiting = None
+        self._tries = 0
+        self._last = None      # the picture just taken of this screenful, to see that it's settled
+        self._previous = None  # the last screenful's: an unchanged picture means it hasn't repainted yet
+        self.start = (0, 0)
+        self._deadline = QTimer(self, singleShot=True, interval=DEADLINE_MS)
+        self._deadline.timeout.connect(lambda: self._fail("The page took too long to capture"))
+        self._deadline.start()
         view.page().runJavaScript(PREPARE, WORLD, self._prepared)
 
     def _alive(self):
@@ -87,10 +101,11 @@ class PageShot(QObject):
     def _prepared(self, info):
         if not self._alive():
             return
+        if info:
+            self.start = (int(info.get("x") or 0), int(info.get("y") or 0))
         if not info or not info.get("view"):
-            self.failed.emit("This page can't be captured")
+            self._fail("This page can't be captured")
             return
-        self.start = (int(info["x"]), int(info["y"]))
         first = self.view.grab()
         self.ratio = first.devicePixelRatio()
         self.scale = self.view.zoomFactor() * self.ratio  # page pixels → picture pixels
@@ -134,7 +149,18 @@ class PageShot(QObject):
     def _take(self):
         if not self._alive():
             return
+        if not self.view.isVisible():  # you switched tabs: a hidden page has nothing new to show
+            self._fail("Stopped the screenshot: the page was put away")
+            return
         shot = self.view.grab()
+        fingerprint = shot.toImage().scaled(64, 64)  # a small fingerprint is enough to compare
+        settled = self._last is not None and fingerprint == self._last and fingerprint != self._previous
+        if not settled and self._tries < RECHECKS:
+            self._last = fingerprint
+            self._tries += 1
+            QTimer.singleShot(RECHECK_MS, self._take)
+            return
+        self._tries, self._last, self._previous = 0, None, fingerprint
         shot.setDevicePixelRatio(1)
         self.painter.drawPixmap(QPointF(0, round(self.rows[self.index] * self.scale)), shot)
         self.index += 1
@@ -149,7 +175,26 @@ class PageShot(QObject):
             self._scroll()
             return
         self.painter.end()
+        self._deadline.stop()
         self.view.page().runJavaScript(RESTORE % self.start, WORLD)
         self.image.setDevicePixelRatio(self.ratio)
         self.done.emit(self.image, self.cut_off)
+        self.deleteLater()
+
+    def _fail(self, message):
+        """Give up, putting the page back as it was."""
+        if not self._alive():
+            return
+        self._deadline.stop()
+        if self._waiting is not None:
+            self._waiting.stop()
+            self._waiting = None
+            try:
+                self.view.page().scrollPositionChanged.disconnect(self._scrolled)
+            except TypeError:
+                pass
+        if self.painter is not None and self.painter.isActive():
+            self.painter.end()
+        self.view.page().runJavaScript(RESTORE % self.start, WORLD)
+        self.failed.emit(message)
         self.deleteLater()

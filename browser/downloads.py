@@ -20,8 +20,9 @@ from PyQt6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, Q
                              QFileIconProvider, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QProgressBar,
                              QPushButton, QScrollArea, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
+from . import macos
 from .motion import FadesIn
-from .theme import quiet_scrollbars, stylesheet
+from .theme import FittedLabel, quiet_scrollbars, stylesheet
 
 HOMEBREW_BIN = "/opt/homebrew/bin"
 PROGRESS_MARKER = "MPDL|"
@@ -248,6 +249,7 @@ class YtDlpDownload(DownloadItem):
             line = raw.decode(errors="replace").strip()
             if line.startswith(FILE_MARKER):
                 self.path = line[len(FILE_MARKER):]
+                macos.quarantine(self.path)  # (from the internet: Gatekeeper checks it before it opens)
                 self.files_done += 1
                 self.status = self._prefix() + "Starting next…" if self.playlist_count else "Finishing…"
                 self.fraction = None
@@ -482,7 +484,7 @@ class DownloadSettingsForm(QWidget):
 
         self.folder = FolderButton(opts["folder"])
         self.template = QLineEdit(opts["template"])
-        template_help = QLabel("yt-dlp output template. For example <code>%(uploader)s/%(title)s.%(ext)s</code> "
+        template_help = FittedLabel("yt-dlp output template. For example <code>%(uploader)s/%(title)s.%(ext)s</code> "
                                "makes a folder per channel.")
         template_help.setObjectName("Hint")
         template_help.setWordWrap(True)
@@ -501,7 +503,7 @@ class DownloadSettingsForm(QWidget):
         self.embed_thumbnail = QCheckBox("Add the thumbnail as cover art")
         self.embed_thumbnail.setChecked(opts["embed_thumbnail"])
         self.cookies = _combo(COOKIE_BROWSERS, opts["cookies_from"])
-        cookies_help = QLabel("Lets yt-dlp use that browser's logins for age-restricted or members-only "
+        cookies_help = FittedLabel("Lets yt-dlp use that browser's logins for age-restricted or members-only "
                               "videos. Safari needs Full Disk Access for this.")
         cookies_help.setObjectName("Hint")
         cookies_help.setWordWrap(True)

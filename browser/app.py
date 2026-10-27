@@ -106,6 +106,7 @@ def run() -> int:
     window = MainWindow(store, profile)
     app.installEventFilter(LinkReceiver(window, server))
     window.show()
+    QTimer.singleShot(0, lambda: (macos.activate_app(), window.raise_(), window.activateWindow()))  # (see activate_app)
     if restored is not None:
         window.toast(f"Restored your backup · what you had before is in {restored.name}")
     elif crashed:

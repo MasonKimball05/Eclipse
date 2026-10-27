@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Frames",
+  "description": "Content scripts in every frame, for checking that each frame speaks for itself.",
+  "version": "1.0",
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_end",
+      "all_frames": true
+    }
+  ]
+}

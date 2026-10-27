@@ -6,14 +6,42 @@ from PyQt6.QtWidgets import QDialogButtonBox, QTextBrowser, QVBoxLayout, QWidget
 
 from . import brand
 from .motion import FadesIn
-from .theme import stylesheet
+from .theme import quiet_scrollbars, stylesheet
 
-EDITION = 6
+EDITION = 9
 SETTING = "whats_new_seen"
 
 NOTES = """
 ## Lately
 
+- **Arc's type**: the sidebar and ⌘T are set in SF Pro Medium, as in Arc.
+- **Notes** have checklists (type "[] ", click a box to tick it, or ⇧⌘L) and headings ("# ").
+- **A fresh start**: Eclipse opens on your Space's colours, like Arc, not on the last page you had open.
+- **In your Applications folder**: Eclipse.app now installs where Finder shows it (it was in your home folder's).
+- **Sidebar polish**: tabs line up with the address bar, the list fades out at the bottom instead of cutting a
+  row in half, the scrollbar floats over it like macOS's, and a tab you switch to scrolls into view. In a narrow
+  sidebar the DEV chip shrinks to a dot so the address (or just its port) still shows.
+- **Easels**: text has corner handles too (drag one to change its size), ⌘B / ⌘I / ⌘U style it, and a knob above
+  whatever's selected turns it (hold ⇧ for steps of 15°). Right-click for Duplicate, Bring to Front and Send to Back.
+- **Nothing open** is just your Space's colours now, like Arc, rather than an empty page.
+- **Links that open apps** (Zoom, VS Code, Mail…) ask first, like Chrome's "Open zoom.us?".
+- **Security**: downloads get macOS's quarantine check, a downloaded page can't read your files, permission
+  cards can't be swapped under your click, Zap only hears itself, and extensions can tell a page from its iframes.
+- **Traffic lights** go with the sidebar, like Arc: hidden with it, out with it, dim until you point at them.
+- **Site icons** for pinned tabs and Favorites before you've opened them.
+- Fixes: Favorites fill their row, ⌘T works straight after launch, the lock lines up with the address,
+  and the sidebar's scrollbar no longer shows when you aren't scrolling. Light Spaces stay readable
+  (highlighted rows, menus, buttons and letter icons), Easels have no scrollbars, and Settings lost some gaps.
+- **Easels**: drag a corner to resize what's selected, and copy or save the whole easel as an image or PDF.
+- **GitHub folder** (⌘T → "Add GitHub Folder"): reviews asked of you, your PRs, your issues, notifications, and a
+  sub-folder for each of your repos with open issues or pull requests, kept up to date.
+- **Pull request status** in the address bar on a PR: its checks (passing, failing, running) and review. Click for each check.
+- **Your GitHub repos in ⌘T**: type part of a repo's name to open it.
+- **Follow a GitHub repo's releases**: ⌘T on any page of the repo, or give a New Live Folder its address.
+- **Undo after closing several tabs** puts them back inside their folders.
+- **Tab previews**: rest the pointer on a tab to see its page.
+- **Sidebar on the right** (Settings → General), like Arc's Sidebar Position.
+- **Keep Tab Awake**, **Mute Other Tabs** and a folder's **Reload Tabs** in the right-click menus.
 - **Several tabs at once**: ⌘-click or ⇧-click tabs, then drag them anywhere together, or right-click to split, pin, file, move or close them.
 - **Screenshots**: ⌥⇧⌘4 copies what's on screen; ⌥⇧⌘3 saves the whole page, top to bottom.
 - **Share…** (File menu, or right-click a tab): AirDrop a page to your phone, or send it to Messages or Mail.
@@ -91,6 +119,7 @@ class WhatsNew(FadesIn, QWidget):
         text.setObjectName("Answer")
         text.setOpenLinks(False)
         text.setMarkdown(NOTES)
+        quiet_scrollbars(text)  # (like every other list here: out of sight until you scroll)
         layout.addWidget(text, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(self.close)

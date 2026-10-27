@@ -106,6 +106,8 @@ def window(data_dir, qapp):
     store = Store(storage.session_path())
     store.is_new = False  # no first-launch Arc import offer
     w = MainWindow(store, build_profile(qapp))
+    w.github_repos.fetched = float("inf")  # never ask GitHub (gh) for your repos from a test
+    w.favicons.want = lambda urls: None  # nor fetch site icons from the internet
     w.resize(1100, 760)
     w.show()
     _keep_out_of_the_way(w)

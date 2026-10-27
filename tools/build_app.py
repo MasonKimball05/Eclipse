@@ -1,4 +1,4 @@
-"""Build Eclipse.app into ~/Applications.
+"""Build Eclipse.app into /Applications (Finder's Applications folder).
 
 Run it with:   ./run.sh --build-app
                ./run.sh --build-app --sign "Developer ID Application: Your Name (TEAMID)"
@@ -35,8 +35,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from browser.brand import NAME  # noqa: E402
 
-APP = Path.home() / "Applications" / f"{NAME}.app"
-OLD_APPS = [Path.home() / "Applications" / f"{old}.app" for old in ("PythonBrowser", "Halo")]  # its earlier names
+APP = Path("/Applications") / f"{NAME}.app"
+# Earlier installs: under its earlier names, and in ~/Applications (where it used to go, which Finder's
+# Applications folder doesn't show)
+OLD_APPS = [folder / f"{old}.app" for folder in (Path("/Applications"), Path.home() / "Applications")
+            for old in ("PythonBrowser", "Halo", NAME) if folder / f"{old}.app" != APP]
 BUNDLE_ID = "com.masonkimball.pythonbrowser"  # must match browser/macos.py
 LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework"
               "/Support/lsregister")
@@ -44,9 +47,23 @@ LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Frameworks/Laun
 LAUNCHER = r"""
 #include <Python.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 // Paths are baked in at build time (see tools/build_app.py)
 int main(int argc, char *argv[]) {
+    // The project folder (or the virtualenv) has moved since this app was built: say so, rather than
+    // quitting without a word
+    if (access(MAIN_PY, R_OK) != 0 || access(SITE_PACKAGES, R_OK) != 0) {
+        // (the path goes to the script as an argument, so no character in it can break the script)
+        char *alert[] = {"/usr/bin/osascript",
+            "-e", "on run argv",
+            "-e", "display alert \"Eclipse can't find its code\" message \"It was built from \" & item 1 of argv & "
+                  "\", which isn't there any more (has the project folder moved?). In Terminal, go to the "
+                  "project's folder and run ./run.sh --build-app to build it again.\" as critical",
+            "-e", "end run", MAIN_PY, NULL};
+        execv(alert[0], alert);
+        return 1;
+    }
     setenv("PYTHONHOME", PY_HOME, 1);
     setenv("PYTHONPATH", SITE_PACKAGES, 1);
     setenv("PYTHONNOUSERSITE", "1", 1);
@@ -108,6 +125,11 @@ def info_plist() -> dict:
     }
 
 
+def c_string(path) -> str:
+    """A path as a C string literal: a folder name with a quote or a backslash in it still works."""
+    return '"' + str(path).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def compile_launcher(dest: Path):
     version = f"python{sys.version_info.major}.{sys.version_info.minor}"
     site_packages = sysconfig.get_paths()["purelib"]  # this virtualenv's packages
@@ -118,9 +140,9 @@ def compile_launcher(dest: Path):
             "clang", "-O2", "-o", str(dest), str(source),
             f"-I{sysconfig.get_paths()['include']}",
             f"-L{sysconfig.get_config_var('LIBPL')}", f"-l{version}",
-            f'-DPY_HOME="{sys.base_prefix}"',
-            f'-DSITE_PACKAGES="{site_packages}"',
-            f'-DMAIN_PY="{ROOT / "main.py"}"',
+            f"-DPY_HOME={c_string(sys.base_prefix)}",
+            f"-DSITE_PACKAGES={c_string(site_packages)}",
+            f"-DMAIN_PY={c_string(ROOT / 'main.py')}",
         ], check=True)
 
 
@@ -144,8 +166,9 @@ def make_icon(dest: Path):
 
 
 def retire_old_app(old: Path):
-    """An app from before a rename (PythonBrowser.app, then Halo.app): move it to the Trash (it's only a
-    launcher; your data isn't in it), so Spotlight and Launchpad show one browser, not two."""
+    """An earlier install (PythonBrowser.app, then Halo.app, or Eclipse.app in ~/Applications): move it to
+    the Trash (it's only a launcher; your data isn't in it), so Spotlight and Launchpad show one browser,
+    not two."""
     if not old.exists():
         return
     try:
@@ -154,13 +177,14 @@ def retire_old_app(old: Path):
         return
     if existing != BUNDLE_ID:
         return
+    subprocess.run([LSREGISTER, "-u", str(old)], check=False)  # (or macOS remembers it where it was)
     trash = Path.home() / ".Trash" / old.name
     n = 2
     while trash.exists():
         trash = trash.with_name(f"{old.stem} {n}.app")
         n += 1
     shutil.move(str(old), str(trash))
-    print(f"Moved the old {old.name} to the Trash")
+    print(f"Moved the old {old} to the Trash")
 
 
 def forget_trashed():
@@ -214,12 +238,36 @@ def main():
     parser.add_argument("--sign", default=os.environ.get("PYBROWSER_SIGN_IDENTITY", "-"), metavar="IDENTITY",
                         help='a codesigning identity (e.g. "Developer ID Application: …"); default: ad hoc')
     parser.add_argument("--notarize", metavar="PROFILE", help="notarytool keychain profile (needs --sign)")
-    parser.add_argument("--output", type=Path, default=APP.parent, metavar="FOLDER",
-                        help="where to put the app (default: ~/Applications)")
+    parser.add_argument("--output", type=Path, default=None, metavar="FOLDER",
+                        help="where to put the app (default: /Applications)")
     args = parser.parse_args()
     if args.notarize and args.sign == "-":
         parser.error("--notarize needs --sign with a Developer ID Application certificate")
-    build(args.output / APP.name, args.sign, args.notarize)
+    build(args.output / APP.name if args.output else install_path(), args.sign, args.notarize)
+
+
+def install_path() -> Path:
+    """/Applications/Eclipse.app, or ~/Applications' if that can't be: another app has the name there (the
+    Eclipse IDE's is Eclipse.app too), or this account can't write to /Applications."""
+    global APP, OLD_APPS
+    if _ours_or_free(APP) and os.access(APP.parent, os.W_OK):
+        return APP
+    home = Path.home() / "Applications" / APP.name
+    reason = "another app called it is there" if not _ours_or_free(APP) else "it can't be written to by this account"
+    print(f"Not installing in /Applications ({reason}): using {home.parent} instead")
+    home.parent.mkdir(parents=True, exist_ok=True)
+    APP = home  # (the real install, here)
+    OLD_APPS = [old for old in OLD_APPS if old != home]
+    return home
+
+
+def _ours_or_free(app: Path) -> bool:
+    if not app.exists():
+        return True
+    try:
+        return plistlib.loads((app / "Contents" / "Info.plist").read_bytes()).get("CFBundleIdentifier") == BUNDLE_ID
+    except (OSError, plistlib.InvalidFileException):
+        return False
 
 
 def build(app: Path, identity="-", notary_profile=None):

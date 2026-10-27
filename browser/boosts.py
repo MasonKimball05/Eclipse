@@ -9,6 +9,8 @@
 # (main world) where they can see and change everything, like Arc's.
 
 import json
+import re
+import secrets
 from dataclasses import asdict, dataclass, field
 
 from PyQt6.QtCore import QObject, QUrl
@@ -23,6 +25,21 @@ from .theme import stylesheet
 SCRIPT_PREFIX = "pybrowser-boost-"
 ZAP_MESSAGE = "PYBROWSER_ZAP:"
 ZAP_DONE = "PYBROWSER_ZAP_DONE"
+
+
+_SELECTOR = re.compile(r"[\w\s#.>:()\[\]=\"'^$*~+,\\-]{1,400}")
+
+
+def safe_selector(selector: str) -> bool:
+    """A selector Zap made, and nothing more: it goes into the site's stylesheet, so nothing that could
+    end the rule and start another ({ } ; @), or load anything (url(), comments)."""
+    return bool(_SELECTOR.fullmatch(selector)) and "url(" not in selector.lower() and "/*" not in selector
+
+
+def zap_script(token: str) -> str:
+    """The Zap tool, for one go: its messages carry `token`, which the page can't see (the script runs in an
+    isolated world), so a page or an ad in it can't report "selectors" of its own."""
+    return ZAP_SCRIPT.replace("__TOKEN__", token)
 
 
 def site_of(url: str) -> str:
@@ -81,7 +98,7 @@ ZAP_SCRIPT = r"""
     e.preventDefault(); e.stopPropagation();
     const sel = selector(e.target);
     e.target.style.setProperty('display', 'none', 'important');
-    console.log('PYBROWSER_ZAP:' + sel);
+    console.log('PYBROWSER_ZAP:' + '__TOKEN__' + sel);
   };
   const stop = (e) => {
     if (e.key !== 'Escape') return;
@@ -89,7 +106,7 @@ ZAP_SCRIPT = r"""
     document.removeEventListener('click', click, true);
     document.removeEventListener('keydown', stop, true);
     box.remove(); banner.remove(); window.__pbZap = false;
-    console.log('PYBROWSER_ZAP_DONE');
+    console.log('PYBROWSER_ZAP_DONE' + '__TOKEN__');
   };
   document.addEventListener('mousemove', move, true);
   document.addEventListener('click', click, true);
@@ -121,7 +138,9 @@ class BoostManager(QObject):
         self.boosts.remove(boost)
         self._changed()
 
-    def add_zapped(self, site, selector) -> Boost:
+    def add_zapped(self, site, selector) -> Boost | None:
+        if not safe_selector(selector):
+            return None
         boost = next((b for b in self.boosts if b.site == site), None)
         if boost is None:
             boost = Boost(site, name=f"{site} (Zapped)")

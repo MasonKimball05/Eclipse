@@ -152,6 +152,11 @@ class Updater(QObject):
             if more and not self._ask(f"“{script.name}” {fresh.version} wants to do more",
                                       "It now also asks for: " + ", ".join(more)):
                 return
+            # From plain http, anyone on the network could have changed it on the way: always ask
+            if not more and script.origin.startswith("http://") and not self._ask(
+                    f"“{script.name}” {fresh.version} is available",
+                    "It comes from an insecure (http) address, so it may have been changed on the way here."):
+                return
             fresh.id, fresh.enabled = script.id, script.enabled  # same script: keep its stored values
             self.browser.installer.fetch_requires_and_install(fresh, quiet=True)
             self._report.append(f"{fresh.name} to {fresh.version}")

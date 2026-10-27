@@ -63,6 +63,7 @@ class Tab(QObject):
         self.app_unread = None            # the same, from the site's own API (Parliament), not saved
         self.notified = False             # sent a notification you haven't looked at yet
         self.scroll = None                # {"url", "x", "y"}: where its page was scrolled, to go back to
+        self.awake = False                # never put to sleep (a dashboard you keep an eye on)
 
     @property
     def label(self) -> str:
@@ -77,6 +78,7 @@ class Tab(QObject):
             "id": self.id, "url": self.url, "title": self.title, "home_url": self.home_url,
             "custom_title": self.custom_title, "last_active": self.last_active,
             **({"scroll": self.scroll} if self.scroll else {}),
+            **({"awake": True} if self.awake else {}),
         }
 
     @classmethod
@@ -86,6 +88,7 @@ class Tab(QObject):
         scroll = d.get("scroll")
         if isinstance(scroll, dict) and isinstance(scroll.get("y"), (int, float)):
             tab.scroll = scroll
+        tab.awake = d.get("awake") is True
         return tab
 
 
@@ -102,9 +105,8 @@ class Folder:
         self.live: dict | None = live
         if live:
             seen = set(live.get("seen", []))
-            for child in self.children:
-                if isinstance(child, Tab):
-                    child.fresh = (child.home_url or child.url) not in seen
+            for child in walk_tabs(self.children):  # (its sub-folders' too: a GitHub folder has some)
+                child.fresh = (child.home_url or child.url) not in seen
 
     def to_dict(self) -> dict:
         d = {"type": "folder", "id": self.id, "name": self.name, "expanded": self.expanded,
@@ -134,6 +136,25 @@ def walk_folders(nodes):
         if isinstance(node, Folder):
             yield node
             yield from walk_folders(node.children)
+
+
+def node_path(nodes, node, leaving=()) -> list[tuple[int, object, object]] | None:
+    """Where `node` is in a tree, top down: [(index, folder, next), …, (index, node, next)]. `next` is what
+    comes after it there and stays when the tabs in `leaving` go (a folder stays if it keeps a tab), so it
+    can go back before that again, whatever has opened or closed elsewhere since."""
+    going = {id(t) for t in leaving}
+
+    def stays(n):
+        return any(id(t) not in going for t in walk_tabs(n.children)) if isinstance(n, Folder) else id(n) not in going
+    for i, n in enumerate(nodes):
+        after = next((m for m in nodes[i + 1:] if stays(m)), None)
+        if n is node:
+            return [(i, n, after)]
+        if isinstance(n, Folder):
+            below = node_path(n.children, node, leaving)
+            if below is not None:
+                return [(i, n, after), *below]
+    return None
 
 
 def _containing_list(nodes, node):
@@ -286,6 +307,24 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
                     return folder
         return None
 
+    def live_folder_of(self, node) -> Folder | None:
+        """The Live Folder holding `node`, however deep (in one of its sub-folders, say), or None."""
+        def find(nodes, live):  # one walk, knowing the nearest Live Folder above
+            for n in nodes:
+                if n is node:
+                    return live
+                if isinstance(n, Folder):
+                    found = find(n.children, n if n.live else live)
+                    if found is not False:
+                        return found
+            return False
+        for space in self.spaces:
+            for section in (space.pinned, space.today):
+                found = find(section, None)
+                if found is not False:
+                    return found
+        return None
+
     def visible_tabs(self) -> list[Tab]:
         space = self.active_space
         return self.favorites + list(walk_tabs(space.pinned)) + list(walk_tabs(space.today))
@@ -300,8 +339,10 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
 
     def move_tab(self, node, kind, space=None, index=None, folder=None):
         """Move a Tab or Folder. `folder` (pinned only) puts it inside that folder."""
-        if folder is not None and folder.live:
+        if folder is not None and (folder.live or self.live_folder_of(folder)):
             return  # a Live Folder's contents come from its feed; refreshing would drop anything added
+        if isinstance(node, Folder) and self.live_folder_of(node):
+            return  # (one of its sub-folders: the next refresh would only make it again)
         space = space or self.active_space
         if isinstance(node, Folder):
             # Folders live in Pinned or Today (not Favorites), and never inside themselves
@@ -309,6 +350,7 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
                 return
         dest = folder.children if folder is not None and kind != FAVORITES else self.tab_list(kind, space)
         found = self._parent(node)
+        holder = self.folder_of(node)  # (the folder it leaves: a Today one goes when it's emptied)
         if found:
             src = found[0]
             old = next(i for i, n in enumerate(src) if n is node)
@@ -318,11 +360,21 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
         index = len(dest) if index is None else max(0, min(index, len(dest)))
         dest.insert(index, node)
         if isinstance(node, Tab):
-            if kind == TODAY:
-                node.home_url = None
-                node.custom_title = None
-            elif node.home_url is None:
-                node.home_url = node.url
+            converted = [node]
+        elif found and found[1] != kind:  # a folder changing section: its tabs change with it
+            converted = list(walk_tabs(node.children))
+        else:
+            converted = []
+        for tab in converted:
+            if kind == TODAY:  # (Today tabs have no home page, nor a pinned name)
+                tab.home_url = None
+                tab.custom_title = None
+            elif tab.home_url is None:
+                tab.home_url = tab.url
+        if holder is not None and holder is not folder and not holder.children and \
+                (self.locate(holder) or (None,))[0] == TODAY:
+            parent = self._parent(holder)
+            parent[0][:] = [n for n in parent[0] if n is not holder]  # (closing its last tab does the same)
         if folder is not None:
             folder.expanded = True
         self._changed()
@@ -383,12 +435,35 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
         self.archive[:] = [entry for entry in self.archive if id(entry) not in gone]
         self._changed()
 
-    def archive_tab(self, tab, space):
+    def put_back(self, space, path, node):
+        """Put `node` back in Today where node_path() saw it: in the same folders (each brought back too if
+        it went away with its last tab), before what came after it (or where it was, if that's gone too)."""
+        nodes = space.today
+        for depth, (index, item, after) in enumerate(path):
+            where = next((i for i, n in enumerate(nodes) if n is after), None) if after is not None else len(nodes)
+            where = min(index, len(nodes)) if where is None else where
+            if depth == len(path) - 1:
+                nodes.insert(where, node)
+                break
+            found = self._parent(item)
+            if found is None:  # (emptied, so it went: back it comes, empty, ready for the tab)
+                item.children = []
+                nodes.insert(where, item)
+            elif found[0] is not nodes:  # the folder's been moved somewhere else since: Today's top
+                space.today.insert(0, node)
+                break
+            nodes = item.children
+        self._changed()
+
+    def archive_tab(self, tab, space) -> dict | None:
+        """Into the archive (a tab with no address just closes); returns its archive entry, if any."""
+        entry = None
         if tab.url:
-            self.archive.insert(0, {"url": tab.url, "title": tab.label, "space_id": space.id,
-                                    "archived_at": time.time()})
+            entry = {"url": tab.url, "title": tab.label, "space_id": space.id, "archived_at": time.time()}
+            self.archive.insert(0, entry)
             del self.archive[ARCHIVE_LIMIT:]
         self.remove_tab(tab)
+        return entry
 
     def stale_today_tabs(self, exclude=()) -> list[tuple[Tab, Space]]:
         """Today tabs idle for longer than the archive setting. `exclude`: tabs to keep (on screen)."""

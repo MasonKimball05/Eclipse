@@ -6,6 +6,7 @@ from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineS
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 from . import storage
+from .external_links import is_external
 
 
 DEFAULT_PROFILE = "default"
@@ -25,7 +26,17 @@ def build_profile(parent, name=DEFAULT_PROFILE) -> QWebEngineProfile:
     settings = profile.settings()
     settings.setAttribute(QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, True)
     settings.setAttribute(QWebEngineSettings.WebAttribute.ScrollAnimatorEnabled, True)
+    harden(profile)
     return profile
+
+
+def harden(profile):
+    """What a page may never do, in every profile (private ones too). A local .html file (a download,
+    say) can't read other files on the Mac: Qt lets it fetch any file:// address by default, and send
+    what it reads anywhere."""
+    profile.settings().setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, False)
+    # Nor open another app (zoommtg:, vscode:…) by itself: the browser's visible pages ask first (WebPage)
+    profile.settings().setUnknownUrlSchemePolicy(QWebEngineSettings.UnknownUrlSchemePolicy.DisallowUnknownUrlSchemes)
 
 
 # Content scripts and userscripts call the extension runtime with console messages starting with
@@ -44,8 +55,23 @@ class WebPage(QWebEnginePage):
     extension_messages = None
     # Set by the window: url -> darken this page? (dark_pages.py), decided as each page starts loading
     dark_rule = None
+    # Set by the window, for every page: (page, url, main_frame, redirect) when a page tries to open
+    # another app's link
+    external_link = None
+
+    def __init__(self, profile, parent=None):
+        super().__init__(profile, parent)
+        # The profile refuses other apps' links outright; this page lets them through to
+        # acceptNavigationRequest, which refuses them too, and asks you (only pages you see do this)
+        self.settings().setUnknownUrlSchemePolicy(QWebEngineSettings.UnknownUrlSchemePolicy.AllowAllUnknownUrlSchemes)
 
     def acceptNavigationRequest(self, url, nav_type, is_main_frame):
+        if is_external(url):
+            # Another app's link: never opened from here; the window asks you (external_links.py)
+            if WebPage.external_link is not None:
+                WebPage.external_link(self, url, is_main_frame,
+                                      nav_type == QWebEnginePage.NavigationType.NavigationTypeRedirect)
+            return False
         if self.navigation_filter is not None and not self.navigation_filter(url, is_main_frame):
             return False
         if is_main_frame and self.dark_rule is not None:

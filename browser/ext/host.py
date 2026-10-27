@@ -10,6 +10,10 @@
 #     channel in only one world per page, so these send their calls as console messages
 #     stamped with a secret token for their world, and get answers by Python running code
 #     back in that world. A page can't forge calls: it can't see any world's token.
+#     With all_frames they also run in subframes (a cross-origin ad inside your bank, say), so
+#     each world bridge is pinned to the frame it really runs in: the top frame is the page, and
+#     a subframe is found by asking every frame's copy of that world which one holds its name.
+#     Senders get that frame's address as the browser sees it, never the top page's.
 
 import base64
 import itertools
@@ -58,6 +62,32 @@ def _runtime_source() -> tuple[str, str]:
     channel = bytes(qrc.readAll()).decode()
     runtime = (Path(__file__).with_name("runtime.js")).read_text(encoding="utf-8")
     return channel, runtime
+
+
+def _origin(url: QUrl) -> str:
+    """A URL's origin as a page sees it (location.origin): scheme://host[:port], or "null"."""
+    scheme = url.scheme()
+    if scheme == "blob":
+        return _origin(QUrl(url.path()))
+    if scheme == "file":
+        return "file://"
+    if scheme not in ("http", "https", "ws", "wss", "ftp", "pbext") or not url.host():
+        return "null"  # data:, about: and the like have no origin of their own
+    host = url.host(QUrl.ComponentFormattingOption.FullyEncoded)
+    if ":" in host:
+        host = f"[{host}]"  # an IPv6 address
+    port = url.port()
+    default = {"http": 80, "https": 443, "ws": 80, "wss": 443, "ftp": 21}.get(scheme, -1)
+    return f"{scheme}://{host}" + (f":{port}" if port not in (-1, default) else "")
+
+
+def _subframes(page):
+    """Every frame of a page but the top one, each with the frame it sits in."""
+    stack = [(child, page.mainFrame()) for child in page.mainFrame().children()]
+    while stack:
+        frame, parent = stack.pop()
+        stack.extend((child, frame) for child in frame.children())
+        yield frame, parent
 
 
 def _script(name, source, world, point=QWebEngineScript.InjectionPoint.DocumentCreation, subframes=True):
@@ -120,6 +150,16 @@ class WorldBridge(PageBridge):
         self._owner = owner
         self.world = world
         self.frame = frame  # "top", or the random name the runtime gave a subframe
+        # Which of the page's frames this is (found by the host; see ExtensionHost._locate), its
+        # parent (whose origin an about:blank frame shares), and chrome's frameId for it
+        self.qframe = None
+        self.parent = None
+        self.frame_id = 0 if frame == "top" else None
+        self.backlog = []  # a subframe's calls from before it was found
+
+    @property
+    def located(self) -> bool:
+        return self.frame_id is not None
 
     @property
     def kind(self):
@@ -137,13 +177,12 @@ class WorldBridge(PageBridge):
         if self.frame == "top":
             self.page.runJavaScript(code, self.world)
             return
-        # A subframe: Qt can't say which one, so every frame checks the name
-        stack = [self.page.mainFrame()]
-        while stack:
-            frame = stack.pop()
-            stack.extend(frame.children())
-            if not frame.isMainFrame():
-                frame.runJavaScript(code, self.world)
+        if self.qframe is not None:
+            self.qframe.runJavaScript(code, self.world)
+            return
+        # A subframe not found yet: every frame checks the name
+        for frame, _parent in _subframes(self.page):
+            frame.runJavaScript(code, self.world)
 
     def send(self, kind, payload):
         # Only what concerns this world: its extension's events, and replies to its own calls
@@ -276,6 +315,8 @@ class ExtensionHost(QObject):
         self._xhrs: dict[int, QNetworkReply] = {}
         self._tab_ids: dict[str, int] = {}     # our tab ids (strings) ↔ chrome's (numbers)
         self._tab_numbers = itertools.count(1)
+        self._frames: dict = {}                # page → [(subframe, chrome's frameId)] in its document
+        self._frame_numbers = itertools.count(1)  # never reused, so an old frameId can't reach a new frame
         self._refused_helpers: set[str] = set()
         self.web_request_listeners: dict[int, dict] = {}  # chrome.webRequest listeners (watch-only)
         self._request_ids = itertools.count(1)
@@ -349,9 +390,10 @@ class ExtensionHost(QObject):
 
     def _world_call(self, page, message):
         try:
-            token, frame, call_id, method, args_json = json.loads(message[len(EXTENSION_CALL):])
+            token, frame, call_id, method, args_json, *rest = json.loads(message[len(EXTENSION_CALL):])
         except (ValueError, TypeError):
             return
+        href = rest[0] if rest else None  # where the world's frame says it is (the external shim sends none)
         if not (isinstance(token, str) and isinstance(frame, str) and isinstance(method, str)
                 and isinstance(args_json, str) and isinstance(call_id, int) and not isinstance(call_id, bool)):
             return
@@ -359,7 +401,7 @@ class ExtensionHost(QObject):
             self._external_call(page, call_id, method, args_json)
             return
         key = self._tokens.get(token)
-        if key is None:
+        if key is None or not isinstance(href, str):
             return  # not from one of our worlds
         world = self._worlds[key][0]
         bridge = next((b for b in self.bridges if isinstance(b, WorldBridge) and b.page is page
@@ -367,9 +409,81 @@ class ExtensionHost(QObject):
         if bridge is None:
             bridge = WorldBridge(self, page, key[0], key[1], world, frame)
             self.bridges.append(bridge)
-        raw = bridge.call(method, args_json)
+            if frame != "top":
+                self._locate(bridge)
+        if not bridge.located:
+            bridge.backlog.append((call_id, method, args_json, href))  # answered once it's found
+            return
+        self._serve(bridge, call_id, method, args_json, href)
+
+    def _serve(self, bridge, call_id, method, args_json, href):
+        if self._honest(bridge, href):
+            raw = bridge.call(method, args_json)
+        else:  # its document has gone, or it isn't where it says it is
+            raw = json.dumps({"error": "PermissionError: this frame isn't at that address"})
         if method != "hello":  # a runtime saying hello doesn't wait for an answer
             bridge.answer(call_id, raw)
+
+    # Which frame a world is in ---------------------------------------------------------------------
+
+    def _locate(self, bridge):
+        """Find the subframe a world bridge lives in: each frame's copy of the world is asked whether
+        the name is its own. Only the runtime there knows its name, and it answers from inside the
+        frame, so the answer comes from the frame Qt ran it in, whatever the page claims."""
+        ask = f"window.__pbFrameIs && window.__pbFrameIs({json.dumps(bridge.frame)})"
+        for frame, parent in _subframes(bridge.page):
+            frame.runJavaScript(ask, bridge.world, lambda yes, f=frame, p=parent: yes is True and self._found(bridge, f, p))
+        QTimer.singleShot(REPLY_TIMEOUT_MS, lambda: bridge.located or bridge.backlog.clear())
+
+    def _found(self, bridge, frame, parent):
+        if bridge not in self.bridges or sip.isdeleted(bridge.page):
+            return
+        if bridge.qframe is not None:
+            if not bridge.qframe == frame:  # two frames claim one name: trust neither
+                self._forget_bridge(bridge)
+            return
+        bridge.qframe, bridge.parent = frame, parent
+        bridge.frame_id = self._frame_number(bridge.page, frame)
+        # An earlier document in the same frame and world has gone; its bridge goes with it
+        for old in [b for b in self.bridges if isinstance(b, WorldBridge) and b is not bridge and b.page is bridge.page
+                    and b.world == bridge.world and b.qframe is not None and b.qframe == frame]:
+            self._forget_bridge(old)
+        backlog, bridge.backlog = bridge.backlog, []
+        for call in backlog:
+            self._serve(bridge, *call)
+
+    def _frame_number(self, page, frame) -> int:
+        """chrome's frameId for a subframe: the same for every extension in that frame."""
+        known = self._frames.setdefault(page, [])
+        for other, number in known:
+            if other == frame:
+                return number
+        number = next(self._frame_numbers)
+        known.append((frame, number))
+        return number
+
+    def _where(self, bridge) -> tuple[QUrl, str] | None:
+        """A world bridge's frame as the browser sees it: (its URL, its origin), or None once it's gone."""
+        if bridge.frame == "top":
+            return bridge.page.url(), _origin(bridge.page.url())
+        frame = bridge.qframe
+        if frame is None or not frame.isValid():
+            return None
+        url = frame.url()
+        if url.scheme() == "about" and bridge.parent is not None and bridge.parent.isValid():
+            return url, _origin(bridge.parent.url())  # about:blank and srcdoc frames share their parent's
+        return url, _origin(url)
+
+    def _honest(self, bridge, href) -> bool:
+        """Whether a world's frame is where its runtime says (same origin; the path may have moved on)."""
+        where = self._where(bridge)
+        if where is None:
+            return False
+        url, origin = where
+        reported = QUrl(href)
+        if url.scheme() == "about":
+            return reported.scheme() == "about"
+        return _origin(reported) == origin
 
     def _before_navigation(self, page, url: QUrl, main_frame: bool) -> bool:
         if not main_frame:
@@ -421,17 +535,24 @@ class ExtensionHost(QObject):
         return [r for r in map(match_pattern, patterns) if r]
 
     def _drop_bridges(self, page, worlds_only=False):
+        self._frames.pop(page, None)  # a new document has new frames
         for bridge in [b for b in self.bridges if b.page is page and (isinstance(b, (WorldBridge, ExternalBridge)) or not worlds_only)]:
-            self.bridges.remove(bridge)
-            for port_id, port in list(self._ports.items()):  # its ports close with it
-                port.get("offered", set()).discard(bridge)
-                if port["opener"] is bridge or bridge in port["others"]:
-                    self._m_port_close(bridge, port["ext"], port_id)
+            self._forget_bridge(bridge)
 
-    def _content_bridges(self, page, ext_id) -> list[WorldBridge]:
-        """An extension's content scripts in a page (one per frame they run in)."""
+    def _forget_bridge(self, bridge):
+        if bridge in self.bridges:
+            self.bridges.remove(bridge)
+        for port_id, port in list(self._ports.items()):  # its ports close with it
+            port.get("offered", set()).discard(bridge)
+            if port["opener"] is bridge or bridge in port["others"]:
+                self._m_port_close(bridge, port["ext"], port_id)
+
+    def _content_bridges(self, page, ext_id, frame_id=None) -> list[WorldBridge]:
+        """An extension's content scripts in a page (one per frame they run in), or in just one frame."""
+        if frame_id is not None and (not isinstance(frame_id, int) or isinstance(frame_id, bool)):
+            raise TypeError("frameId must be a number")
         return [b for b in self.bridges if isinstance(b, WorldBridge) and b.page is page
-                and b.kind == EXT and b.owner == ext_id]
+                and b.kind == EXT and b.owner == ext_id and (frame_id is None or b.frame_id == frame_id)]
 
     @property
     def active(self) -> bool:
@@ -623,9 +744,14 @@ class ExtensionHost(QObject):
             bridge.send(kind, payload)
 
     def _sender(self, bridge, ext_id) -> dict:
-        url = bridge.page.url().toString()
-        sender = {"url": url, "origin": bridge.page.url().adjusted(
-            QUrl.UrlFormattingOption.RemovePath | QUrl.UrlFormattingOption.RemoveQuery).toString(), "frameId": 0}
+        # A content script's own frame (never the top page's address for a subframe); extension
+        # pages and websites speak from their top frame
+        if isinstance(bridge, WorldBridge):
+            url, origin = self._where(bridge) or (QUrl(), "null")
+        else:
+            url, origin = bridge.page.url(), _origin(bridge.page.url())
+        frame_id = bridge.frame_id if isinstance(bridge, WorldBridge) else 0
+        sender = {"url": url.toString(), "origin": origin, "frameId": frame_id}
         if not isinstance(bridge, ExternalBridge):
             sender["id"] = ext_id  # websites have no extension id
         tab = self._tab_of(bridge.page)
@@ -656,9 +782,11 @@ class ExtensionHost(QObject):
         recipients = [b for b in self.bridges if b.extension_id == ext_id and b is not bridge]
         return self._deliver(bridge, recipients, ext_id, message)
 
-    def _m_tabs_sendMessage(self, bridge, ext_id, tab_id, message):
+    def _m_tabs_sendMessage(self, bridge, ext_id, tab_id, message, options=None):
+        # Every frame's content script, as in Chrome, unless options.frameId picks one
+        frame_id = (options or {}).get("frameId") if isinstance(options, dict) else None
         tab = self._tab_by_number(tab_id)
-        targets = self._content_bridges(tab.view.page(), ext_id) if tab and hasattr(tab.view, "page") else []
+        targets = self._content_bridges(tab.view.page(), ext_id, frame_id) if tab and hasattr(tab.view, "page") else []
         return self._deliver(bridge, targets, ext_id, message)
 
     def _m_runtime_reply(self, bridge, ext_id, reply_id, value):
@@ -677,12 +805,13 @@ class ExtensionHost(QObject):
 
     # Ports ----------------------------------------------------------------------------------------
 
-    def _m_port_open(self, bridge, ext_id, name, tab_number):
+    def _m_port_open(self, bridge, ext_id, name, tab_number, frame_id=None):
         if tab_number is None:
             recipients = [b for b in self.bridges if b.extension_id == ext_id and b is not bridge]
-        else:
+        else:  # tabs.connect: every frame's content script, or just frameId's
             tab = self._tab_by_number(tab_number)
-            recipients = self._content_bridges(tab.view.page(), ext_id) if tab and hasattr(tab.view, "page") else []
+            recipients = (self._content_bridges(tab.view.page(), ext_id, frame_id)
+                          if tab and hasattr(tab.view, "page") else [])
         port_id = next(self._ids)
         self._ports[port_id] = {"ext": ext_id, "opener": bridge, "others": [], "waiting": len(recipients),
                                 "queue": [], "offered": set(recipients)}
@@ -898,8 +1027,10 @@ class ExtensionHost(QObject):
             self.broadcast("tabs.activated", [{"tabId": self._number(tab), "windowId": 1}])
 
     def tab_removed(self, tab):
-        if self._has_extension_pages() and tab.id in self._tab_ids:
-            self.broadcast("tabs.removed", [self._tab_ids[tab.id], {"windowId": 1, "isWindowClosing": False}])
+        # Closed, archived or deleted: said once, and its number is never handed out again (as in Chrome)
+        number = self._tab_ids.pop(tab.id, None)
+        if number is not None and self._has_extension_pages():
+            self.broadcast("tabs.removed", [number, {"windowId": 1, "isWindowClosing": False}])
 
     def _has_extension_pages(self) -> bool:
         return any(b.extension_id for b in self.bridges)

@@ -7,9 +7,9 @@ import random
 from dataclasses import dataclass
 from functools import lru_cache
 
-from PyQt6.QtCore import QRectF, Qt, QTimer
+from PyQt6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, QTimer
 from PyQt6.QtGui import QColor, QFont, QGuiApplication, QIcon, QImage, QLinearGradient, QPainter, QPixmap
-from PyQt6.QtWidgets import QMenu, QWidget
+from PyQt6.QtWidgets import QLabel, QMenu, QWidget
 
 PALETTE = [
     ("Lavender", "#8b7cf6"),
@@ -65,6 +65,23 @@ class Theme:
     @property
     def panel_text(self) -> QColor:
         return QColor("#f2f2f4") if self.dark else QColor("#1d1d22")
+
+    @property
+    def on_accent(self) -> QColor:
+        """Text on an accent-coloured background: white, unless the accent is too pale for white to read
+        (a peach or butter Space), then near-black."""
+        return QColor("white") if contrast(QColor("white"), self.accent) >= 2.6 else QColor("#1d1d22")
+
+    @property
+    def accent_text(self) -> QColor:
+        """The accent as text on a panel: a pale Space colour (peach on white) is deepened, and a deep
+        one lightened on dark, until it reads (4.5:1, as for body text)."""
+        color = QColor(self.accent)
+        for _ in range(16):
+            if contrast(color, self.panel) >= 4.5:
+                break
+            color = color.lighter(112) if self.dark else color.darker(112)
+        return color
 
     def gradient(self, width: float, height: float, offset_x: float = 0, offset_y: float = 0) -> QLinearGradient:
         # The window background (a diagonal gradient), in a child widget's coordinates
@@ -161,27 +178,134 @@ class ThemedBackground(QWidget):
             p.drawTiledPixmap(self.rect(), noise_pixmap())
 
 
+class FittedLabel(QLabel):
+    """A wrapped note that's as tall as its text at the width it's given. In a form layout a plain
+    word-wrapped QLabel is sized as if it were narrow, leaving a gap of empty lines under it."""
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setWordWrap(True)
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        return QSize(hint.width(), self.heightForWidth(self.width())) if self.width() > 50 else hint
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if event.oldSize().width() != event.size().width():
+            self.updateGeometry()  # (the height that fits changes with the width)
+
+
 def quiet_scrollbars(area):
-    """Hide a scroll area's scrollbars until it scrolls (or the pointer is on them), then fade them
-    away again a moment later."""
+    """Hide a scroll area's scrollbars until you scroll it (or point at them), then hide them again a
+    moment later."""
     for bar in (area.verticalScrollBar(), area.horizontalScrollBar()):
-        bar.setProperty("quiet", True)
-        timer = QTimer(bar, singleShot=True, interval=900)
+        _quiet(bar)
+    return area
 
-        def show(_value=None, b=bar, t=timer):
-            if b.property("active") is not True:
-                b.setProperty("active", True)
-                b.style().unpolish(b)
-                b.style().polish(b)
-            t.start()
 
-        def hide(b=bar):
-            b.setProperty("active", False)
+def _quiet(bar, scrolled_by=()):
+    """`bar` hides until it's scrolled (or by any of the bars in `scrolled_by`) or pointed at."""
+    bar.setProperty("quiet", True)
+    # Styled again now: it was styled when it was made, before it was quiet, and Qt doesn't look
+    # again by itself, so the bar (and macOS's track behind it) would always show
+    bar.style().unpolish(bar)
+    bar.style().polish(bar)
+    timer = QTimer(bar, singleShot=True, interval=900)
+
+    # (an overlay bar lies over rows' close buttons: it only takes the mouse while it's showing)
+    overlay = bar.objectName() == "OverlayScrollBar"
+    if overlay:
+        bar.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def show(_value=None, b=bar, t=timer):
+        if overlay:
+            b.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        if b.property("active") is not True:
+            b.setProperty("active", True)
             b.style().unpolish(b)
             b.style().polish(b)
-        bar.valueChanged.connect(show)
-        timer.timeout.connect(hide)
+        if not b.underMouse():  # (the pointer's on it: it stays until it leaves)
+            t.start()
+
+    def hide(b=bar):
+        if overlay:
+            b.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        b.setProperty("active", False)
+        b.style().unpolish(b)
+        b.style().polish(b)
+    # Only when it's you scrolling (wheel, trackpad, dragging, keys): not when the content changes
+    # under it, or the sidebar would flash a scrollbar every time it's rebuilt
+    for source in (bar, *scrolled_by):
+        source.actionTriggered.connect(show)
+    timer.timeout.connect(hide)
+    bar.installEventFilter(_PointedAt(bar, show, timer))
+
+
+class _Overlay(QObject):
+    """Keeps an overlay scrollbar along its scroll area's right edge, there only when there's scrolling."""
+
+    def __init__(self, area, bar):
+        super().__init__(area)
+        self.area, self.bar = area, bar
+        area.installEventFilter(self)
+
+    def place(self):
+        inner = self.area.verticalScrollBar()
+        self.bar.setVisible(inner.maximum() > 0)
+        self.bar.setGeometry(self.area.width() - 10, 0, 10, self.area.height())
+        self.bar.raise_()
+
+    def eventFilter(self, obj, event):
+        if event.type() in (QEvent.Type.Resize, QEvent.Type.Show):
+            self.place()
+        return False
+
+
+def overlay_scrollbar(area):
+    """A quiet vertical scrollbar that floats over the content, as macOS's do, rather than taking a strip
+    of its width (which made rows end short of everything above them, and change width when the list
+    started to scroll)."""
+    from PyQt6.QtWidgets import QScrollBar
+    inner = area.verticalScrollBar()  # (still keeps the range and position: just never shown)
+    area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    bar = QScrollBar(Qt.Orientation.Vertical, area)
+    bar.setObjectName("OverlayScrollBar")
+    overlay = _Overlay(area, bar)
+
+    def ranged(low, high):
+        bar.setRange(low, high)
+        bar.setPageStep(inner.pageStep())
+        bar.setSingleStep(inner.singleStep())
+        overlay.place()
+    inner.rangeChanged.connect(ranged)
+    inner.valueChanged.connect(lambda v: bar.value() != v and bar.setValue(v))
+    bar.valueChanged.connect(lambda v: inner.value() != v and inner.setValue(v))
+    ranged(inner.minimum(), inner.maximum())
+    bar.setValue(inner.value())
+    _quiet(bar, scrolled_by=(inner,))
+    _quiet(area.horizontalScrollBar())
+    area.overlay_scrollbar = bar
     return area
+
+
+class _PointedAt(QObject):
+    """A quiet scrollbar shows while the pointer's on it, and hides a moment after it leaves."""
+
+    def __init__(self, bar, show, timer):
+        super().__init__(bar)
+        self.show, self.timer = show, timer
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Enter:
+            self.show()
+            self.timer.stop()  # (stays while you're on it)
+        elif event.type() == QEvent.Type.Leave:
+            self.timer.start()
+        return False
 
 
 _legible: dict = {}
@@ -197,18 +321,21 @@ def legible(icon: QIcon, theme: "Theme") -> QIcon:
     if key in _legible:
         return _legible[key]
     image = icon.pixmap(32, 32).toImage().convertToFormat(QImage.Format.Format_ARGB32)
-    total = weight = 0.0
+    total = weight = colour = 0.0
     for y in range(0, image.height(), 2):
         for x in range(0, image.width(), 2):
             c = image.pixelColor(x, y)
             if c.alpha() > 40:
                 a = c.alphaF()
                 total += a * (0.2126 * c.redF() + 0.7152 * c.greenF() + 0.0722 * c.blueF())
+                colour += a * (max(c.redF(), c.greenF(), c.blueF()) - min(c.redF(), c.greenF(), c.blueF()))
                 weight += a
     result = icon
     if weight > 4:
-        lum = total / weight
-        if (not theme.dark and lum > 0.86) or (theme.dark and lum < 0.12):
+        lum, grey = total / weight, colour / weight < 0.15
+        # (a colourful icon, YouTube's red say, shows up on either; a grey one only if it's light or dark
+        # enough: GitHub's #24292e octocat is nearly lost on a dark sidebar)
+        if grey and ((not theme.dark and lum > 0.82) or (theme.dark and lum < 0.25)):
             size = 64
             out = QPixmap(size, size)
             out.fill(Qt.GlobalColor.transparent)
@@ -225,6 +352,20 @@ def legible(icon: QIcon, theme: "Theme") -> QIcon:
     return result
 
 
+def contrast(a: QColor, b: QColor) -> float:
+    """WCAG contrast ratio between two colours: 1 (the same) to 21 (black on white)."""
+    la, lb = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+
+
+def _luminance(color: QColor) -> float:
+    """WCAG relative luminance: 0 for black, 1 for white."""
+    def channel(c):
+        c /= 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    return 0.2126 * channel(color.red()) + 0.7152 * channel(color.green()) + 0.0722 * channel(color.blue())
+
+
 def letter_icon(text: str, color: QColor, size: int = 32) -> QIcon:
     # Fallback favicon: the first letter of the site on a rounded square
     return _letter_icon((text[:1] or "?").upper(), QColor(color).rgba(), size)
@@ -233,6 +374,10 @@ def letter_icon(text: str, color: QColor, size: int = 32) -> QIcon:
 @lru_cache(maxsize=512)
 def _letter_icon(letter: str, rgba: int, size: int) -> QIcon:
     color = QColor.fromRgba(rgba)
+    for _ in range(12):  # a pale Space colour (peach, mint…) would leave the white letter unreadable:
+        if _luminance(color) <= 0.32:  # deepen it, same hue, until white stands out (about 3:1)
+            break
+        color = color.darker(112)
     pm = QPixmap(size * 2, size * 2)
     pm.setDevicePixelRatio(2)
     pm.fill(Qt.GlobalColor.transparent)
@@ -299,6 +444,48 @@ def switch_images(accent: QColor, dark: bool) -> tuple[str, str]:
     return names[0], names[1]
 
 
+def _ui_image(name: str, w: int, h: int, draw) -> str:
+    """A small picture for the stylesheet, written once into the temp folder (with an @2x copy):
+    draw(painter, scale) paints it."""
+    import tempfile
+    from pathlib import Path
+    folder = Path(tempfile.gettempdir()) / "pythonbrowser-ui"
+    folder.mkdir(exist_ok=True)
+    for scale, suffix in ((1, ""), (2, "@2x")):
+        path = folder / f"{name}{suffix}.png"
+        if not path.exists():
+            image = QImage(w * scale, h * scale, QImage.Format.Format_ARGB32)
+            image.fill(Qt.GlobalColor.transparent)
+            p = QPainter(image)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            draw(p, scale)
+            p.end()
+            image.save(str(path))
+    return (folder / f"{name}.png").as_posix()
+
+
+def chevron_image(color: QColor) -> str:
+    """A combo box's ▾, as macOS draws it: a thin chevron."""
+    def draw(p, scale):
+        from PyQt6.QtGui import QPen
+        p.setPen(QPen(color, 1.5 * scale, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+        p.drawPolyline([QPointF(1.5 * scale, 2 * scale), QPointF(5 * scale, 5.5 * scale), QPointF(8.5 * scale, 2 * scale)])
+    return _ui_image(f"chevron-v1-{color.name(QColor.NameFormat.HexArgb)[1:]}", 10, 7, draw)
+
+
+def knob_image() -> str:
+    """A slider's knob: white, with a soft edge drawn in one piece (a 1px border showed seams)."""
+    def draw(p, scale):
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(0, 0, 0, 34))
+        p.drawEllipse(QRectF(0.5 * scale, 1 * scale, 17 * scale, 17 * scale))
+        p.setBrush(QColor(0, 0, 0, 46))
+        p.drawEllipse(QRectF(0.5 * scale, 0.5 * scale, 17 * scale, 17 * scale))
+        p.setBrush(QColor("white"))
+        p.drawEllipse(QRectF(1 * scale, 1 * scale, 16 * scale, 16 * scale))
+    return _ui_image("slider-knob-v2", 18, 19, draw)  # (a new name when the drawing changes: they're cached)
+
+
 def hover_color(t: Theme) -> QColor:
     """The sidebar's hover highlight (rows paint it themselves, so it can fade)."""
     color = QColor("white")
@@ -310,6 +497,7 @@ def stylesheet(t: Theme) -> str:
     # A grey Space would make "on" look like "off": those switches (and sliders) use the system blue
     control = t.accent if t.accent.hsvSaturationF() > 0.25 else QColor("#0a84ff")
     switch_off, switch_on = switch_images(control, t.dark)
+    on_control = t.on_accent if control == t.accent else QColor("white")
     text = rgba(t.text)
     dim = rgba(t.text, 0.55)
     faint = rgba(t.text, 0.10)
@@ -329,8 +517,8 @@ def stylesheet(t: Theme) -> str:
     QSlider::groove:horizontal {{ height: 4px; background: {rgba(t.panel_text, 0.15)}; border-radius: 2px; }}
     QSlider::sub-page:horizontal {{ background: {rgba(control)}; border-radius: 2px; }}
     QSlider::handle:horizontal {{
-        width: 18px; height: 18px; margin: -7px 0; border-radius: 9px; background: white;
-        border: 1px solid rgba(0, 0, 0, 0.18);
+        width: 18px; height: 19px; margin: -7px 0 -8px 0; background: transparent; border: none;
+        image: url({knob_image()});
     }}
     #Sidebar QLabel {{ color: {text}; background: transparent; }}
     #Sidebar QLabel[dim="true"] {{ color: {dim}; font-size: 11px; }}
@@ -339,11 +527,9 @@ def stylesheet(t: Theme) -> str:
     QScrollBar[quiet="true"]:vertical {{ width: 8px; background: transparent; margin: 2px 1px; }}
     QScrollBar[quiet="true"]:horizontal {{ height: 8px; background: transparent; margin: 1px 2px; }}
     QScrollBar[quiet="true"]::handle {{ background: transparent; border-radius: 3px; min-height: 28px; min-width: 28px; }}
-    QScrollBar[quiet="true"][active="true"]::handle, QScrollBar[quiet="true"]:hover::handle {{
-        background: {rgba(t.text, 0.22)};
-    }}
-    *[panel="true"] QScrollBar[quiet="true"][active="true"]::handle,
-    *[panel="true"] QScrollBar[quiet="true"]:hover::handle {{ background: {rgba(t.panel_text, 0.22)}; }}
+    /* ("active" while you scroll or point at it: Qt's :hover matched macOS's bars all the time) */
+    QScrollBar[quiet="true"][active="true"]::handle {{ background: {rgba(t.text, 0.22)}; }}
+    *[panel="true"] QScrollBar[quiet="true"][active="true"]::handle {{ background: {rgba(t.panel_text, 0.22)}; }}
     QScrollBar[quiet="true"]::add-line, QScrollBar[quiet="true"]::sub-line,
     QScrollBar[quiet="true"]::add-page, QScrollBar[quiet="true"]::sub-page {{
         width: 0; height: 0; background: none;
@@ -356,13 +542,14 @@ def stylesheet(t: Theme) -> str:
 
     QPushButton#UrlPill {{
         background: {tile}; color: {text}; border: none; border-radius: 10px;
-        padding: 8px 10px; text-align: left; font-size: 13px;
+        padding: 8px 10px; text-align: left; font-size: 13px; font-weight: 500;
     }}
     QPushButton#UrlPill:hover {{ background: {hover}; }}
 
     QFrame#TabRow {{ background: transparent; border-radius: 9px; }}
     QFrame#TabRow[selected="true"] {{ background: {selected}; }}
-    QFrame#TabRow QLabel {{ font-size: 13px; }}
+    /* Arc's sidebar is SF Pro Medium, not the Regular weight Qt starts with */
+    QFrame#TabRow QLabel {{ font-size: 13px; font-weight: 500; }}
     QFrame#TabRow QLabel[unloaded="true"] {{ color: {rgba(t.text, 0.72)}; }}
     QFrame#TabRow QLabel[fresh="true"] {{ font-weight: 700; }}
 
@@ -392,7 +579,7 @@ def stylesheet(t: Theme) -> str:
     QPushButton#ClearButton:hover {{ background: {hover}; color: {text}; }}
     QPushButton#SpaceTitle {{
         background: transparent; border: none; border-radius: 7px; color: {text};
-        font-size: 13px; font-weight: 600; padding: 4px 8px 4px 6px; text-align: left;
+        font-size: 13px; font-weight: 600; padding: 4px 8px 4px 10px; text-align: left;
     }}
     QPushButton#SpaceTitle:hover {{ background: {hover}; }}
     QLabel#ProfileBadge {{
@@ -403,13 +590,11 @@ def stylesheet(t: Theme) -> str:
     QSplitter::handle:hover, QSplitter::handle:pressed {{
         background: {faint}; border-radius: 3px; margin: 12px 2px;
     }}
+    /* (the sidebar's edge is wider: a slim bar down the middle of it) */
+    QSplitter#SidebarSplitter::handle:hover, QSplitter#SidebarSplitter::handle:pressed {{ margin: 12px 4px; }}
     #ContentFrame {{ background: {content_bg}; border-radius: 10px; }}
-    #EmptyState QLabel {{ color: {rgba(QColor("#ffffff") if t.dark else QColor("#000000"), 0.45)}; font-size: 13px; }}
-    #EmptyState QLabel#EmptyTitle {{ font-size: 22px; font-weight: 600; }}
-    #EmptyState QLabel#EmptyKey {{
-        background: {rgba(QColor("#ffffff") if t.dark else QColor("#000000"), 0.06)}; border-radius: 6px;
-        padding: 3px 0; font-size: 13px; font-weight: 600;
-    }}
+    /* Nothing open: no page, just the Space's colours (like Arc), a shade off so the sidebar stands apart */
+    #ContentFrame[blank="true"] {{ background: {"rgba(0, 0, 0, 0.18)" if t.dark else "rgba(255, 255, 255, 0.42)"}; }}
     QLabel#PanelEmptyTitle {{ color: {panel_text}; font-size: 15px; font-weight: 600; }}
     #ProgressBar {{ background: {rgba(t.accent)}; border-radius: 1px; }}
 
@@ -424,25 +609,35 @@ def stylesheet(t: Theme) -> str:
         padding: 3px 10px; font-size: 12px; font-weight: 600;
     }}
     QPushButton#ToastAction:hover {{ background: {rgba(t.accent, 0.32)}; }}
+    /* (in a light Space a white toast vanished against a white page: there it's a dark heads-up instead) */
+    {"" if t.dark else """
+    #Toast { background: rgba(28, 28, 32, 0.94); border: 1px solid rgba(255, 255, 255, 0.08); }
+    #ToastText { color: #f2f2f4; }
+    QPushButton#ToastAction { background: rgba(255, 255, 255, 0.14); color: #f2f2f4; }
+    QPushButton#ToastAction:hover { background: rgba(255, 255, 255, 0.24); }
+    """}
 
     #FindBar {{ background: {panel}; border: 1px solid {panel_line}; border-radius: 10px; }}
     #NotificationBanner {{ background: {panel}; border: 1px solid {panel_line}; border-radius: 12px; }}
     #BannerTitle {{ color: {panel_text}; font-weight: 600; font-size: 13px; }}
     #BannerBody {{ color: {panel_text}; font-size: 12px; }}
-    #BannerSite {{ color: {rgba(t.accent)}; font-size: 11px; }}
+    #BannerSite {{ color: {rgba(t.accent_text)}; font-size: 11px; }}
     QToolButton#BannerClose {{ background: transparent; border: none; padding: 2px; }}
     QLabel#UnreadBadge {{
-        background: {rgba(t.accent)}; color: white; border-radius: 8px; padding: 0 5px;
+        background: {rgba(t.accent)}; color: {rgba(t.on_accent)}; border-radius: 8px; padding: 0 5px;
         font-size: 10px; font-weight: 700; min-width: 6px;
     }}
     #PermissionPrompt {{ background: {panel}; border: 1px solid {panel_line}; border-radius: 12px; }}
     #PermissionPrompt QLabel {{ color: {panel_text}; font-size: 13px; }}
+    #PermissionPrompt QLabel#PromptDetail {{ color: {panel_dim}; font-size: 11px; }}
     #PermissionPrompt QPushButton {{
         padding: 5px 12px; border-radius: 7px; border: 1px solid {panel_line}; background: transparent;
         color: {panel_text};
     }}
     #PermissionPrompt QPushButton:hover {{ background: {rgba(t.accent, 0.12)}; }}
-    QPushButton#PermissionAllow {{ background: {rgba(t.accent)}; color: white; border: none; border-radius: 7px; }}
+    /* (a pale Space colour would look like a disabled button: those get the system blue, as switches do) */
+    QPushButton#PermissionAllow {{ background: {rgba(control)}; color: {rgba(on_control)}; border: none; border-radius: 7px; }}
+    QPushButton#PermissionAllow:disabled {{ background: {rgba(control, 0.45)}; }}
     QPushButton#PermissionClose {{ background: transparent; border: none; padding: 4px; }}
     #FindBar QLineEdit {{
         background: transparent; border: none; color: {panel_text}; font-size: 13px; padding: 4px;
@@ -451,22 +646,25 @@ def stylesheet(t: Theme) -> str:
 
     QTextBrowser#Answer {{
         background: transparent; border: none; color: {panel_text}; font-size: 13px;
-        selection-background-color: {rgba(t.accent, 0.45)};
+        selection-background-color: {rgba(t.accent, 0.45)}; selection-color: {panel_text};
     }}
     #CommandPanel QTextBrowser#Answer {{ font-size: 14px; }}
 
     #PreviewCard {{ background: {panel}; border: 1px solid {panel_line}; border-radius: 12px; }}
-    #PreviewHost {{ color: {rgba(t.accent)}; font-size: 11px; font-weight: 600; }}
+    #TabPreview {{ background: {panel}; border: 1px solid {panel_line}; border-radius: 12px; }}
+    #TabPreviewTitle {{ color: {panel_text}; font-size: 13px; font-weight: 600; }}
+    #TabPreviewHost {{ color: {rgba(t.panel_text, 0.6)}; font-size: 11px; }}
+    #PreviewHost {{ color: {rgba(t.accent_text)}; font-size: 11px; font-weight: 600; }}
     #PreviewTitle {{ color: {panel_text}; font-size: 14px; font-weight: 600; }}
     #PreviewSummary {{ color: {panel_dim}; font-size: 13px; }}
 
     #CommandPanel {{ background: {panel}; border: 1px solid {panel_line}; border-radius: 14px; }}
     #CommandInput {{
         background: transparent; border: none; color: {panel_text}; font-size: 18px;
-        padding: 14px 16px; selection-background-color: {rgba(t.accent, 0.45)};
+        padding: 14px 16px; selection-background-color: {rgba(t.accent, 0.45)}; selection-color: {panel_text};
     }}
     #SitePill {{
-        background: {rgba(t.accent, 0.9)}; color: white; font-size: 14px; font-weight: 600;
+        background: {rgba(t.accent, 0.9)}; color: {rgba(t.on_accent)}; font-size: 14px; font-weight: 600;
         border-radius: 8px; padding: 3px 9px;
     }}
     #CommandDivider {{ background: {panel_line}; }}
@@ -483,11 +681,21 @@ def stylesheet(t: Theme) -> str:
     }}
     QToolButton#DevChip[errors="true"] {{ background: rgba(229, 72, 77, 0.85); color: white; }}
     QToolButton#DevChip[open="true"] {{ border: 1px solid {rgba(t.accent, 0.9)}; }}
+    QToolButton#DevChip[compact="true"] {{ padding: 0 4px; border-radius: 4px; background: {rgba(t.accent_text, 0.85)}; }}
+    QToolButton#DevChip[compact="true"][errors="true"] {{ background: rgba(229, 72, 77, 0.85); border-radius: 6px; }}
+    QToolButton#PrChip {{
+        background: {rgba(t.accent, 0.16)}; color: {text}; border: none; border-radius: 6px;
+        padding: 1px 6px; font-size: 10px; font-weight: 700;
+    }}
+    QToolButton#PrChip[state="pass"] {{ background: rgba(48, 164, 108, 0.85); color: white; }}
+    QToolButton#PrChip[state="fail"] {{ background: rgba(229, 72, 77, 0.85); color: white; }}
+    QToolButton#PrChip[state="running"] {{ background: rgba(245, 166, 35, 0.9); color: #1d1d22; }}
+    QToolButton#PrChip[state="merged"] {{ background: rgba(130, 80, 223, 0.85); color: white; }}
     #CrashedCard {{ background: {panel}; border: 1px solid {panel_line}; border-radius: 14px; }}
     #CrashedTitle {{ color: {panel_text}; font-size: 15px; font-weight: 600; }}
     #CrashedDetail {{ color: {panel_text}; font-size: 12px; }}
     QPushButton#CrashReload {{
-        background: {rgba(t.accent)}; color: white; border: none; border-radius: 8px;
+        background: {rgba(t.accent)}; color: {rgba(t.on_accent)}; border: none; border-radius: 8px;
         padding: 6px 22px; font-size: 13px; font-weight: 600; margin-top: 6px;
     }}
     #Reader {{ background: {panel}; }}
@@ -505,7 +713,7 @@ def stylesheet(t: Theme) -> str:
     #NowPlayingTitle {{ color: {text}; font-size: 12px; font-weight: 600; }}
     #NowPlayingSub {{ color: {dim}; font-size: 11px; }}
     QPushButton#UpNextJoin {{
-        background: {rgba(t.accent)}; color: white; border: none; border-radius: 7px; padding: 3px 10px;
+        background: {rgba(t.accent)}; color: {rgba(t.on_accent)}; border: none; border-radius: 7px; padding: 3px 10px;
         font-size: 11px; font-weight: 600;
     }}
     QPushButton#UpNextJoin:hover {{ background: {rgba(t.accent.lighter(115))}; }}
@@ -537,21 +745,32 @@ def stylesheet(t: Theme) -> str:
     QLabel#DownloadTitle {{ font-weight: 500; }}
     *[panel="true"] QLineEdit, *[panel="true"] QComboBox {{
         background: {rgba(t.panel_text, 0.06)}; color: {panel_text}; border: 1px solid {panel_line};
-        border-radius: 7px; padding: 6px 9px; font-size: 13px; selection-background-color: {rgba(t.accent, 0.45)};
+        border-radius: 7px; padding: 6px 9px; font-size: 13px; selection-background-color: {rgba(t.accent, 0.45)}; selection-color: {panel_text};
     }}
     *[panel="true"] QLineEdit:focus {{ border: 1px solid {rgba(t.accent)}; }}
+    /* The arrow part, drawn as part of the box (natively it was a lighter square cutting the corners) */
+    *[panel="true"] QComboBox, #SpaceEditor QComboBox#SpaceCombo {{ padding-right: 26px; }}
+    *[panel="true"] QComboBox::drop-down, #SpaceEditor QComboBox#SpaceCombo::drop-down {{
+        subcontrol-origin: padding; subcontrol-position: center right; width: 24px; border: none; background: transparent;
+    }}
+    *[panel="true"] QComboBox::down-arrow, #SpaceEditor QComboBox#SpaceCombo::down-arrow {{
+        image: url({chevron_image(QColor(t.panel_text.red(), t.panel_text.green(), t.panel_text.blue(), 150))});
+        width: 10px; height: 7px; margin-right: 8px;
+    }}
     *[panel="true"] QPushButton {{
         background: {rgba(t.panel_text, 0.08)}; color: {panel_text}; border: none; border-radius: 7px;
         padding: 7px 14px; font-size: 13px;
     }}
+    /* (a button with a menu says so with "▾" in its text: Qt's own arrow showed as a stray dot) */
+    *[panel="true"] QPushButton::menu-indicator {{ image: none; width: 0; }}
     *[panel="true"] QPushButton:hover {{ background: {rgba(t.panel_text, 0.14)}; }}
     *[panel="true"] QPushButton:disabled {{ color: {panel_dim}; }}
     *[panel="true"] QPushButton#Primary {{
-        background: {rgba(t.accent)}; color: white; font-weight: 600; padding: 8px 20px;
+        background: {rgba(t.accent)}; color: {rgba(t.on_accent)}; font-weight: 600; padding: 8px 20px;
     }}
     *[panel="true"] QPushButton#Primary:hover {{ background: {rgba(t.accent, 0.85)}; }}
     *[panel="true"] QPushButton#Segment:checked {{
-        background: {rgba(t.accent)}; color: white;
+        background: {rgba(t.accent)}; color: {rgba(t.on_accent)};
     }}
     *[panel="true"] QPushButton#Link {{ background: transparent; color: {panel_dim}; padding: 2px 6px; }}
     *[panel="true"] QPushButton#FolderButton {{ text-align: left; }}
@@ -572,7 +791,7 @@ def stylesheet(t: Theme) -> str:
         background: transparent; border: none; padding: 4px 10px 10px 0; outline: 0; font-size: 13px;
     }}
     QListWidget#SettingsNav::item {{ color: {panel_text}; padding: 7px 8px; border-radius: 7px; margin-bottom: 2px; }}
-    QListWidget#SettingsNav::item:selected {{ background: {rgba(t.accent)}; color: white; }}
+    QListWidget#SettingsNav::item:selected {{ background: {rgba(t.accent)}; color: {rgba(t.on_accent)}; }}
     QListWidget#SettingsNav::item:hover:!selected {{ background: {rgba(t.panel_text, 0.07)}; }}
     #SettingsBody {{ background: {panel}; }}
     *[panel="true"] QLabel#SettingTitle {{ font-weight: 600; }}
@@ -583,7 +802,7 @@ def stylesheet(t: Theme) -> str:
         color: {panel_text}; font-size: 13px; outline: 0; padding: 4px;
     }}
     QListWidget#SettingsList::item {{ padding: 5px 6px; border-radius: 5px; }}
-    QListWidget#SettingsList::item:selected {{ background: {rgba(t.accent)}; color: white; }}
+    QListWidget#SettingsList::item:selected {{ background: {rgba(t.accent)}; color: {rgba(t.on_accent)}; }}
     QListWidget#LibraryList {{ background: transparent; border: none; outline: 0; }}
     QLabel#KeyCap {{
         background: {rgba(t.panel_text, 0.08)}; color: {panel_text}; border: 1px solid {panel_line};
@@ -606,12 +825,12 @@ def stylesheet(t: Theme) -> str:
     #EaselTitle {{ background: transparent; border: none; color: #1f2937; font-weight: 600; font-size: 13px; }}
     QToolButton#EaselTool {{ background: transparent; border: none; border-radius: 7px; padding: 5px; }}
     QToolButton#EaselTool:hover {{ background: #f5f5f4; }}
-    QToolButton#EaselTool:checked {{ background: {rgba(t.accent)}; }}
+    QToolButton#EaselTool:checked {{ background: #1f2937; }}  /* (white icon: reads whatever the Space colour) */
     QToolButton#EaselSwatch {{ border-radius: 9px; border: 2px solid white; }}
     QToolButton#EaselSwatch:checked {{ border: 2px solid {rgba(t.accent)}; }}
     QTextEdit#NoteEditor {{
         background: {content_bg}; color: {rgba(QColor("#f2f2f4") if t.dark else QColor("#1d1d22"))}; border: none;
-        font-size: 15px; selection-background-color: {rgba(t.accent, 0.35)};
+        font-size: 15px; selection-background-color: {rgba(t.accent, 0.35)}; selection-color: {panel_text};
     }}
 
     #Sidebar[floating="true"] {{
@@ -623,11 +842,11 @@ def stylesheet(t: Theme) -> str:
         background: {panel}; border: 1px solid {panel_line}; border-radius: 10px; padding: 5px;
     }}
     QMenu::item {{ color: {panel_text}; padding: 6px 22px 6px 8px; border-radius: 6px; font-size: 13px; }}
-    QMenu::item:selected {{ background: {rgba(t.accent)}; color: white; }}
+    QMenu::item:selected {{ background: {rgba(t.accent)}; color: {rgba(t.on_accent)}; }}
     QMenu::item:disabled {{ color: {panel_dim}; background: transparent; }}
     QMenu::separator {{ height: 1px; background: {panel_line}; margin: 4px 6px; }}
     QMenu::icon {{ padding-left: 8px; }}
-    QMenu::right-arrow {{ width: 8px; height: 8px; }}
+    QMenu::right-arrow {{ width: 8px; height: 8px; margin-right: 6px; }}
 
     QFrame#SpaceEditor {{ background: {panel}; border: 1px solid {panel_line}; border-radius: 14px; }}
     #SpaceEditor QLabel {{ color: {panel_text}; }}
@@ -635,8 +854,9 @@ def stylesheet(t: Theme) -> str:
     #SpaceEditor QLabel#SpacePreview {{ background: {rgba(t.panel_text, 0.07)}; border-radius: 8px; }}
     #SpaceEditor QLineEdit#SpaceName, #SpaceEditor QComboBox#SpaceCombo {{
         background: {rgba(t.panel_text, 0.06)}; color: {panel_text}; border: 1px solid {panel_line};
-        border-radius: 7px; padding: 5px 8px; font-size: 13px; selection-background-color: {rgba(t.accent, 0.45)};
+        border-radius: 7px; padding: 5px 8px; font-size: 13px; selection-background-color: {rgba(t.accent, 0.45)}; selection-color: {panel_text};
     }}
+    #SpaceEditor QComboBox#SpaceCombo {{ padding-right: 26px; }}
     #SpaceEditor QLineEdit#SpaceName:focus {{ border: 1px solid {rgba(t.accent)}; }}
     #SpaceEditor QToolButton#IconChoice {{ background: transparent; border: none; border-radius: 7px; }}
     #SpaceEditor QToolButton#IconChoice:hover {{ background: {rgba(t.panel_text, 0.09)}; }}
@@ -648,7 +868,7 @@ def stylesheet(t: Theme) -> str:
     }}
     #SpaceEditor QPushButton#MiniTab:checked {{ background: {rgba(t.panel_text, 0.1)}; color: {panel_text}; }}
     #SpaceEditor QPushButton#LinkButton {{
-        background: transparent; color: {rgba(t.accent)}; border: none; font-size: 12px; font-weight: 600;
+        background: transparent; color: {rgba(t.accent_text)}; border: none; font-size: 12px; font-weight: 600;
     }}
     #SpaceEditor QPushButton#ActionRow, #SpaceEditor QPushButton#DangerRow {{
         background: transparent; color: {panel_text}; border: none; border-radius: 7px;
@@ -668,7 +888,7 @@ def stylesheet(t: Theme) -> str:
     QPushButton#LittleHost:hover {{ background: {hover}; }}
     QLineEdit#LittleUrl {{
         background: {tile}; color: {text}; border: none; border-radius: 7px; padding: 5px 9px; font-size: 13px;
-        selection-background-color: {rgba(t.accent, 0.45)};
+        selection-background-color: {rgba(t.accent, 0.45)}; selection-color: {panel_text};
     }}
     QPushButton#LittleOpen {{
         background: {selected}; color: {text}; border: none; border-radius: 8px;

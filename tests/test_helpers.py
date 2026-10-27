@@ -173,3 +173,17 @@ def test_recent_tabs_order():
     assert recent_tabs([a, b, c, d], [c.id, a.id]) == [c, a, b, d]  # used recently first, then by last use
     assert recent_tabs([a, b], [c.id]) == [b, a]  # tabs from other Spaces are left out
     assert len(recent_tabs([a, b, c, d], [], limit=2)) == 2
+
+
+def test_network_addresses_and_file_names():
+    from browser.command_bar import looks_like_a_file, site_for_tab, to_url
+    assert to_url("192.168.1.1") == "http://192.168.1.1"
+    assert to_url("10.0.0.5:8080/admin") == "http://10.0.0.5:8080/admin"
+    assert to_url("my-nas.local") == "http://my-nas.local" and to_url("printer.lan:631") == "http://printer.lan:631"
+    assert to_url("999.1.1.1") is None or to_url("999.1.1.1").startswith("https://")  # (not an address)
+    assert to_url("github.com").startswith("https://")
+    for name in ("node.js", "index.html", "config.yaml", "three.js"):
+        assert looks_like_a_file(name), name
+    for site in ("github.com", "bun.sh/docs", "example.io"):
+        assert not looks_like_a_file(site), site
+    assert site_for_tab("you") is not None and site_for_tab("youtube.com") is None  # (the Tab key uses what was typed)

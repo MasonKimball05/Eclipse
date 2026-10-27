@@ -5,7 +5,7 @@
 #   ./run.sh           run with your normal profile
 #   ./run.sh --fresh   run with a throwaway profile (wiped each launch)
 #   ./run.sh --reset   rebuild the virtualenv from scratch, then run
-#   ./run.sh --build-app   build Eclipse.app into ~/Applications (Dock icon, default browser);
+#   ./run.sh --build-app   build Eclipse.app into /Applications (Dock icon, default browser);
 #                          add --sign "<identity>" [--notarize PROFILE] for a properly signed app
 #   ./run.sh --tests       run the unit tests
 #   ./run.sh --live-tests  run the live tests too (a browser window opens while they run, ~30 s)

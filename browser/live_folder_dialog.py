@@ -5,10 +5,10 @@ from PyQt6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QDialogButtonBox,
                              QRadioButton, QStackedWidget, QVBoxLayout, QWidget)
 
 from .live_folders import GITHUB
-from .theme import stylesheet
+from .theme import FittedLabel, stylesheet
 
 KINDS = [
-    ("feed", "A feed", "RSS or Atom, or any site that has one."),
+    ("feed", "A feed", "RSS or Atom, or any site that has one. A GitHub repo: its releases."),
     ("github", "GitHub", "Pull requests and issues, with the GitHub CLI you're signed in to."),
     ("json", "An app's API", "Any JSON list: your own apps, a dashboard's API."),
     ("page", "Links on a page", "The links on a page that match a CSS selector, read with your logins."),
@@ -18,7 +18,7 @@ KINDS = [
 
 
 def _hint(text):
-    label = QLabel(text)
+    label = FittedLabel(text)
     label.setObjectName("Hint")
     label.setWordWrap(True)
     return label
@@ -46,7 +46,7 @@ class LiveFolderDialog(QDialog):
         feed = QWidget()
         f = QFormLayout(feed)
         self.feed_url = QLineEdit()
-        self.feed_url.setPlaceholderText("https://example.com/feed.xml, or just example.com")
+        self.feed_url.setPlaceholderText("https://example.com/feed.xml, example.com, or a GitHub repo")
         f.addRow("Address", self.feed_url)
         self.pages.addWidget(feed)
 
@@ -55,7 +55,8 @@ class LiveFolderDialog(QDialog):
         g = QFormLayout(github)
         self.github_query = QComboBox()
         for key, (name, _args) in GITHUB.items():
-            self.github_query.addItem(name, key)
+            self.github_query.addItem("Everything, in sub-folders: reviews, your PRs, your issues, each repo's "
+                                      "open issues" if key == "overview" else name, key)
         g.addRow("Show", self.github_query)
         self.pages.addWidget(github)
 
@@ -111,7 +112,7 @@ class LiveFolderDialog(QDialog):
         # Repos
         repos = QWidget()
         r = QFormLayout(repos)
-        self.repos_root = QLineEdit("~/Documents/GitHub")
+        self.repos_root = QLineEdit("~/projects/GitHub")
         r.addRow("Repos folder", self.repos_root)
         r.addRow("", _hint("Each item opens the repo on GitHub."))
         self.pages.addWidget(repos)
@@ -159,7 +160,7 @@ class LiveFolderDialog(QDialog):
         elif kind == "calendar":
             self.calendar_url.setText(preset.get("url", ""))
         elif kind == "repos":
-            self.repos_root.setText(preset.get("root", "") or "~/Documents/GitHub")
+            self.repos_root.setText(preset.get("root", "") or "~/projects/GitHub")
 
     def result_live(self) -> tuple[dict, str, str | None] | None:
         """(live settings, folder name, token to keep in the Keychain), or None if something's missing."""

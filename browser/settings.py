@@ -10,13 +10,14 @@ from PyQt6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDialo
                              QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
                              QPushButton, QScrollArea, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
-from . import brand, clean_links, dark_pages, macos, spelling
+from . import brand, clean_links, dark_pages, macos, spelling, tab_titles
 from .command_bar import CUSTOM_SETTING, SEARCH_ENGINES, use_custom_sites
 from .downloads import DownloadSettingsForm, find_tool
 from .ext.ui import ExtensionsPage
+from .external_links import all_rules as external_rules, set_allowed as set_external
 from .motion import FadesIn
 from .permissions import set_capture_rule
-from .theme import quiet_scrollbars, stylesheet
+from .theme import FittedLabel, quiet_scrollbars, stylesheet
 from .webview import DEFAULT_PROFILE
 
 ARCHIVE_CHOICES = [(12, "12 hours"), (24, "1 day"), (24 * 7, "7 days"), (24 * 30, "30 days"), (0, "Never")]
@@ -116,7 +117,7 @@ class SettingsWindow(FadesIn, QWidget):
         theme = self.browser.theme
         self.setStyleSheet(stylesheet(theme))
         for i, (_, icon, _) in enumerate(PAGES):
-            self.nav.item(i).setIcon(qta.icon(icon, color=theme.panel_text, color_active="white"))
+            self.nav.item(i).setIcon(qta.icon(icon, color=theme.panel_text, color_active=theme.on_accent))
 
     def open(self, page="general"):
         self.nav.setCurrentRow(self.page_index.get(page, 0))
@@ -211,7 +212,10 @@ class SettingsWindow(FadesIn, QWidget):
                 line.setObjectName("SettingsLine")
                 line.setFixedHeight(1)
                 v.addWidget(line)
-            v.addWidget(row)
+            v.addWidget(row)  # (first: until it's in the layout, a row counts as hidden)
+            if i:
+                row.separator = line  # (hidden with the row: a hidden row leaves no stray line)
+                line.setVisible(not row.isHidden())
         return card
 
     def _row(self, title, description, control=None) -> QWidget:
@@ -246,6 +250,13 @@ class SettingsWindow(FadesIn, QWidget):
     def _setting(self, key, value):
         self.store.settings[key] = value
         self.store.schedule_save()
+
+    def _side_combo(self):
+        box = _combo([("left", "On the left"), ("right", "On the right")],
+                     "right" if self.browser.sidebar_on_right else "left")
+        box.currentIndexChanged.connect(lambda: self.browser.set_sidebar_side(box.currentData()))
+        self.side_box = box
+        return box
 
     def _dark_switch(self):
         box = QCheckBox()
@@ -283,22 +294,21 @@ class SettingsWindow(FadesIn, QWidget):
         from PyQt6.QtWidgets import QApplication
         self._setting(brand.SETTING, look)
         brand.apply_icon(QApplication.instance(), self.store.settings)
-        self.browser.content.empty.show_mark(self.store.settings)
 
     def _toggle_spelling(self, on):
         lang = spelling.language(self.store.settings.get("spell_check_language"))
         if on and lang is None:
-            self.spell_status.setText("There's no dictionary for your Mac's language yet.")
+            self._spell_note("There's no dictionary for your Mac's language yet.")
             self.spell_box.setChecked(False)
             return
         self._setting(spelling.SETTING, on)
         if not on or spelling.installed(lang):
-            self.spell_status.setText("")
+            self._spell_note("")
             self.browser.apply_spelling()
             return
         if self._spell_download is not None:
             return
-        self.spell_status.setText("Downloading the dictionary (once, a few hundred KB)…")
+        self._spell_note("Downloading the dictionary (once, a few hundred KB)…")
         self._spell_download = download = spelling.DictionaryDownload(lang, self)
 
         def done(ok, message):
@@ -306,7 +316,7 @@ class SettingsWindow(FadesIn, QWidget):
             download.deleteLater()
             if ok and self.store.settings.get(spelling.SETTING):
                 self.browser.apply_spelling()
-            self.spell_status.setText(message if not ok else "")
+            self._spell_note(message if not ok else "")
             if not ok:
                 self.spell_box.setChecked(False)
         download.finished.connect(done)
@@ -361,13 +371,14 @@ class SettingsWindow(FadesIn, QWidget):
         self.spell_box.toggled.connect(self._toggle_spelling)
         self.spell_status = QLabel()
         self.spell_status.setObjectName("Hint")
+        self.spell_status.hide()  # (only while there's something to say: an empty line left a gap)
         spell_row = self._row("Check spelling while typing", "Underlines misspelled words in text fields; "
                                                              "right-click one for corrections. Checked on this Mac.",
                               self.spell_box)
         spell_row.layout().itemAt(0).layout().addWidget(self.spell_status)
         self._spell_download = None
 
-        self.shortcut_list = QListWidget()
+        self.shortcut_list = QListWidget(self)  # (a parent from the start: shown, it's never a window of its own)
         self.shortcut_list.setObjectName("SettingsList")
         add_shortcut = QPushButton("Add…")
         add_shortcut.clicked.connect(self._add_search_shortcut)
@@ -393,6 +404,7 @@ class SettingsWindow(FadesIn, QWidget):
                         self.shortcut_list]),
             self._card([self._row("Look", "Each Space has its own name, icon, colour and theme. "
                                           "Right-click a Space to change it.", appearance),
+                        self._row("Sidebar", "Which side of the window the sidebar is on.", self._side_combo()),
                         self._row("Dark websites", "Pages that only come in light are darkened (images stay as "
                                                    "they are). Leave a site light from the shield in the address "
                                                    "bar.", self._dark_switch()),
@@ -414,6 +426,12 @@ class SettingsWindow(FadesIn, QWidget):
         peek = QCheckBox()
         peek.setChecked(self.store.settings.get("peek_enabled", True))
         peek.toggled.connect(lambda on: self._setting("peek_enabled", on))
+        tidy = QCheckBox()
+        tidy.setChecked(self.store.settings.get(tab_titles.SETTING, True))
+        tidy.toggled.connect(lambda on: (self._setting(tab_titles.SETTING, on), self.browser.sidebar.rebuild()))
+        previews = QCheckBox()
+        previews.setChecked(self.store.settings.get("tab_previews", True))
+        previews.toggled.connect(lambda on: self._setting("tab_previews", on))
         mini = QCheckBox()
         mini.setChecked(self.store.settings.get("mini_player_enabled", True))
         mini.toggled.connect(lambda on: self._setting("mini_player_enabled", on))
@@ -434,6 +452,11 @@ class SettingsWindow(FadesIn, QWidget):
                                                       "sleep.", sleep),
             self._row("Peek", "Links opened from pinned tabs and favorites float over the page instead of "
                               "opening a new tab.", peek),
+            self._row("Tidy tab titles", "Like Arc Max: the sidebar leaves the site's name out of a tab's title "
+                                         "(its icon says it), so “Q3 plan - Google Docs” shows as “Q3 plan”.",
+                      tidy),
+            self._row("Tab previews", "Rest the pointer on a tab in the sidebar to see a picture of its page, "
+                                      "as it was when you last left it.", previews),
             self._row("Mini player", "Switch away from a tab that's playing a video and it keeps playing in a "
                                      "small floating window.", mini),
             self._row("⌃Tab switches between", "Recent tabs: hold ⌃ and tap Tab to go back through the tabs you "
@@ -506,8 +529,9 @@ class SettingsWindow(FadesIn, QWidget):
         pv.addWidget(self.perm_list)
         pv.addWidget(self.perm_remove, 0, Qt.AlignmentFlag.AlignRight)
         return self._stack(
-            self._card([self._row("Site permissions", "Camera, microphone, location and notifications you've "
-                                                      "allowed or blocked. Removing one means the site asks again. "
+            self._card([self._row("Site permissions", "Camera, microphone, location, notifications and links that "
+                                                      "open other apps you've allowed or blocked. Removing one "
+                                                      "means the site asks again. "
                                                       "Also in Site Controls (the shield in the URL pill).", None),
                         perm_box]),
             self._card([self._row("Block ads & trackers", "Requests to known ad and tracking domains from other "
@@ -712,7 +736,7 @@ class SettingsWindow(FadesIn, QWidget):
             self.profile_list.addItem(item)
         self.profile_list.setCurrentRow(0)
         rows = [self.profile_list.sizeHintForRow(i) for i in range(min(self.profile_list.count(), 4))]
-        self.profile_list.setFixedHeight(sum(max(r, 44) for r in rows) + 14)
+        self.profile_list.setFixedHeight(sum(rows) + 14)  # (its rows and its padding: no empty space under them)
         self.extensions_page.refresh()
         self._fill_air_rules()
         self._fill_permissions()
@@ -725,6 +749,10 @@ class SettingsWindow(FadesIn, QWidget):
                                    f"{'Allowed' if value == 'allow' else 'Blocked'}")
             item.setData(Qt.ItemDataRole.UserRole, (origin, kind, profile))
             self.perm_list.addItem(item)
+        for origin, scheme in external_rules(self.store.settings):  # links it may open in other apps
+            item = QListWidgetItem(f"{origin.split('://', 1)[-1]}  ·  open {scheme}: links  ·  Allowed")
+            item.setData(Qt.ItemDataRole.UserRole, (origin, scheme, "external"))
+            self.perm_list.addItem(item)
         has = self.perm_list.count() > 0
         self.perm_list.setVisible(has)
         self.perm_remove.setVisible(has)
@@ -734,7 +762,10 @@ class SettingsWindow(FadesIn, QWidget):
     def _remove_permission(self):
         for item in self.perm_list.selectedItems():
             origin, kind, profile = item.data(Qt.ItemDataRole.UserRole)
-            if profile is None:
+            if profile == "external":
+                set_external(self.store.settings, origin, kind, False)
+                self.store.schedule_save()
+            elif profile is None:
                 set_capture_rule(self.store.settings, origin, kind.name, None)
                 self.store.schedule_save()
             else:
@@ -746,6 +777,10 @@ class SettingsWindow(FadesIn, QWidget):
             self.browser.adblock.set_allowed(item.text(), False)
         self._refresh()
 
+    def _spell_note(self, text):
+        self.spell_status.setText(text)
+        self.spell_status.setVisible(bool(text))
+
     def _fill_search_shortcuts(self):
         self.shortcut_list.clear()
         entries = self.store.settings.get(CUSTOM_SETTING, [])
@@ -753,6 +788,8 @@ class SettingsWindow(FadesIn, QWidget):
             item = QListWidgetItem(f"{entry['keyword']}  ·  {entry.get('name') or entry['keyword']}  ·  {entry['url']}")
             self.shortcut_list.addItem(item)
         self.shortcut_list.setVisible(bool(entries))
+        if getattr(self.shortcut_list, "separator", None) is not None:
+            self.shortcut_list.separator.setVisible(bool(entries))
         self.shortcut_list.setFixedHeight(min(len(entries), 6) * 28 + 10)
         self.remove_shortcut.setVisible(bool(entries))
 
@@ -766,7 +803,7 @@ class SettingsWindow(FadesIn, QWidget):
         name.setPlaceholderText("Parliament")
         keyword.setPlaceholderText("parl")
         url.setPlaceholderText("https://example.com/search?q=%s")
-        hint = QLabel("Search the site once, copy the address, and put %s where your search words were.")
+        hint = FittedLabel("Search the site once, copy the address, and put %s where your search words were.")
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
         form.addRow("Name", name)

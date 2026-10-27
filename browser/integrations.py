@@ -33,7 +33,7 @@ DEFAULTS = {
     "sentinel": f"http://{DESKTOP}:8484",
     "portfolio": "https://masonkimball.dev",
     "github_user": "MasonKimball05",
-    "repos_root": "~/Documents/GitHub",
+    "repos_root": "~/projects/GitHub",
     "local_model": "qwen3-coder:30b",
     "ai": "claude",  # who answers ⌘T questions and Ask on Page: "claude" or "local"
 }
@@ -518,7 +518,7 @@ def daybook_url(title, page_url) -> QUrl:
 
 
 def local_clone(page_url: str, root: str) -> str | None:
-    """~/Documents/GitHub/<repo> for a github.com/<owner>/<repo> page you have a clone of (or the repo
+    """~/projects/GitHub/<repo> for a github.com/<owner>/<repo> page you have a clone of (or the repo
     itself, for a Repo Radar item of a repo with no remote, which links to its folder)."""
     q = QUrl(page_url)
     if q.isLocalFile():
@@ -527,7 +527,7 @@ def local_clone(page_url: str, root: str) -> str | None:
     parts = [p for p in q.path().split("/") if p]
     if q.host().lower() not in ("github.com", "www.github.com") or len(parts) < 2:
         return None
-    root = os.path.expanduser(root or "~/Documents/GitHub")
+    root = os.path.expanduser(root or "~/projects/GitHub")
     for name in (parts[1], parts[1].lower()):
         path = os.path.join(root, name)
         if os.path.isdir(os.path.join(path, ".git")):

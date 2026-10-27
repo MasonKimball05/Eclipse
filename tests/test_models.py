@@ -199,3 +199,100 @@ def test_a_tabs_scroll_position_is_saved_and_a_bad_one_ignored():
     assert Tab.from_dict(tab.to_dict()).scroll == tab.scroll
     assert Tab.from_dict({"url": "https://example.com", "scroll": "nonsense"}).scroll is None
     assert Tab.from_dict({"url": "https://example.com", "scroll": {"y": "lots"}}).scroll is None
+
+
+def test_a_tab_kept_awake_stays_that_way_after_a_restart():
+    tab = Tab("https://example.com/dashboard", "Dashboard")
+    assert "awake" not in tab.to_dict()
+    tab.awake = True
+    assert Tab.from_dict(tab.to_dict()).awake is True
+    assert Tab.from_dict({"url": "https://example.com", "awake": "yes"}).awake is False
+
+
+def test_put_back_restores_tabs_into_their_folders(store):
+    from browser.models import node_path
+    space = store.active_space
+    space.today[:] = []
+    a, b, c, d = (Tab(f"https://{n}.com") for n in "abcd")
+    for tab in (d, c, b, a):
+        store.add_tab(tab)
+    folder = store.add_folder(space, "Reading", kind=TODAY)
+    store.move_tab(folder, TODAY, index=0)
+    store.move_tab(a, TODAY, folder=folder)
+    store.move_tab(b, TODAY, folder=folder)
+    assert space.today == [folder, c, d] and folder.children == [a, b]
+    closing = [a, b, c]
+    paths = {t.id: node_path(space.today, t, leaving=closing) for t in closing}
+    assert paths[b.id] == [(0, folder, d), (1, b, None)] and paths[c.id] == [(1, c, d)]
+    for tab in closing:  # the folder goes with its last tab
+        store.remove_tab(tab)
+    assert space.today == [d]
+    new = Tab("https://new.com")
+    store.add_tab(new)  # opened on top since
+    for tab in closing:
+        store.put_back(space, paths[tab.id], Tab.from_dict(tab.to_dict()))
+    assert [n.name if isinstance(n, Folder) else n.url for n in space.today] == ["https://new.com", "Reading", "https://c.com",
+                                                                 "https://d.com"]
+    assert [t.url for t in folder.children] == ["https://a.com", "https://b.com"]
+
+
+def test_put_back_after_another_tab_closed_since(store):
+    from browser.models import node_path
+    space = store.active_space
+    space.today[:] = []
+    a, b, c, d = (Tab(f"https://{n}.com") for n in "abcd")
+    for tab in (d, c, b, a):
+        store.add_tab(tab)
+    paths = {t.id: node_path(space.today, t, leaving=[b, c]) for t in (b, c)}
+    store.remove_tab(b)
+    store.remove_tab(c)
+    store.remove_tab(a)  # closed on its own afterwards
+    for tab in (b, c):
+        store.put_back(space, paths[tab.id], tab)
+    assert space.today == [b, c, d]
+
+
+def test_put_back_when_the_folder_moved_away(store):
+    from browser.models import node_path
+    space = store.active_space
+    a, b = Tab("https://a.com"), Tab("https://b.com")
+    store.add_tab(a)
+    store.add_tab(b)
+    folder = store.add_folder(space, "F", kind=TODAY)
+    store.move_tab(a, TODAY, folder=folder)
+    store.move_tab(b, TODAY, folder=folder)
+    path = node_path(space.today, a, leaving=[a])
+    store.remove_tab(a)
+    store.move_tab(folder, PINNED)  # (moved to Pinned since)
+    store.put_back(space, path, a)
+    assert space.today[0] is a and a not in folder.children
+
+
+def test_moving_the_last_tab_out_of_a_today_folder_takes_the_folder_away(store):
+    space = store.active_space
+    space.today[:] = []
+    a, b = Tab("https://a.com"), Tab("https://b.com")
+    store.add_tab(a)
+    store.add_tab(b)
+    folder = store.add_folder(space, "Reading", kind=TODAY)
+    store.move_tab(a, TODAY, folder=folder)
+    store.move_tab(b, TODAY, folder=folder)
+    store.move_tab(a, PINNED)
+    assert folder in space.today  # (still has b)
+    store.move_tab(b, TODAY, index=0)
+    assert folder not in space.today and space.today == [b]
+
+
+def test_a_folder_moving_between_pinned_and_today_changes_its_tabs(store):
+    space = store.active_space
+    a, b = Tab("https://a.com/x"), Tab("https://b.com/y")
+    store.add_tab(a)
+    store.add_tab(b)
+    folder = store.add_folder(space, "Group", kind=TODAY)
+    store.move_tab(a, TODAY, folder=folder)
+    store.move_tab(b, TODAY, folder=folder)
+    store.move_tab(folder, PINNED)
+    assert [t.home_url for t in folder.children] == ["https://a.com/x", "https://b.com/y"]  # (pinned: a home page)
+    a.custom_title = "Mine"
+    store.move_tab(folder, TODAY)
+    assert [t.home_url for t in folder.children] == [None, None] and a.custom_title is None

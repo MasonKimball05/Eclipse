@@ -18,7 +18,7 @@ import sys
 
 import qtawesome as qta
 from PyQt6.QtCore import QEvent, QMimeData, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl
-from PyQt6.QtGui import QColor, QDrag, QIcon, QPainter, QPen, QPixmap
+from PyQt6.QtGui import QColor, QDrag, QIcon, QImage, QLinearGradient, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (QApplication, QFrame, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QLabel,
                              QPushButton, QScrollArea, QSizePolicy, QSpacerItem, QToolButton, QVBoxLayout, QWidget)
 
@@ -27,15 +27,37 @@ from PyQt6 import sip
 from . import macos
 from .browse import is_answer_page
 from .devmode import dev_label, is_dev_url
+from .github_status import summarize as summarize_pr
 from .integrations import config as integration_config, is_job_posting, summarize
 from .now_playing import NowPlayingCard
+from .tab_titles import shown_title
 from .upnext import UpNextCard
 from .models import FAVORITES, PINNED, TODAY, Folder, Tab, display_host, walk_folders, walk_tabs
 from .icons import is_symbol, space_icon, symbol
-from .theme import legible, letter_icon, quiet_scrollbars
+from .theme import legible, letter_icon, noise_pixmap, overlay_scrollbar
 
 TAB_MIME = "application/x-pybrowser-tab"
 TABS_MIME = "application/x-pybrowser-tabs"  # several picked tabs dragged together: their ids, in order
+PILL_ICON = 13
+PILL_ICON_DROP = 1.5  # the URL pill's icon sits this much lower than centre, level with the lowercase text
+
+
+def pill_icon(name, color) -> QIcon:
+    """An icon for the URL pill, drawn PILL_ICON_DROP lower than centred: text's box has room above for
+    capitals, so lowercase sits low in it, and a centred icon looked as if it floated above the address."""
+    ratio = 3  # (sharp on any screen)
+    pm = QPixmap(round(PILL_ICON * ratio), round((PILL_ICON + 2 * PILL_ICON_DROP) * ratio))
+    pm.setDevicePixelRatio(ratio)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    qta.icon(name, color=color).paint(p, QRect(0, round(2 * PILL_ICON_DROP), PILL_ICON, PILL_ICON))
+    p.end()
+    return QIcon(pm)
+
+
+# The GitHub Live Folder's sections (live_folders.SECTIONS); its other sub-folders are your repos
+GITHUB_SECTION_ICONS = {"Review Requested": "ph.eye", "My Pull Requests": "ph.git-pull-request",
+                        "Assigned to Me": "ph.user-circle", "Notifications": "ph.bell"}
 FAVORITE_COLUMNS = 4
 INDENT = 16  # per folder level
 
@@ -53,12 +75,18 @@ def is_away(tab) -> bool:
 
 def tab_icon(tab, theme):
     if tab.url.startswith("note:"):
-        return symbol("ph.note-pencil", theme.accent)
+        return symbol("ph.note-pencil", theme.accent_text)
     if tab.url.startswith("easel:"):
-        return symbol("ph.chalkboard-simple", theme.accent)
+        return symbol("ph.chalkboard-simple", theme.accent_text)
     if is_answer_page(tab.url):
-        return symbol("ph.compass", theme.accent)
-    return legible(tab.icon, theme) if tab.icon else letter_icon(display_host(tab.url) or tab.label, theme.accent)
+        return symbol("ph.compass", theme.accent_text)
+    if tab.icon:
+        return legible(tab.icon, theme)
+    host = display_host(tab.url)
+    # A page on an address (127.0.0.1, 192.168…) or localhost: its title's first letter says more than "1"
+    if not host or host[0].isdigit() or host.startswith("localhost") or host.startswith("["):
+        host = tab.label
+    return letter_icon(host, theme.accent)
 
 
 def faded(icon, opacity, size=32):
@@ -142,6 +170,8 @@ class ElidedLabel(QLabel):
     def __init__(self, text="", parent=None):
         super().__init__(parent)
         self._full = text
+        # Page and feed titles are text: "<img>: The Image Embed element" mustn't be drawn as HTML
+        self.setTextFormat(Qt.TextFormat.PlainText)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self._refresh()
 
@@ -189,7 +219,7 @@ def stack_picture(row, count):
     badge = QRectF(w - 30, 7, 24, 20)
     p.setBrush(QColor(theme.accent))
     p.drawRoundedRect(badge, 10, 10)
-    p.setPen(QColor("white"))
+    p.setPen(QColor(theme.on_accent))
     font = p.font()
     font.setPixelSize(12)
     font.setBold(True)
@@ -201,6 +231,7 @@ def stack_picture(row, count):
 
 def start_drag(widget, node_id, press_pos):
     together = dragged_together(widget)
+    widget.browser.tab_preview.dismiss()
     mime = QMimeData()
     mime.setData(TAB_MIME, node_id.encode())
     if together:
@@ -249,6 +280,7 @@ class DraggableTab:
                 self.browser.sidebar.mark(self.tab, extend=bool(shift))  # ⌘-click / ⇧-click: several tabs
                 return
             self._press_pos = event.position().toPoint()
+            self.browser.tab_preview.dismiss()
             if dragged_together(self):
                 self._pick_on_release = True  # it may be the start of dragging them all
                 return
@@ -377,9 +409,16 @@ class TabRow(HoverFade, DraggableTab, QFrame):
         set_shown(self.away_label, self.away)
         self.icon_label.setToolTip("Back to the pinned page" if self.away else "")
         self.icon_label.setCursor(Qt.CursorShape.PointingHandCursor if self.away else Qt.CursorShape.ArrowCursor)
-        self.title_label.set_full_text(self.tab.label)
+        shown = shown_title(self.tab, self.browser.store.settings)
+        self.title_label.set_full_text(shown)
         sleeping = self.browser.is_sleeping(self.tab)
-        self.title_label.setToolTip(self.tab.url + ("\nSleeping — click to wake" if sleeping else ""))
+        # The preview says it all, except on the tab you're on, which has none
+        previews = (self.browser.store.settings.get("tab_previews", True)
+                    and self.tab is not getattr(self.browser, "current_tab", None))
+        whole = self.tab.label + "\n" if shown != self.tab.label else ""  # (the title, if it's been tidied)
+        self.title_label.setToolTip("" if previews else whole + self.tab.url
+                                    + ("\nSleeping — click to wake" if sleeping else "")
+                                    + ("\nKept awake" if self.tab.awake else ""))
         repolish(self.title_label, unloaded=(self.kind == PINNED and self.tab.view is None) or sleeping,
                  fresh=self.tab.fresh)
         self.close_btn.set_color(theme.text)
@@ -435,10 +474,12 @@ class TabRow(HoverFade, DraggableTab, QFrame):
 
     def enterEvent(self, event):
         self._update_close()
+        self.browser.tab_preview.hover(self)
         super().enterEvent(event)  # (HoverFade)
 
     def leaveEvent(self, event):
         self._update_close()
+        self.browser.tab_preview.leave(self)
         super().leaveEvent(event)
 
 
@@ -472,7 +513,10 @@ class FolderRow(HoverFade, QFrame):
         live = self.folder.live or {}
         if live:  # a Live Folder: what it follows, and how many items are new
             icon = "ph.github-logo" if live.get("kind") == "github" else "ph.rss"
-            self.icon_label.setPixmap(qta.icon(icon, color=self.browser.theme.accent).pixmap(16, 16))
+            self.icon_label.setPixmap(qta.icon(icon, color=self.browser.theme.accent_text).pixmap(16, 16))
+        elif self._github_section():  # a section of the GitHub folder, or one of your repos
+            icon = GITHUB_SECTION_ICONS.get(self.folder.name, "ph.book-bookmark")
+            self.icon_label.setPixmap(qta.icon(icon, color=color).pixmap(16, 16))
         else:
             icon = "ph.folder-open" if self.folder.expanded else "ph.folder"
             self.icon_label.setPixmap(qta.icon(icon, color=color).pixmap(16, 16))
@@ -484,6 +528,10 @@ class FolderRow(HoverFade, QFrame):
         count = sum(1 for _ in walk_tabs(self.folder.children))
         self.setToolTip(f"{count} tab{'s' if count != 1 else ''}" if not self.folder.expanded else "")
 
+    def _github_section(self) -> bool:
+        parent = self.browser.store.live_folder_of(self.folder)
+        return parent is not None and parent.live.get("kind") == "github"
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._press_pos = event.position().toPoint()
@@ -494,6 +542,8 @@ class FolderRow(HoverFade, QFrame):
         if (event.position().toPoint() - self._press_pos).manhattanLength() < QApplication.startDragDistance():
             return
         press_pos, self._press_pos = self._press_pos, None
+        if self.browser.store.live_folder_of(self.folder):
+            return  # (a Live Folder's sub-folder stays where its feed puts it)
         start_drag(self, self.folder.id, press_pos)
 
     def mouseReleaseEvent(self, event):
@@ -589,7 +639,7 @@ class FavoriteTile(DraggableTab, QToolButton):
         p.setBrush(QColor(self.browser.theme.accent))
         p.drawRoundedRect(rect, rect.height() / 2, rect.height() / 2)
         if text:
-            p.setPen(QColor("white"))
+            p.setPen(QColor(self.browser.theme.on_accent))
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
         p.end()
 
@@ -632,6 +682,13 @@ class DropZone(QWidget):
         target = self.drop_target(event.position().toPoint())
         folder = target[0]
         if isinstance(node, Folder) and folder is not None and (folder is node or folder in walk_folders(node.children)):
+            return None, None
+        store = self.browser.store
+        # Not into a Live Folder (its feed fills it), nor one of its sub-folders out of it: the store would
+        # refuse, and the tab would fold back with nothing said
+        if folder is not None and (folder.live or store.live_folder_of(folder)):
+            return None, None
+        if isinstance(node, Folder) and store.live_folder_of(node):
             return None, None
         return node, target
 
@@ -954,7 +1011,9 @@ class TabSection(DropZone):
             if pos.y() > g.bottom():
                 continue
             siblings = parent.children if parent else self.nodes
-            i = next(k for k, n in enumerate(siblings) if n is node)
+            i = next((k for k, n in enumerate(siblings) if n is node), None)
+            if i is None:
+                continue  # (gone from the store since the rows were laid out: a Live Folder refreshed mid-drag)
             if isinstance(node, Folder):
                 # The middle of a folder row means "put it inside"
                 third = g.height() / 3
@@ -1052,18 +1111,24 @@ class FavoritesGrid(DropZone):
             self.grid.removeWidget(tile)
             tile.deleteLater()
         self.grid.removeWidget(self.hint)
+        # A fresh grid each time: a QGridLayout never forgets a column it once had, so going from four
+        # Favorites to three would leave an empty quarter of the row
+        QWidget().setLayout(self.grid)  # (the old one goes with that throwaway widget)
+        self.grid = QGridLayout(self)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setSpacing(6)
         self.tiles = [FavoriteTile(self.browser, t, self) for t in tabs]
+        columns = max(1, min(len(self.tiles), FAVORITE_COLUMNS))  # (fewer than a row's worth share the row)
         for i, tile in enumerate(self.tiles):
-            self.grid.addWidget(tile, i // FAVORITE_COLUMNS, i % FAVORITE_COLUMNS)
+            self.grid.addWidget(tile, i // columns, i % columns)
             if self.isVisible():
                 tile.show()  # (see TabSection.set_tabs)
         if self.tiles:
             self.hint.hide()
-            # Keep columns equal width even when the last row isn't full
-            for col in range(FAVORITE_COLUMNS):
+            for col in range(columns):  # equal widths, even when the last row isn't full
                 self.grid.setColumnStretch(col, 1)
         else:
-            self.grid.addWidget(self.hint, 0, 0, 1, FAVORITE_COLUMNS)
+            self.grid.addWidget(self.hint, 0, 0)
             self.hint.show()
 
     def drop_target(self, pos):
@@ -1117,6 +1182,61 @@ class NewTabRow(HoverFade, QFrame):
             self.browser.open_command_bar("new")
 
 
+class ListFade(QWidget):
+    """The bottom of the tab list fades into the sidebar while there's more below, rather than ending on a
+    row cut in half (by the Up Next card, say). Drawn with the sidebar's own background, fading in."""
+    HEIGHT = 24
+
+    def __init__(self, sidebar, scroll):
+        super().__init__(scroll)
+        self.sidebar, self.scroll = sidebar, scroll
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        bar = scroll.verticalScrollBar()
+        bar.valueChanged.connect(self.place)
+        bar.rangeChanged.connect(self.place)
+        scroll.installEventFilter(self)
+
+    def place(self, *_):
+        bar = self.scroll.verticalScrollBar()
+        self.setGeometry(0, self.scroll.height() - self.HEIGHT, self.scroll.width(), self.HEIGHT)
+        self.setVisible(bar.value() < bar.maximum())
+        self.raise_()
+        overlay = getattr(self.scroll, "overlay_scrollbar", None)
+        if overlay is not None:
+            overlay.raise_()  # (the scrollbar stays on top of it)
+        self.update()
+
+    def eventFilter(self, obj, event):
+        if event.type() in (QEvent.Type.Resize, QEvent.Type.Show):
+            self.place()
+        return False
+
+    def paintEvent(self, event):
+        theme = self.sidebar.browser.theme
+        # Docked, the background is the window's; slid out over the page, it's the sidebar's own
+        floating = self.sidebar.property("floating") is True
+        surface = self.sidebar if floating else self.window()
+        offset = self.mapTo(surface, QPoint(0, 0))
+        ratio = self.devicePixelRatioF()
+        image = QImage(max(1, round(self.width() * ratio)), max(1, round(self.height() * ratio)),
+                       QImage.Format.Format_ARGB32_Premultiplied)
+        image.setDevicePixelRatio(ratio)
+        image.fill(Qt.GlobalColor.transparent)
+        p = QPainter(image)
+        p.fillRect(self.rect(), theme.gradient(surface.width(), surface.height(), offset.x(), offset.y()))
+        if theme.grain and not floating:
+            p.drawTiledPixmap(self.rect(), noise_pixmap(), QPoint(offset.x() % 128, offset.y() % 128))
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        ramp = QLinearGradient(0, 0, 0, self.height())
+        ramp.setColorAt(0, QColor(0, 0, 0, 0))
+        ramp.setColorAt(1, QColor(0, 0, 0, 255))
+        p.fillRect(self.rect(), ramp)
+        p.end()
+        painter = QPainter(self)
+        painter.drawImage(0, 0, image)
+        painter.end()
+
+
 class Sidebar(QWidget):
     def __init__(self, browser, parent=None):
         super().__init__(parent)
@@ -1154,7 +1274,7 @@ class Sidebar(QWidget):
         self.url_pill = QPushButton()
         self.url_pill.setObjectName("UrlPill")
         self.url_pill.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.url_pill.setIconSize(QSize(13, 13))
+        self.url_pill.setIconSize(QSize(PILL_ICON, round(PILL_ICON + 2 * PILL_ICON_DROP)))
         self.url_pill.clicked.connect(lambda: browser.open_command_bar("current"))
         # Ad blocker badge, sitting inside the pill on the right
         pill_layout = QHBoxLayout(self.url_pill)
@@ -1176,6 +1296,14 @@ class Sidebar(QWidget):
         self.dev_btn.hide()
         pill_layout.addWidget(self.dev_btn)
         browser.devmode.changed.connect(self.update_dev)
+        # On a pull request: whether its checks pass, and what review decided (click for each check)
+        self.pr_btn = QToolButton()
+        self.pr_btn.setObjectName("PrChip")
+        self.pr_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.pr_btn.clicked.connect(
+            lambda: browser.show_pr_checks(self.pr_btn.mapToGlobal(QPoint(0, self.pr_btn.height()))))
+        self.pr_btn.hide()
+        pill_layout.addWidget(self.pr_btn)
         # On a job posting: send it to Job Tracker in one click (My Apps)
         self.job_btn = QToolButton()
         self.job_btn.setObjectName("DevChip")
@@ -1222,7 +1350,7 @@ class Sidebar(QWidget):
         body = QWidget()
         body.setObjectName("SidebarScrollBody")
         body_layout = QVBoxLayout(body)
-        body_layout.setContentsMargins(0, 0, 6, 0)
+        body_layout.setContentsMargins(0, 0, 0, 0)  # (the scrollbar floats over it: rows end with the pill)
         body_layout.setSpacing(4)
 
         # The Space's name and icon: click (or right-click) to edit the Space
@@ -1281,7 +1409,8 @@ class Sidebar(QWidget):
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.scroll.viewport().setAutoFillBackground(False)
         self.scroll.viewport().installEventFilter(self)
-        quiet_scrollbars(self.scroll)
+        overlay_scrollbar(self.scroll)
+        self.list_fade = ListFade(self, self.scroll)
         layout.addWidget(self.scroll, 1)
 
         self.up_next = UpNextCard(browser.up_next)
@@ -1330,20 +1459,23 @@ class Sidebar(QWidget):
 
     # --- Rebuilding ----------------------------------------------------------
 
-    def align_with_traffic_lights(self):
-        """Centre the top-row buttons on the traffic lights, just to their right (like Arc)."""
+    def align_with_traffic_lights(self, at: QPoint | None = None):
+        """Centre the top-row buttons on the traffic lights, just to their right (like Arc). `at`: where
+        the sidebar will be in the window, if that isn't where it is yet (the hidden one, about to slide out)."""
         lights = macos.traffic_lights(self)
         if lights is None:
             return
         right, centre = lights
-        offset = self.mapTo(self.window(), QPoint(0, 0))  # the sidebar floats 6pt in when hidden
+        offset = at if at is not None else self.mapTo(self.window(), QPoint(0, 0))  # (it floats 6pt in when hidden)
         size = self.toggle_btn.height()
         layout = self.layout()
         margins = layout.contentsMargins()
         layout.setContentsMargins(margins.left(), max(round(centre - offset.y() - size / 2), 0),
                                   margins.right(), margins.bottom())
-        # The gap after the lights matches the lights' own spacing (~9pt), minus the button's padding
-        self._lights_gap.changeSize(max(round(right + 9 - offset.x() - margins.left() - 4), 0), 0)
+        # The gap after the lights matches the lights' own spacing (~9pt), minus the button's padding (on
+        # the right too: they move over into the sidebar)
+        gap = max(round(right + 9 - offset.x() - margins.left() - 4), 0)
+        self._lights_gap.changeSize(gap, 0)
         layout.invalidate()
 
     def rebuild(self):
@@ -1358,6 +1490,9 @@ class Sidebar(QWidget):
             btn.set_color(theme.text)
         self.new_tab_row.set_color(theme.text)
 
+        preview = getattr(self.browser, "tab_preview", None)
+        if preview is not None:
+            preview.dismiss()  # (its row may be about to go)
         self.space_title.setText(space.name)
         self.space_title.setIcon(space_icon(space, theme.text, 32))
         self.profile_badge.setText(space.profile)
@@ -1439,7 +1574,7 @@ class Sidebar(QWidget):
     def mark(self, tab, extend=False):
         """⌘-click adds a tab to the selection or takes it out; ⇧-click (extend) adds every tab from
         the last one picked to this one, in sidebar order. The tab you're on starts the selection."""
-        order = [r.tab for r in self.pinned.rows + self.today.rows if not getattr(r, "_pb_gone", False)]
+        order = self._order()
         current = self.browser.current_tab
         marked = list(self.marked)
         if not marked and any(t is current for t in order):
@@ -1455,8 +1590,19 @@ class Sidebar(QWidget):
             marked = [t for t in marked if t is not tab]
         else:
             marked.append(tab)
-        self.marked = marked if len(marked) > 1 else []  # one tab is just the tab you're on
+        self.marked = marked
         self.update_selection()
+
+    def _order(self):
+        return [r.tab for r in self.pinned.rows + self.today.rows if not getattr(r, "_pb_gone", False)]
+
+    def _trimmed(self, marked):
+        """One picked tab that's also the tab you're on is just the tab you're on, not a selection; one
+        is kept when the tab you're on has no row to start from (a favorite, or inside a closed folder)."""
+        current = self.browser.current_tab
+        if len(marked) == 1 and (marked[0] is current or any(t is current for t in self._order())):
+            return []
+        return marked
 
     def clear_marks(self):
         if self.marked:
@@ -1468,7 +1614,7 @@ class Sidebar(QWidget):
     def update_selection(self):
         current = self.browser.current_tab
         split = (self.browser.store.split_of(current) or []) if current else []
-        self.marked = [t for t in self.marked if self.browser.store.locate(t)]  # (closed ones drop out)
+        self.marked = self._trimmed([t for t in self.marked if self.browser.store.locate(t)])  # (closed ones drop out)
         marked = {id(t) for t in self.marked}
         for tile in self.favorites.tiles:
             tile.set_selected(tile.tab is current)
@@ -1480,6 +1626,15 @@ class Sidebar(QWidget):
             if (row.property("insplit") is True) != in_split:
                 repolish(row, insplit=in_split)
             row.refresh()
+        # A tab you switch to that's scrolled out of sight comes into view (only on switching: a refresh
+        # doesn't pull the list back from where you've scrolled it)
+        if current is not None and current is not getattr(self, "_scrolled_to", None):
+            self._scrolled_to = current
+            row = next((r for r in self.pinned.rows + self.today.rows if r.tab is current and r.isVisibleTo(self)), None)
+            if row is not None:
+                # (clear of the fade at the bottom of the list, too)
+                QTimer.singleShot(0, lambda r=row: not sip.isdeleted(r) and self.scroll.ensureWidgetVisible(
+                    r, 0, ListFade.HEIGHT + 6))
 
     def update_nav(self):
         tab = self.browser.current_tab
@@ -1492,37 +1647,38 @@ class Sidebar(QWidget):
         theme = self.browser.theme
         if tab and tab.url.startswith(("note:", "easel:")):
             easel = tab.url.startswith("easel:")
-            self.url_pill.setIcon(qta.icon("ph.chalkboard-simple" if easel else "ph.note-pencil",
+            self.url_pill.setIcon(pill_icon("ph.chalkboard-simple" if easel else "ph.note-pencil",
                                            color=_with_alpha(theme.text, 0.55)))
             self._set_pill_text("Easel" if easel else "Note")
             self.url_pill.setToolTip("")
         elif tab and is_answer_page(tab.url):
-            self.url_pill.setIcon(qta.icon("ph.compass", color=_with_alpha(theme.text, 0.55)))
+            self.url_pill.setIcon(pill_icon("ph.compass", color=_with_alpha(theme.text, 0.55)))
             self._set_pill_text("Browse for Me")
             self.url_pill.setToolTip("")
         elif tab and tab.url.startswith("pbext://"):
             ext = self.browser.extensions.extensions.get(QUrl(tab.url).host())
-            self.url_pill.setIcon(qta.icon("ph.puzzle-piece", color=_with_alpha(theme.text, 0.55)))
+            self.url_pill.setIcon(pill_icon("ph.puzzle-piece", color=_with_alpha(theme.text, 0.55)))
             self._set_pill_text(ext.name if ext else "Extension")
             self.url_pill.setToolTip(tab.url)
         elif tab and tab.url and is_dev_url(tab.url):
-            self.url_pill.setIcon(qta.icon("ph.code", color=_with_alpha(theme.text, 0.55)))
+            self.url_pill.setIcon(pill_icon("ph.code", color=_with_alpha(theme.text, 0.55)))
             self._set_pill_text(dev_label(tab.url))  # the full address, port and path included
             self.url_pill.setToolTip(tab.url)
         elif tab and tab.url:
             secure = tab.url.startswith("https://")
-            self.url_pill.setIcon(qta.icon("ph.lock-simple" if secure else "ph.globe-simple",
+            self.url_pill.setIcon(pill_icon("ph.lock-simple" if secure else "ph.globe-simple",
                                            color=_with_alpha(theme.text, 0.55)))
             self._set_pill_text(display_host(tab.url) or tab.url)
             self.url_pill.setToolTip(tab.url)
         else:
-            self.url_pill.setIcon(qta.icon("ph.magnifying-glass", color=_with_alpha(theme.text, 0.55)))
+            self.url_pill.setIcon(pill_icon("ph.magnifying-glass", color=_with_alpha(theme.text, 0.55)))
             self._set_pill_text("Search or Enter URL…")
             self.url_pill.setToolTip("")
         self.update_shield()
         self.update_extensions()
         self.update_zoom()
         self.update_dev()
+        self.update_pr()
         cfg = integration_config(self.browser.store.settings)
         self.job_btn.setVisible(bool(tab and cfg["jobtracker"] and is_job_posting(tab.url)))
         self._fit_pill_text()
@@ -1557,13 +1713,31 @@ class Sidebar(QWidget):
         tab = self.browser.current_tab
         view = self.browser._current_view()
         dev = bool(tab and tab.url and is_dev_url(tab.url) and view is not None)
-        errors = self.browser.devmode.errors(view) if dev else 0
+        errors = self._dev_errors = self.browser.devmode.errors(view) if dev else 0
         self.dev_btn.setText(f"DEV · {errors}" if errors else "DEV")
         self.dev_btn.setProperty("errors", errors > 0)
         self.dev_btn.setProperty("open", dev and self.browser.devmode.drawer_open())
         self.dev_btn.style().unpolish(self.dev_btn)
         self.dev_btn.style().polish(self.dev_btn)
         self.dev_btn.setVisible(dev)
+        self._fit_pill_text()
+
+    def update_pr(self):
+        tab = self.browser.current_tab
+        status = getattr(self.browser, "pr_status", None)  # (not there yet while the window's being built)
+        data = status.lookup(tab.url) if status is not None and tab is not None and tab.url else None
+        if data is None:
+            self.pr_btn.hide()
+        else:
+            text, state, tip = summarize_pr(data)
+            self.pr_btn.setText(text)
+            self.pr_btn.setToolTip(tip)
+            self.pr_btn.setProperty("state", state)
+            self.pr_btn.style().unpolish(self.pr_btn)
+            self.pr_btn.style().polish(self.pr_btn)
+            self.pr_btn.show()
+        if status is not None:
+            status.watch(tab.url if tab is not None else "", data)
         self._fit_pill_text()
 
     def update_zoom(self):
@@ -1580,9 +1754,32 @@ class Sidebar(QWidget):
     def _fit_pill_text(self):
         # Long hosts are cut short with "…" instead of running under the shield and puzzle buttons
         text = getattr(self, "_pill_text", "")
-        buttons = sum(b.sizeHint().width() + 4 for b in (self.job_btn, self.dev_btn, self.zoom_btn, self.shield_btn, self.ext_btn, *self.pinned_ext_buttons)
-                      if b.isVisibleTo(self) or b in self.pinned_ext_buttons)
-        room = self.url_pill.width() - self.url_pill.iconSize().width() - 34 - buttons
+
+        def room():
+            buttons = sum(b.sizeHint().width() + 4 for b in (self.pr_btn, self.job_btn, self.dev_btn, self.zoom_btn, self.shield_btn, self.ext_btn, *self.pinned_ext_buttons)
+                          if b.isVisibleTo(self) or b in self.pinned_ext_buttons)
+            return self.url_pill.width() - self.url_pill.iconSize().width() - 34 - buttons
+        if self.dev_btn.isVisibleTo(self):
+            # A narrow sidebar: the address you're building says more than the chip's word, which shrinks to
+            # a dot (or just the error count)
+            errors = getattr(self, "_dev_errors", 0)
+            self.dev_btn.setText(f"DEV · {errors}" if errors else "DEV")
+            self.dev_btn.setMinimumSize(0, 0)
+            self.dev_btn.setMaximumSize(16777215, 16777215)
+            repolish(self.dev_btn, compact=False)
+            host = text.split("/")[0]  # (the path can be cut short: the host and port are what matter)
+            fits = lambda: self.url_pill.fontMetrics().horizontalAdvance(host + "…") <= room()
+            if not fits():
+                self.dev_btn.setText(str(errors) if errors else "")
+                repolish(self.dev_btn, compact=True)
+                if not errors:
+                    self.dev_btn.setFixedSize(9, 9)
+                # Still too tight: this Mac's own servers are told apart by their port (":5173/…")
+                loopback = re.match(r"(?:127\.0\.0\.1|localhost|\[::1\])(:\d+)(.*)", text)
+                if not fits() and loopback:
+                    text = host = loopback.group(1)
+                    text += loopback.group(2)
+        room = room()
         self.url_pill.setText(self.url_pill.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, max(room, 20)))
 
     def resizeEvent(self, event):

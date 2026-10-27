@@ -255,25 +255,36 @@ def test_spell_check_turns_on_from_settings_and_suggests(window, site, tmp_path,
     assert wait_until(lambda: run_js(tab.view, "t.value", 0) == "the ", 3)
 
 
-def _sidebar_swipe(window, steps, step_dx, gap=0.016, end=True, shot=None, begin=True):
-    """Two fingers sideways on the sidebar: `steps` moves of `step_dx` points each."""
+def _sidebar_swipe(window, steps, step_dx, gap=0.016, end=True, begin=True, clock=None):
+    """Two fingers sideways on the sidebar: `steps` moves of `step_dx` points each. With `clock` (see
+    _steady_clock), the swipe's speed is measured as `gap` apart however long the Mac takes per event."""
     target = window.sidebar.scroll.viewport()
     at = QPointF(60, 200)
 
     def send(phase, dx):
+        if clock is not None:
+            clock[0] += gap
         QApplication.sendEvent(target, QWheelEvent(at, QPointF(target.mapToGlobal(at.toPoint())), QPoint(int(dx), 0),
                                                    QPoint(int(dx) * 4, 0), Qt.MouseButton.NoButton,
                                                    Qt.KeyboardModifier.NoModifier, phase, False))
         QApplication.processEvents()  # (one event per pass of the event loop, as from a trackpad)
     if begin:
         send(Qt.ScrollPhase.ScrollBegin, 0)
-    for i in range(steps):
+    for _ in range(steps):
         send(Qt.ScrollPhase.ScrollUpdate, step_dx)
         time.sleep(gap)
-        if shot and i == steps // 2:
-            window.grab().save(shot)
     if end:
         send(Qt.ScrollPhase.ScrollEnd, 0)
+
+
+def _steady_clock(monkeypatch):
+    """A clock for the gesture code that only moves as _sidebar_swipe sends events: on a busy Mac a quick
+    flick would otherwise arrive as a slow drag (each event late), which rightly isn't a flick."""
+    import types
+    import browser.gestures
+    clock = [1000.0]
+    monkeypatch.setattr(browser.gestures, "time", types.SimpleNamespace(monotonic=lambda: clock[0]))
+    return clock
 
 
 def _two_spaces(window):
@@ -299,15 +310,15 @@ def test_space_swipe_follows_the_fingers_and_springs_back(window, site):
     assert window.store.active_space is first  # not far enough: back where it was
 
 
-def test_space_swipe_past_halfway_or_a_flick_switches(window, site):
+def test_space_swipe_past_halfway_or_a_flick_switches(window, site, monkeypatch):
     open_page(window, f"{site}/index.html")
     first, second = _two_spaces(window)
     width = window.sidebar.width()
-    shot = "/private/tmp/claude-501/-Users-masonkimball-Documents-GitHub-PythonBrowser--claude-worktrees-arc-inspired-project-6bde43/54baf4d1-cb03-47ee-8e3f-a5154bdf41b6/scratchpad/space_mid.png"
-    _sidebar_swipe(window, 14, -width * 0.05, gap=0.03, shot=shot)  # 70%, then let go
+    clock = _steady_clock(monkeypatch)
+    _sidebar_swipe(window, 14, -width * 0.05, gap=0.03, clock=clock)  # 70%, then let go
     assert wait_until(lambda: window.space_swipe.slide is None, 2)
     assert window.store.active_space is second
-    _sidebar_swipe(window, 4, width * 0.05, gap=0.008)  # a short quick flick back
+    _sidebar_swipe(window, 4, width * 0.05, gap=0.008, clock=clock)  # a short quick flick back
     assert wait_until(lambda: window.space_swipe.slide is None, 2)
     assert window.store.active_space is first
 
@@ -337,7 +348,6 @@ def test_the_page_follows_a_back_swipe_over_a_picture_of_the_last_one(window, si
         gesture = window.swipes._gestures.get(id(tab.view))
         seen["slide"] = gesture and gesture.slide
         seen["travel"] = gesture and gesture.slide and gesture.slide.travel
-        window.grab().save("/private/tmp/claude-501/-Users-masonkimball-Documents-GitHub-PythonBrowser--claude-worktrees-arc-inspired-project-6bde43/54baf4d1-cb03-47ee-8e3f-a5154bdf41b6/scratchpad/page_mid.png")
     _swipe(tab.view, 240, end=False, during=look)  # 9 of 12 steps in: 180 points
     slide = seen["slide"]
     assert slide is not None and abs(seen["travel"] - (180 - 14)) < 25  # right under the fingers
@@ -362,7 +372,6 @@ def test_closing_a_tab_and_clearing_today_slide_rows_away(window, site):
     window.close_tab(second)
     assert wait_until(lambda: today.findChildren(RowReveal), 1)  # it shrinks away, not vanishes
     pause(0.08)
-    window.grab().save("/private/tmp/claude-501/-Users-masonkimball-Documents-GitHub-PythonBrowser--claude-worktrees-arc-inspired-project-6bde43/54baf4d1-cb03-47ee-8e3f-a5154bdf41b6/scratchpad/row_close.png")
     assert wait_until(lambda: not today._reveals, 2)
     pause(0.1)
     assert [row.tab for row in today.rows] == [third, first]
@@ -388,7 +397,6 @@ def test_picking_an_app_icon_changes_the_dock_icon(window):
     assert window.store.settings[brand.SETTING] == "violet" and violet.isChecked()
     after = QApplication.windowIcon().pixmap(64).toImage()
     assert after != before
-    settings.grab().save("/private/tmp/claude-501/-Users-masonkimball-Documents-GitHub-PythonBrowser--claude-worktrees-arc-inspired-project-6bde43/54baf4d1-cb03-47ee-8e3f-a5154bdf41b6/scratchpad/settings_icons.png")
     settings.close()
 
 
@@ -424,7 +432,6 @@ def test_dragging_a_tab_parts_the_rows_where_it_will_land(window, site):
     gap = today._gap
     assert gap is not None and wait_until(lambda: gap.height() == 34, 1)
     assert gap.geometry().top() > rows[a].geometry().top()  # after A, at the end
-    window.grab().save("/private/tmp/claude-501/-Users-masonkimball-Documents-GitHub-PythonBrowser--claude-worktrees-arc-inspired-project-6bde43/54baf4d1-cb03-47ee-8e3f-a5154bdf41b6/scratchpad/drag_gap.png")
     _drag_event("move", today, top_a.center().y() + 9, b)  # a nudge: the same place, no new gap
     assert today._gap is gap
     _drag_event("move", today, top_c.center().y() - 6, b)  # the top half of C: before C
@@ -474,7 +481,6 @@ def test_the_hidden_sidebar_slides_out_stays_and_turns_round(window, site, monke
     assert fs.shadow is not None and fs.shadow.isVisible()
     pause(0.5)  # resting at the edge, left of the sidebar itself: it stays (it used to go and come back)
     assert fs.state == "in" and window.sidebar.x() == floating_sidebar.MARGIN
-    window.grab().save("/private/tmp/claude-501/-Users-masonkimball-Documents-GitHub-PythonBrowser--claude-worktrees-arc-inspired-project-6bde43/54baf4d1-cb03-47ee-8e3f-a5154bdf41b6/scratchpad/float_out.png")
     pointer["at"] = QPoint(window.sidebar.geometry().right() + 200, 300)  # off over the page
     assert wait_until(lambda: fs.state == "out", 1.5)
     pause(0.04)  # (a few frames into sliding away, which takes ~180 ms)
@@ -493,12 +499,34 @@ def test_the_hidden_sidebar_slides_out_stays_and_turns_round(window, site, monke
 
 
 def test_the_sidebar_resize_handle_is_on_the_page_edge(window, site):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    from browser.sidebar_edge import ONTO_PAGE
     open_page(window, f"{site}/index.html")
+    pause(0.2)
     handle = window.splitter.handle(1)
     edge = handle.mapTo(window, handle.rect().topRight()).x()
     page = window.content.mapTo(window, window.content.rect().topLeft()).x()
     assert page == edge + 1  # the handle runs right up to the page: no dead strip in between
     assert window.content.mapTo(window, window.content.rect().topLeft()).y() <= 10  # (not the hidden-sidebar top strip)
+    # And the place you'd grab, the page's own edge, takes hold: from the end of the sidebar's contents
+    # to a few points onto the page
+    grip = window.sidebar_edge
+    assert grip.isVisible()
+    left = grip.mapTo(window, QPoint(0, 0)).x()
+    pill_end = window.sidebar.url_pill.mapTo(window, QPoint(window.sidebar.url_pill.width(), 0)).x()
+    assert left == pill_end and grip.mapTo(window, QPoint(grip.width(), 0)).x() == page + ONTO_PAGE
+    width = window.sidebar.width()
+    at = QPoint(grip.width() - 2, grip.height() // 2)  # (on the page's edge itself)
+    QTest.mousePress(grip, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at)
+    QTest.mouseMove(grip, at + QPoint(30, 0))
+    QTest.mouseRelease(grip, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at + QPoint(30, 0))
+    pause(0.1)
+    assert abs(window.sidebar.width() - (width + 30)) <= 1 and window.store.settings["sidebar_width"] == window.sidebar.width()
+    assert grip.mapTo(window, QPoint(0, 0)).x() == left + 30  # (it went with the edge)
+    QTest.mouseDClick(grip, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at)
+    pause(0.1)
+    assert window.sidebar.width() == 250
 
 
 def test_peek_eases_in_and_out(window, site):
@@ -547,7 +575,6 @@ def test_a_favorite_squeezes_when_pressed_and_springs_back(window, site):
     QApplication.sendEvent(tile, release)
     overshoot = wait_until(lambda: tile.press > 1.0, 0.5)  # past full size for a moment: a spring
     assert overshoot and wait_until(lambda: tile.press == 1.0, 1)
-    window.sidebar.favorites.grab().save("/private/tmp/claude-501/-Users-masonkimball-Documents-GitHub-PythonBrowser--claude-worktrees-arc-inspired-project-6bde43/54baf4d1-cb03-47ee-8e3f-a5154bdf41b6/scratchpad/favs.png")
     image = tile.grab().toImage()
     middle = {image.pixelColor(x, image.height() // 2).name() for x in range(image.width() // 2 - 12, image.width() // 2 + 12)}
     assert len(middle) > 1  # the icon is still drawn in the middle of the tile (not just its background)
@@ -679,11 +706,12 @@ def test_tab_row_hover_fades_in_and_out(window, site):
     row = next(r for r in window.sidebar.today.rows if r.tab is not other)  # (not the selected one)
     at = QPointF(row.rect().center())
     QApplication.sendEvent(row, QEnterEvent(at, at, QPointF(row.mapToGlobal(at.toPoint()))))
-    assert wait_until(lambda: 0 < row._hover < 1, 0.2)  # fading in, not on at once
-    assert wait_until(lambda: row._hover == 1.0, 0.5)
-    window.sidebar.today.grab().save("/private/tmp/claude-501/-Users-masonkimball-Documents-GitHub-PythonBrowser--claude-worktrees-arc-inspired-project-6bde43/54baf4d1-cb03-47ee-8e3f-a5154bdf41b6/scratchpad/hover.png")
+    # Not on at once (checked straight away: a busy machine can stall past the whole fade between polls)
+    assert row._hover < 1
+    assert wait_until(lambda: row._hover == 1.0, 1)
     QApplication.sendEvent(row, QEvent(QEvent.Type.Leave))
-    assert wait_until(lambda: row._hover == 0.0, 0.6)
+    assert row._hover > 0  # (nor off at once)
+    assert wait_until(lambda: row._hover == 0.0, 1)
 
 
 def test_a_finished_download_can_be_dragged_out_or_opened(window, tmp_path, monkeypatch):
@@ -730,7 +758,6 @@ def test_a_toast_with_a_button_takes_clicks(window):
     button = window.content.toast_button
     assert button.isVisible() and button.text() == "Undo"
     assert not toast.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-    window.grab().save("/private/tmp/claude-501/-Users-masonkimball-Documents-GitHub-PythonBrowser--claude-worktrees-arc-inspired-project-6bde43/54baf4d1-cb03-47ee-8e3f-a5154bdf41b6/scratchpad/toast.png")
     button.click()
     assert pressed == [True] and wait_until(lambda: not toast.isVisible(), 1)
     window.real_toast("Copied URL to clipboard")  # a plain one lets clicks through to the page
@@ -895,8 +922,11 @@ def test_whole_page_screenshot_is_stitched_without_repeating_the_header(window, 
     assert at(100) == (False, False, True)       # blue
     assert at(900) == (False, True, False)       # green, with no header painted over it at a frame's top
     for y in range(600, 3000, 50):
-        assert at(y) != (True, False, False), y  # the header never repeats
+        c = image.pixelColor(image.width() // 2, y * ratio)
+        assert not (c.red() > 200 and c.green() < 60 and c.blue() < 60), y  # the header never repeats
     assert at(2990) == (True, False, True)       # magenta: the very bottom
+    orange = image.pixelColor(image.width() // 2, 1210 * ratio)
+    assert orange.red() > 200 and 90 < orange.green() < 170  # a sticky heading down the page stays in place
     assert wait_until(lambda: run_js(tab.view, "scrollY") == 700, 2)  # put back where it was
     assert run_js(tab.view, "getComputedStyle(document.querySelector('header')).visibility") == "visible"
 
@@ -1007,3 +1037,751 @@ def test_picked_tabs_are_dragged_together(window, site):
     window.content.split_drop.activate(True)
     _drag_event("drop", window.content.split_drop, 50, c, [e, c, a])
     assert wait_until(lambda: [t.url for t in window.store.split_of(e) or []] == [e.url, c.url, a.url], 2)
+
+
+def test_keep_awake_mute_others_and_reload_a_folder(window, site):
+    from browser.models import Folder
+    window.profile.settings().setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
+    saved = {}
+    window.toast = lambda text, action=None, label="Undo": saved.update(text=text, action=action)
+    radio = open_page(window, f"{site}/music.html")
+    assert wait_until(lambda: window.tab_audio(radio)[0], 8), "the page never played"
+    kept = open_page(window, f"{site}/index.html")
+    other = open_page(window, f"{site}/links.html")
+    assert window.others_audible(other)
+    window.mute_other_tabs(other)
+    assert saved["text"] == "Muted 1 tab" and window.tab_audio(radio)[1]
+    saved["action"]()  # Undo
+    assert not window.tab_audio(radio)[1]
+    radio.view.page().setAudioMuted(True)  # (quiet for the rest of the run)
+
+    window.toggle_awake(kept)
+    assert kept.awake
+    window.sleep_idle_tabs(force=True)
+    assert not window.is_sleeping(kept)
+    window.toggle_awake(kept)
+    window.sleep_idle_tabs(force=True)
+    assert window.is_sleeping(kept)
+
+    run_js(other.view, "window.marker = 1")
+    window.reload_tabs(Folder("Work", [other, kept]).children)
+    assert saved["text"] == "Reloaded 1 tab"  # the sleeping one isn't open
+    assert wait_until(lambda: run_js(other.view, "window.marker === undefined"), 5)
+
+
+def test_resting_on_a_tab_shows_its_preview(window, site):
+    from browser.tab_preview import DELAY_MS
+    preview = window.tab_preview
+    a = open_page(window, f"{site}/shot.html")
+    def blue(c):
+        return c.blue() > 200 and c.red() < 60
+
+    assert wait_until(lambda: blue(a.view.grab().toImage().pixelColor(200, 200)), 5)  # painted
+    b = open_page(window, f"{site}/links.html")
+    pause(0.2)
+    rows = {id(r.tab): r for r in window.sidebar.today.rows}
+    thumbnail = window.thumbnails[a.id].toImage()  # taken as you left it
+    assert blue(thumbnail.pixelColor(thumbnail.width() // 2, 60))
+    preview.hover(rows[id(a)])
+    pause(DELAY_MS / 1000 / 2)
+    assert not preview.isVisible()  # not straight away
+    assert wait_until(lambda: preview.isVisible(), 1)
+    assert preview.picture.isVisible() and preview.title.text() == "Tall page"
+    shown = preview.picture.pixmap()
+    assert abs(shown.height() / shown.width() - 0.625) < 0.02  # the top of the page, 16:10
+    assert blue(shown.toImage().pixelColor(shown.width() // 2, shown.height() // 2))
+    assert preview.host.text().startswith("127.0.0.1")
+    sidebar_right = window.sidebar.mapTo(window, QPoint(window.sidebar.width(), 0)).x()
+    assert preview.x() > sidebar_right  # beside the sidebar, not over it
+    preview.leave(rows[id(a)])
+    assert wait_until(lambda: not preview.isVisible(), 1)
+    preview.hover(rows[id(b)])  # the tab you're on: nothing to preview
+    pause(0.1)
+    assert not preview.isVisible()
+    preview.leave(rows[id(b)])
+    window.store.settings["tab_previews"] = False
+    preview.dismiss()
+    preview.hover(rows[id(a)])
+    pause(DELAY_MS / 1000 + 0.2)
+    assert not preview.isVisible()
+    window.store.settings["tab_previews"] = True
+
+
+def test_the_sidebar_can_go_on_the_right(window, site, monkeypatch):
+    from browser import floating_sidebar
+    from browser.tab_preview import GAP
+    a = open_page(window, f"{site}/index.html")
+    open_page(window, f"{site}/links.html")
+    width = window.store.settings["sidebar_width"]
+    window.set_sidebar_side("right")
+    pause(0.4)
+    sidebar, content, root = window.sidebar, window.content, window.centralWidget()
+    assert window.splitter.widget(1) is sidebar
+    assert sidebar.mapTo(window, QPoint(0, 0)).x() > content.mapTo(window, QPoint(0, 0)).x()
+    assert abs(sidebar.width() - width) <= 1 and window.store.settings["sidebar_width"] == width
+    handle = window.splitter.handle(1)
+    assert handle.mapTo(window, QPoint(0, 0)).x() == content.mapTo(window, content.rect().topRight()).x() + 1
+    assert content.mapTo(window, QPoint(0, 0)).y() == 8  # (the traffic lights moved over into the sidebar)
+
+    row = next(r for r in sidebar.today.rows if r.tab is a)  # previews open to the left of it
+    window.tab_preview.hover(row)
+    assert wait_until(lambda: window.tab_preview.isVisible(), 1.5)
+    assert window.tab_preview.geometry().right() < sidebar.mapTo(window, QPoint(0, 0)).x() - GAP + 2
+    window.tab_preview.dismiss()
+
+    window.toggle_sidebar()  # hidden: touching the right edge brings it out on that side
+    pause(0.4)
+    assert not sidebar.isVisible()
+    pointer = {"at": QPoint(root.width() - 3, 300)}
+    monkeypatch.setattr(floating_sidebar.QCursor, "pos", staticmethod(lambda: root.mapToGlobal(pointer["at"])))
+    monkeypatch.setattr(window, "isActiveWindow", lambda: True)
+    window._reveal_sidebar()
+    out_x = root.width() - sidebar.width() - floating_sidebar.MARGIN
+    assert wait_until(lambda: sidebar.x() == out_x, 1)
+    pause(0.3)
+    assert window.floating_sidebar.state == "in"  # resting at the right edge: it stays
+    pointer["at"] = QPoint(100, 300)  # off over the page, to the left
+    assert wait_until(lambda: window.floating_sidebar.state is None, 2) and not sidebar.isVisible()
+    window.toggle_sidebar()
+    pause(0.4)
+    assert sidebar.isVisible() and window.splitter.widget(1) is sidebar
+
+    window.set_sidebar_side("left")
+    pause(0.3)
+    assert window.splitter.widget(0) is sidebar and abs(sidebar.width() - width) <= 1
+    assert content.mapTo(window, QPoint(0, 0)).y() <= 10
+
+
+def test_review_fixes_for_picking_tabs_and_screenshots(window, site, tmp_path):
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtGui import QKeyEvent
+    sidebar = window.sidebar
+    a, b, c = (open_page(window, f"{site}/index.html?{i}") for i in "abc")
+    # Esc clears picked tabs, but still reaches a page or field it was meant for
+    sidebar.mark(a)
+    assert len(sidebar.marked) == 2
+    esc = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier)
+    assert window.eventFilter(window.content, esc) is False and sidebar.marked == []
+    sidebar.mark(a)
+    assert window.eventFilter(sidebar, esc) is True and sidebar.marked == []
+    # A picked tab closing leaves no one-tab selection behind
+    sidebar.mark(a)
+    window.close_tab(a)
+    assert sidebar.marked == [] and not any(r.property("marked") is True for r in sidebar.today.rows)
+    # With a favorite as the current tab, ⌘-click still picks tabs
+    fav = window.store.favorites[0]
+    window.activate_tab(fav)
+    sidebar.mark(b)
+    sidebar.mark(c)
+    assert sidebar.marked == [b, c]
+    sidebar.clear_marks()
+    # Pinned tabs moved to another Space keep their order
+    from browser.models import PINNED
+    window.move_tab(b, PINNED)
+    window.move_tab(c, PINNED)
+    other = window.store.add_space("Elsewhere", "#3b82f6")
+    window.move_tabs_to_space([b, c], other)
+    assert [t for t in other.pinned if t is b or t is c] == [b, c]
+    window.switch_space(window.store.spaces[0])
+
+    # A whole-page screenshot stops (and puts the page back) when you switch away mid-way
+    window.store.settings["ytdlp"] = {"folder": str(tmp_path)}
+    tall = open_page(window, f"{site}/shot.html")
+    pause(0.5)
+    saved = {}
+    window.toast = lambda text, action=None, label="Undo": saved.update(text=text, action=action)
+    window.save_page_screenshot()
+    pause(0.15)
+    window.activate_tab(fav)
+    assert wait_until(lambda: saved.get("text", "").startswith("Stopped the screenshot"), 5)
+    assert window._page_shot is None and not list(tmp_path.glob("*.png"))
+    assert wait_until(lambda: run_js(tall.view, "document.getElementById('__ecShotStyle') === null"), 3)
+
+
+def test_easel_handles_resize_and_the_easel_exports(window, tmp_path, monkeypatch):
+    from PyQt6.QtCore import QRectF
+    from PyQt6.QtGui import QColor, QImage
+    from PyQt6.QtWidgets import QGraphicsRectItem
+    from browser.easel import _movable, geometry
+    window.store.settings["ytdlp"] = {"folder": str(tmp_path)}
+    tab = window.new_easel()
+    easel = tab.view
+    assert wait_until(lambda: easel.isVisible(), 3)
+    box = _movable(QGraphicsRectItem(QRectF(0, 0, 120, 80)), "rect")
+    easel.scene.addItem(box)
+    image = QImage(200, 100, QImage.Format.Format_ARGB32)
+    image.fill(QColor("teal"))
+    picture = easel.add_image(image, at=QRectF(0, 200, 0, 0).topLeft())
+    easel.canvas.resetTransform()
+    easel.canvas.centerOn(100, 150)
+    pause(0.1)
+    # Pick the box and drag its bottom-right handle with the mouse
+    easel.scene.clearSelection()
+    box.setSelected(True)
+    viewport = easel.canvas.viewport()
+    start = easel.canvas.mapFromScene(geometry(box).bottomRight())
+    end = start + QPoint(80, 40)
+
+    def mouse(kind, at, buttons):
+        event = QMouseEvent(kind, QPointF(at), QPointF(viewport.mapToGlobal(at)), Qt.MouseButton.LeftButton,
+                            buttons, Qt.KeyboardModifier.NoModifier)
+        QApplication.sendEvent(viewport, event)
+
+    mouse(QEvent.Type.MouseButtonPress, start, Qt.MouseButton.LeftButton)
+    for step in range(1, 6):
+        mouse(QEvent.Type.MouseMove, start + (end - start) * step / 5, Qt.MouseButton.LeftButton)
+    mouse(QEvent.Type.MouseButtonRelease, end, Qt.MouseButton.NoButton)
+    assert geometry(box).size().toSize().width() == 200 and geometry(box).size().toSize().height() == 120
+    assert geometry(box).topLeft() == QPointF(0, 0)  # the opposite corner stayed put
+    # One undo step for the whole drag
+    easel.undo()
+    pause(0.05)
+    restored = [i for i in easel.scene.items() if i.data(0) == "rect"][0]
+    assert geometry(restored).width() == 120
+    # A picture keeps its shape however the handle is dragged
+    easel.scene.clearSelection()
+    picture = [i for i in easel.scene.items() if i.data(0) == "image"][0]
+    picture.setSelected(True)
+    start = easel.canvas.mapFromScene(geometry(picture).bottomRight())
+    mouse(QEvent.Type.MouseButtonPress, start, Qt.MouseButton.LeftButton)
+    mouse(QEvent.Type.MouseMove, start + QPoint(200, 0), Qt.MouseButton.LeftButton)
+    mouse(QEvent.Type.MouseButtonRelease, start + QPoint(200, 0), Qt.MouseButton.NoButton)
+    shape = geometry(picture)
+    assert round(shape.width()) == 400 and round(shape.height()) == 200
+
+    # Export: copy, PNG, PDF, each from the toolbar's menu
+    saved = {}
+    monkeypatch.setattr(window, "toast", lambda text, *a, **k: saved.update(text=text))
+    easel.export.emit("copy")
+    assert saved["text"] == "Copied the easel as an image" and not QApplication.clipboard().image().isNull()
+    easel.export.emit("png")
+    easel.export.emit("pdf")
+    pngs, pdfs = list(tmp_path.glob("*.png")), list(tmp_path.glob("*.pdf"))
+    assert [p.name for p in pngs] == ["Untitled Easel.png"] and [p.name for p in pdfs] == ["Untitled Easel.pdf"]
+    assert QImage(str(pngs[0])).width() > 0 and pdfs[0].read_bytes().startswith(b"%PDF")
+    easel.export.emit("png")  # a second one doesn't overwrite the first
+    assert (tmp_path / "Untitled Easel 2.png").exists()
+    from PyQt6.QtWidgets import QToolButton
+    share = next(b for b in easel.toolbar.findChildren(QToolButton) if b.menu() is not None)
+    assert [a.text() for a in share.menu().actions()] == ["Copy as Image", "Save as PNG", "Save as PDF"]
+    window.close_tab(tab)
+
+
+GITHUB_RELEASES = b"""<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><title>Release notes from qtwebengine</title>
+<entry><title>v6.12.0</title><link rel="alternate" type="text/html" href="https://github.com/qt/qtwebengine/releases/tag/v6.12.0"/></entry>
+<entry><title>v6.11.2</title><link rel="alternate" type="text/html" href="https://github.com/qt/qtwebengine/releases/tag/v6.11.2"/></entry>
+</feed>"""
+
+
+def test_follow_releases_of_a_github_repo(window, monkeypatch):
+    from browser.models import Tab
+    asked = []
+
+    def fake_get(url, done, fail, headers=None, secret=False):  # (GitHub, without the network)
+        asked.append(url)
+        QTimer.singleShot(0, lambda: done(GITHUB_RELEASES, url))
+    monkeypatch.setattr(window.live_folders, "_get", fake_get)
+    toasts = []
+    monkeypatch.setattr(window, "toast", lambda text, *a, **k: toasts.append(text))
+    # ⌘T offers it on any page of a repo, and nowhere else
+    previous = window.current_tab
+    window.current_tab = Tab("https://github.com/qt/qtwebengine/pulls", "Pull requests")
+    try:
+        follow = [c for c in window.commands() if c[0].startswith("Follow Releases")]
+    finally:
+        window.current_tab = previous
+    assert [c[0] for c in follow] == ["Follow Releases of qt/qtwebengine"]
+    assert not [c for c in window.commands() if c[0].startswith("Follow Releases")]
+    follow[0][2]()
+    assert wait_until(lambda: any("up to date" in t for t in toasts), 3), toasts
+    assert asked == ["https://github.com/qt/qtwebengine/releases.atom"]
+    folder = next(f for f in window.store.active_space.pinned if getattr(f, "live", None)
+                  and f.live.get("url") == "https://github.com/qt/qtwebengine")
+    assert folder.name == "qtwebengine Releases"
+    assert [t.title for t in folder.children] == ["v6.12.0", "v6.11.2"]
+    # A feed folder given a repo's address names itself from GitHub's feed title, tidied
+    window.create_live_folder({"kind": "feed", "url": "https://github.com/qt/qtbase"}, "qtbase")
+    assert wait_until(lambda: any(f.name == "qtwebengine Releases" and f is not folder
+                                  for f in window.store.active_space.pinned if getattr(f, "live", None)), 3)
+
+
+def test_undo_of_closing_several_tabs_puts_them_back_in_their_folders(window, site):
+    from browser.models import TODAY, Folder, walk_tabs
+    space = window.store.active_space
+    a, b, c, d = (open_page(window, f"{site}/index.html?{n}") for n in "abcd")
+    folder = window.store.add_folder(space, "Reading", kind=TODAY)
+    window.store.move_tab(folder, TODAY, index=0)
+    window.store.move_tab(a, TODAY, folder=folder)
+    window.store.move_tab(b, TODAY, folder=folder)
+    before = [(n.name, [t.url for t in n.children]) if isinstance(n, Folder) else n.url for n in space.today]
+    saved = {}
+    window.toast = lambda text, action=None, label="Undo": saved.update(text=text, action=action)
+    window.close_tabs([a, b, c])  # the folder goes with its last tab
+    assert saved["text"] == "Closed 3 tabs" and folder not in space.today
+    saved["action"]()
+    after = [(n.name, [t.url for t in n.children]) if isinstance(n, Folder) else n.url for n in space.today]
+    assert after == before
+    back = [t for t in walk_tabs(space.today) if t.url in (a.url, b.url, c.url)]
+    assert len(back) == 3 and all(t.view is None for t in back)  # (asleep until clicked)
+    assert window.current_tab is d
+
+
+def test_github_folder_fills_its_sub_folders(window, site, monkeypatch):
+    from browser.live_folders import OVERVIEW
+    from browser.models import Folder, walk_tabs
+    from browser.sidebar import FolderRow
+    answers = {
+        "review": [{"title": "Fix login", "url": f"{site}/index.html?pr7", "repository": {"name": "parliament"},
+                    "number": 7, "isPullRequest": True}],
+        "mine": [], "assigned": [], "notifications": None,  # (None: gh can't read them)
+        "yours": [{"title": "Dark mode", "url": f"{site}/index.html?i9", "repository": {"name": "eclipse"},
+                   "number": 9, "isPullRequest": False}],
+    }
+
+    def fake_gh(args, done, fail):  # (gh, answered from here)
+        key = next(k for k, a in OVERVIEW.items() if a == args)
+        QTimer.singleShot(0, lambda: done(answers[key]) if answers[key] is not None else fail("HTTP 403"))
+    monkeypatch.setattr(window.live_folders, "_gh", fake_gh)
+    monkeypatch.setattr("browser.live_folders.find_tool", lambda name: "/usr/bin/true")
+    toasts = []
+    monkeypatch.setattr(window, "toast", lambda text, *a, **k: toasts.append(text))
+    add = next(c for c in window.commands() if c[0] == "Add GitHub Folder (PRs, Issues, Repos)")
+    add[2]()
+    assert wait_until(lambda: "“GitHub” is up to date" in toasts, 3), toasts
+    folder = next(f for f in window.store.active_space.pinned if isinstance(f, Folder) and f.live
+                  and f.live.get("query") == "overview")
+    assert [(f.name, [t.title for t in f.children]) for f in folder.children] == \
+        [("Review Requested", ["Fix login · parliament"]), ("eclipse", ["#9 Dark mode"])]
+    add[2]()  # one is enough
+    assert toasts[-1] == "You have one already: “GitHub”"
+
+    # Something new arrives: counted on the folder and on its sub-folder, until opened
+    answers["yours"].append({"title": "Menu bug", "url": f"{site}/index.html?i10", "repository": {"name": "eclipse"},
+                             "number": 10, "isPullRequest": False})
+    window.live_folders.refresh(folder)
+    assert wait_until(lambda: any(t.fresh for t in walk_tabs(folder.children)), 3)
+    for sub in folder.children:
+        sub.expanded = True
+    window.store._changed()
+    pause(0.2)
+    rows = {r.folder.name: r for r in window.sidebar.findChildren(FolderRow) if r.isVisible()}
+    assert rows["GitHub"].count_label.text() == "1 new" and rows["eclipse"].count_label.text() == "1 new"
+    fresh = next(t for t in walk_tabs(folder.children) if t.fresh)
+    window.activate_tab(fresh)
+    pause(0.1)
+    assert not fresh.fresh and rows["eclipse"].count_label.text() == "" and rows["GitHub"].count_label.text() == ""
+    # A sub-folder can't be dragged out, and nothing can be dropped in
+    from browser.models import PINNED, TODAY
+    window.store.move_tab(folder.children[1], PINNED, index=0)
+    assert folder.children[1].name == "eclipse"
+    # What you're reading leaves the folder (an issue closed, a notification read): it stays open, in Today
+    reading = window.current_tab
+    answers["yours"] = [r for r in answers["yours"] if r["url"] != reading.url]
+    toasts.clear()
+    window.live_folders.refresh(folder)
+    assert wait_until(lambda: toasts or not any(t is reading for t in walk_tabs(folder.children)), 3)
+    pause(0.1)
+    assert window.current_tab is reading and window.store.locate(reading)[0] == TODAY
+    assert reading.view is not None
+
+
+def test_a_pull_requests_chip_shows_its_checks(window, monkeypatch):
+    from browser.models import Tab
+    answer = {"state": "OPEN", "reviewDecision": "APPROVED", "statusCheckRollup": [
+        {"__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "FAILURE",
+         "detailsUrl": "https://github.com/o/r/actions/runs/1/job/2", "workflowName": "CI"},
+        {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "SUCCESS",
+         "detailsUrl": "https://github.com/o/r/actions/runs/1/job/3", "workflowName": "CI"}]}
+    asked = []
+
+    def fake_ask(pull, url):  # (gh, answered from here)
+        asked.append(pull)
+        QTimer.singleShot(0, lambda: (window.pr_status._answers.__setitem__(pull, (time.time(), dict(answer))),
+                                      window.pr_status.changed.emit(url)))
+    monkeypatch.setattr(window.pr_status, "_ask", fake_ask)
+    chip = window.sidebar.pr_btn
+    previous = window.current_tab
+    window.current_tab = Tab("https://github.com/o/r/pull/12/files", "PR")
+    try:
+        window.sidebar.update_pr()
+        assert not chip.isVisible() and asked == [("o", "r", 12)]  # (until gh answers)
+        assert wait_until(lambda: chip.isVisible(), 2)
+        assert chip.text() == "✕ 1 failing · Approved" and chip.property("state") == "fail"
+        # Its menu: each check, failing first, then the checks page and Check Again
+        shown = []
+
+        class FakeMenu:
+            def __init__(self, real):
+                self.real = real
+
+            def __getattr__(self, name):
+                return getattr(self.real, name)
+
+            def exec(self, *_):
+                shown.extend(a.text() for a in self.real.actions() if a.text())
+        real_menu = window._menu
+        monkeypatch.setattr(window, "_menu", lambda: FakeMenu(real_menu()))
+        window.show_pr_checks(QPoint(0, 0))
+        assert shown == ["CI · test", "CI · lint", "Open Checks Page", "Check Again"]
+        # Checks still running: it looks again by itself while you're there
+        answer["statusCheckRollup"][0].update(status="IN_PROGRESS", conclusion="")
+        window.pr_status.lookup(window.current_tab.url, force=True)
+        assert wait_until(lambda: chip.text() == "● 1 running · Approved", 2)
+        assert window.pr_status._poll.isActive()
+    finally:
+        window.current_tab = previous
+        window.sidebar.update_pr()
+    assert not chip.isVisible() and not window.pr_status._poll.isActive()  # elsewhere: no chip, no looking
+
+
+def test_your_github_repos_are_in_the_command_bar(window):
+    window.github_repos.repos = [
+        {"name": "gradtrack", "nameWithOwner": "me/gradtrack", "url": "https://github.com/me/gradtrack",
+         "description": "Grad school deadlines", "isPrivate": True, "pushedAt": "2026-10-20"},
+        {"name": "homebase", "nameWithOwner": "me/homebase", "url": "https://github.com/me/homebase",
+         "description": "", "isPrivate": False, "pushedAt": "2026-10-26"}]
+    bar = window.command_bar
+    window.open_command_bar("new")
+    bar.input.setText("grad")
+    bar.update_results()
+    rows = [bar.list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(bar.list.count())]
+    hit = next(r for r in rows if r.badge == "GitHub")
+    assert (hit.title, hit.subtitle) == ("gradtrack", "Grad school deadlines")
+    assert not any(r.badge == "GitHub" and r.title == "homebase" for r in rows)
+    bar.close_bar()
+
+
+def _lights_state(window):
+    """(hidden, alpha, x, y from the title bar's bottom) of the window's close button."""
+    import ctypes
+    from browser.macos import _CGRect, _send
+    native = _send(ctypes.c_void_p(int(window.winId())), "window")
+    button = _send(native, "standardWindowButton:", 0, argtypes=(ctypes.c_long,))
+    frame = _send(button, "frame", restype=_CGRect)
+    return (_send(button, "isHidden", restype=ctypes.c_bool), round(_send(button, "alphaValue", restype=ctypes.c_double), 2),
+            round(frame.x), round(frame.y))
+
+
+def test_traffic_lights_go_with_the_sidebar(window, monkeypatch):
+    from browser import floating_sidebar, macos, traffic_lights
+    if not macos._cocoa():
+        pytest.skip("macOS's own window buttons")
+    pause(0.3)
+    hidden, alpha, x, y = _lights_state(window)
+    assert not hidden and alpha == traffic_lights.DIM  # docked: there, dim until pointed at
+    home = (x, y)
+    # Pointing at them lights them up; moving away dims them again
+    monkeypatch.setattr(window.traffic_lights, "near", lambda: True)
+    window.traffic_lights._check()
+    assert wait_until(lambda: _lights_state(window)[1] == 1.0, 2)
+    monkeypatch.setattr(window.traffic_lights, "near", lambda: False)
+    window.traffic_lights._check()
+    assert wait_until(lambda: _lights_state(window)[1] == traffic_lights.DIM, 2)
+    # Sidebar hidden: gone, and the page has the whole window
+    window.toggle_sidebar()
+    pause(0.5)
+    assert _lights_state(window)[0] and window.content_layout.contentsMargins().top() == 8
+    # Out over the page: they come out with it, as far in from the corner as it is
+    fs = window.floating_sidebar
+    monkeypatch.setattr(fs, "_wanted", lambda: True)
+    monkeypatch.setattr(window, "isActiveWindow", lambda: True)
+    fs.edge_touched()
+    assert _lights_state(window)[0]  # (not while it's on its way)
+    assert wait_until(lambda: not _lights_state(window)[0], 2)
+    m = floating_sidebar.MARGIN
+    assert _lights_state(window)[2:] == (home[0] + m, home[1] - m)
+    monkeypatch.setattr(fs, "_wanted", lambda: False)
+    fs.slide_away()
+    assert _lights_state(window)[0]
+    assert wait_until(lambda: not fs.active, 2)
+    assert _lights_state(window)[2:] == home
+    # Back, then on the right: they move over into the sidebar
+    window.toggle_sidebar()
+    pause(0.5)
+    window.set_sidebar_side("right")
+    pause(0.5)
+    hidden, _alpha, x, y = _lights_state(window)
+    assert not hidden and x == home[0] + window.sidebar.mapTo(window, QPoint(0, 0)).x()
+    assert window.content_layout.contentsMargins().top() == 8  # (no strip for them over the page)
+    # A new title has macOS lay them out again, in the corner: the window puts them back
+    window.setWindowTitle("Another page")
+    assert _lights_state(window)[2] == x
+    window.set_sidebar_side("left")
+    pause(0.5)
+    assert _lights_state(window)[2:] == home
+
+
+def test_favorites_fill_the_row_however_many_there_are(window):
+    grid = window.sidebar.favorites
+    favorites = list(window.store.favorites)
+    pause(0.2)
+
+    def widths():
+        return [t.width() for t in grid.tiles if t.isVisible()]
+    assert len(favorites) >= 4
+    full = grid.width()
+    for n in (4, 3, 2, 1):
+        window.store.favorites[:] = favorites[:n]
+        window.store._changed()
+        pause(0.2)
+        tiles = [t for t in grid.tiles if t.isVisible()]
+        assert len(tiles) == n
+        assert abs(tiles[-1].geometry().right() - (full - 1)) <= 1, n  # out to the end of the row
+        assert max(widths()) - min(widths()) <= 1  # all the same width
+    window.store.favorites[:] = favorites
+    window.store._changed()
+
+
+def test_the_sidebar_scrollbar_stays_out_of_sight_until_you_scroll(window, site):
+    from PyQt6.QtCore import QRect, Qt
+    from browser.models import Tab
+    rows_before = window.sidebar.today.rows[0].width() if window.sidebar.today.rows else None
+    for i in range(25):  # enough tabs to scroll
+        window.store.add_tab(Tab(f"{site}/index.html?{i}", f"Tab {i}"))
+    inner = window.sidebar.scroll.verticalScrollBar()  # (keeps the position; never shown)
+    bar = window.sidebar.scroll.overlay_scrollbar      # (the one you see, floating over the rows)
+    assert wait_until(lambda: bar.isVisible() and bar.maximum() > 0, 3)  # (once the new rows have grown in)
+    pause(0.4)
+    assert bar.isVisible() and bar.maximum() > 0 and not inner.isVisible(), (
+        bar.isHidden(), bar.maximum(), inner.maximum(), window.sidebar.scroll.isVisible(), window.sidebar.isVisible(), bar.geometry())
+    if rows_before is not None:  # it takes no width: rows are as wide as before the list could scroll
+        assert window.sidebar.today.rows[0].width() == rows_before
+    # Out of sight, it lets clicks through to the rows' close buttons under it
+    assert bar.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def drawn():
+        region = QRect(bar.mapTo(window.sidebar, QPoint(0, 0)), bar.size())
+        with_bar = window.sidebar.grab(region).toImage()
+        bar.setVisible(False)
+        without = window.sidebar.grab(region).toImage()
+        bar.setVisible(True)
+        return max(abs(with_bar.pixelColor(x, y).lightness() - without.pixelColor(x, y).lightness())
+                   for x in range(with_bar.width()) for y in range(0, with_bar.height(), 4))
+    assert drawn() == 0
+    inner.setValue(inner.maximum())  # the sidebar moving by itself (a rebuild): still nothing
+    pause(0.1)
+    assert drawn() == 0 and bar.value() == inner.value()
+    inner.triggerAction(inner.SliderAction.SliderSingleStepSub)  # you scrolling (the wheel goes to this one)
+    pause(0.1)
+    assert drawn() > 10 and not bar.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+    assert wait_until(lambda: drawn() == 0, 2)  # and gone again a moment later
+    # Dragging the one you see scrolls the list
+    bar.setValue(0)
+    assert inner.value() == 0
+
+
+def test_pinned_tabs_get_their_icons_without_loading(window, site, monkeypatch):
+    import os
+    from PyQt6.QtGui import QColor, QImage
+    from conftest import _site_root
+    from browser import storage
+    from browser.favicons import Favicons
+    from browser.models import PINNED, Tab
+    from browser.sidebar import TabRow
+    icon_file = os.path.join(_site_root[0], "favicon.ico")
+    image = QImage(32, 32, QImage.Format.Format_ARGB32)
+    image.fill(QColor("#22c55e"))
+    image.save(icon_file, "ICO")
+    try:
+        monkeypatch.setattr(window.favicons, "want", Favicons.want.__get__(window.favicons))  # (the real one)
+        monkeypatch.setattr("browser.window.is_dev_url", lambda url: False)  # (the test site is on localhost)
+        url = site.replace("127.0.0.1", "localhost") + "/index.html?pinned"  # (a site with no icon yet)
+        tab = Tab(url, "Pinned, never opened")
+        window.store.add_tab(tab, PINNED)
+        assert storage.favicon(url) is None
+        window._want_icons()
+        assert wait_until(lambda: storage.favicon(url) is not None, 5)
+        assert tab.view is None  # (the page itself never loaded)
+        pause(0.2)
+        row = next(r for r in window.sidebar.findChildren(TabRow) if r.tab is tab)
+        picture = row.icon_label.pixmap().toImage()
+        middle = picture.pixelColor(picture.width() // 2, picture.height() // 2)
+        assert middle.green() > 150 and middle.red() < 100  # the site's own green icon, not a letter
+    finally:
+        os.remove(icon_file)
+
+
+def test_settings_cards_keep_their_dividers(window):
+    from PyQt6.QtWidgets import QFrame
+    window.open_settings()
+    pause(0.4)
+    settings = window._settings
+    lines = [f for f in settings.findChildren(QFrame) if f.objectName() == "SettingsLine" and f.isVisible()]
+    assert len(lines) >= 5
+    settings.close()
+
+
+def test_live_folder_items_and_dev_pages_dont_fetch_icons(window, monkeypatch):
+    from browser.models import PINNED, Tab
+    wanted = []
+    monkeypatch.setattr(window.favicons, "want", lambda urls: wanted.extend(urls))
+    feed = window.store.add_folder(window.store.active_space, "Feed")
+    feed.live = {"kind": "feed", "url": "https://example.com/feed"}
+    feed.children = [Tab("https://some-site-in-a-feed.example/post", "Post")]
+    window.store.add_tab(Tab("https://mine.example/", "Mine"), PINNED)
+    window.store.add_tab(Tab("http://localhost:3000/", "Dev"), PINNED)
+    window._want_icons()
+    assert "https://mine.example/" in wanted
+    assert not any("feed.example" in u or "localhost" in u for u in wanted)
+
+
+def test_zap_only_listens_to_itself(window, site):
+    tab = open_page(window, f"{site}/index.html")
+    window.start_zap()
+    pause(0.3)
+    zapped = []
+    real = window.boosts.add_zapped
+    window.boosts.add_zapped = lambda site_, sel: (zapped.append(sel), real(site_, sel))[1]
+    # The page pretending to be Zap: ignored
+    run_js(tab.view, "console.log('PYBROWSER_ZAP:x{} input{background:url(//evil/a)}')")
+    run_js(tab.view, "console.log('PYBROWSER_ZAP:h1')")
+    pause(0.3)
+    assert zapped == []
+    # A real click with the tool: heard (its message comes from its own world, with its token)
+    run_js(tab.view, "document.querySelector('h1').click()")
+    assert wait_until(lambda: zapped == ["h1"], 3), zapped
+    from browser.boosts import safe_selector
+    assert not safe_selector("x{} input{background:url(//evil/a)}") and safe_selector("div.ad > p:nth-of-type(2)")
+    window.boosts.add_zapped = real
+
+
+def test_a_local_file_cant_read_other_files(window, tmp_path):
+    secret = tmp_path / "secret.txt"
+    secret.write_text("do not read")
+    page = tmp_path / "invoice.html"
+    page.write_text("<p>hi</p>")
+    tab = open_page(window, page.as_uri())
+    run_js(tab.view, f"""fetch({secret.as_uri()!r}).then(r => r.text()).then(t => window.__got = t,
+                                                                         () => window.__got = 'blocked')""")
+    assert wait_until(lambda: run_js(tab.view, "window.__got || ''") != "", 3)
+    assert run_js(tab.view, "window.__got") == "blocked"
+
+
+def test_tab_searches_a_site_even_after_autocomplete(window, site):
+    from PyQt6.QtGui import QKeyEvent
+    window.store.history.insert(0, {"url": "https://www.youtube.com/", "title": "YouTube", "visits": 30,
+                                    "last": time.time()})
+    bar = window.command_bar
+    window.open_command_bar("new")
+    bar.input.setText("you")
+    bar.input.textEdited.emit("you")
+    pause(0.2)
+    tab_key = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Tab, Qt.KeyboardModifier.NoModifier)
+    assert bar.eventFilter(bar.input, tab_key) is True
+    assert bar.site is not None
+    bar.close_bar()
+
+
+def test_a_tab_you_leave_counts_as_used_until_then(window, site):
+    a = open_page(window, f"{site}/index.html?a")
+    b = open_page(window, f"{site}/index.html?b")
+    window.activate_tab(a)
+    a.last_active = time.time() - 7200  # (opened two hours ago, read since)
+    window.activate_tab(b)
+    assert time.time() - a.last_active < 5  # in use until you left it, not idle since it opened
+
+
+def test_moving_a_split_tab_to_another_space_takes_it_out_of_the_split(window, site):
+    a = open_page(window, f"{site}/index.html?a")
+    b = open_page(window, f"{site}/index.html?b")
+    window.activate_tab(a)
+    window.add_to_split(b)
+    pause(0.4)
+    assert window.store.split_of(a)
+    other = window.store.add_space("Elsewhere", "#3b82f6")
+    window.move_to_space(b, other)
+    pause(0.3)
+    assert not window.store.split_of(a) and not window.store.split_of(b)
+    window.switch_space(window.store.spaces[0])
+
+
+def test_nothing_drops_into_a_live_folder(window, site):
+    tab = open_page(window, f"{site}/index.html?drop")
+    feed = window.store.add_folder(window.store.active_space, "Feed")
+    feed.live = {"kind": "feed", "url": "https://example.com/feed", "refreshed": 1}
+    window.store._changed()
+    pause(0.3)
+    section = window.sidebar.pinned
+    from browser.sidebar import FolderRow
+    folder_row = next(r for r in section.findChildren(FolderRow) if r.folder is feed)
+    middle = folder_row.mapTo(section, QPoint(0, folder_row.height() // 2)).y()
+    keep = _drag_event("drop", section, middle, tab)
+    assert keep is not None and tab not in feed.children  # (refused: it stays where it was)
+
+
+def test_a_page_cant_open_a_note(window, site):
+    tab = open_page(window, f"{site}/index.html?note")
+    before = len(list(window.store.all_tabs()))
+    run_js(tab.view, "window.open('note:../../../../tmp/x'); window.open('easel:../x'); true")
+    pause(0.5)
+    assert len(list(window.store.all_tabs())) == before
+
+
+def test_a_page_asks_before_opening_another_app(window, site, monkeypatch):
+    import browser.external_links as external
+    from browser.external_links import ExternalPrompt
+    opened = []
+    monkeypatch.setattr(external.macos, "app_for_url", lambda url: "Test App")
+    monkeypatch.setattr(external.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()) or True)
+    tab = open_page(window, f"{site}/index.html?apps")
+    # The page sends itself to another app's link, no click needed: refused, and you're asked
+    run_js(tab.view, "location.href = 'eclipsetest://join?id=1'; true")
+    assert wait_until(lambda: any(p.isVisible() for p in window.findChildren(ExternalPrompt)), 3)
+    prompt = next(p for p in window.findChildren(ExternalPrompt) if p.isVisible())
+    assert "wants to open Test App" in prompt.text.text() and opened == []
+    assert not prompt.open_button.isEnabled()  # (a moment before it can be clicked)
+    assert wait_until(lambda: prompt.open_button.isEnabled(), 2)
+    assert tab.view.url().scheme() == "http"  # still on its page
+    prompt.always_button.click()
+    assert opened == ["eclipsetest://join?id=1"]
+    pause(0.2)
+    assert not [p for p in window.findChildren(ExternalPrompt) if p.isVisible()]
+    # Allowed for this site and this kind of link: straight through next time, no card
+    run_js(tab.view, "location.href = 'eclipsetest://join?id=2'; true")
+    assert wait_until(lambda: len(opened) == 2, 3)
+    assert not [p for p in window.findChildren(ExternalPrompt) if p.isVisible()]
+    # Another kind of link from it still asks; Cancel opens nothing
+    run_js(tab.view, "location.href = 'eclipseother://x'; true")
+    assert wait_until(lambda: any(p.isVisible() for p in window.findChildren(ExternalPrompt)), 3)
+    prompt = next(p for p in window.findChildren(ExternalPrompt) if p.isVisible())
+    assert prompt.link.text() == "eclipseother://x"  # (the card says which link)
+    prompt.cancel_button.click()
+    assert len(opened) == 2
+    # Turned down: the page asking again straight away doesn't bring the card back
+    run_js(tab.view, "location.href = 'eclipseother://again'; true")
+    pause(0.6)
+    assert not [p for p in window.findChildren(ExternalPrompt) if p.isVisible()] and len(opened) == 2
+    # A frame in it asks as a frame, even for a kind of link the site may open, and gets no Always Allow
+    run_js(tab.view, "const f = document.createElement('iframe'); f.src = 'eclipsetest://frame'; "
+                     "document.body.append(f); true")
+    assert wait_until(lambda: any(p.isVisible() for p in window.findChildren(ExternalPrompt)), 3)
+    prompt = next(p for p in window.findChildren(ExternalPrompt) if p.isVisible())
+    assert prompt.text.text() == "A frame on 127.0.0.1 wants to open Test App"
+    assert not prompt.always_button.isVisible() and len(opened) == 2
+    # Asking about another link restarts the wait, so an earlier question can't arm a later one
+    assert wait_until(lambda: prompt.open_button.isEnabled(), 2)
+    run_js(tab.view, "location.href = 'eclipseframe://swapped'; true")
+    assert wait_until(lambda: prompt.link.text() == "eclipseframe://swapped", 3)
+    assert not prompt.open_button.isEnabled()
+    # A tab in the background can't ask
+    background = open_page(window, f"{site}/index.html?bg")
+    window.activate_tab(tab)
+    pause(0.2)
+    for p in window.findChildren(ExternalPrompt):
+        p.manager._close(id(p.view))
+    pause(0.1)
+    run_js(background.view, "location.href = 'eclipseother://quiet'; true")
+    pause(0.6)
+    assert not [p for p in window.findChildren(ExternalPrompt) if p.isVisible()] and len(opened) == 2
+
+
+def test_with_nothing_open_its_just_the_spaces_background(window, site):
+    content = window.content
+    for tab in list(window.store.active_space.today):
+        window.close_tab(tab)
+    pause(0.3)
+    if window.current_tab is None:
+        assert content.blank and content.property("blank") is True
+    open_page(window, f"{site}/index.html")
+    assert not content.blank and content.property("blank") is False

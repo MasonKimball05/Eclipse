@@ -278,60 +278,12 @@ class PreviewCard(QFrame):
 
 
 class EmptyState(QWidget):
-    """What an empty page area shows: the eclipse, faintly, and the few keys that get you anywhere."""
+    """What the page area shows with nothing open: nothing, like Arc. The frame goes see-through
+    (ContentFrame.blank), so it's just the Space's own background."""
 
-    HINTS = (("⌘T", "Search or open a site"), ("⇧⌘T", "Reopen a closed tab"),
-             ("⇧⌘P", "New private window"), ("⌘/", "All keyboard shortcuts"))
-
-    def __init__(self, settings=None):
+    def __init__(self):
         super().__init__()
         self.setObjectName("EmptyState")
-        layout = QVBoxLayout(self)
-        layout.addStretch(1)
-        self.mark = QLabel()
-        self.mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.show_mark(settings or {})
-        layout.addWidget(self.mark)
-        layout.addSpacing(26)
-        grid = QWidget()
-        rows = QVBoxLayout(grid)
-        rows.setSpacing(10)
-        rows.setContentsMargins(0, 0, 0, 0)
-        for keys, text in self.HINTS:
-            row = QHBoxLayout()
-            row.setSpacing(12)
-            cap = QLabel(keys)
-            cap.setObjectName("EmptyKey")
-            cap.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            cap.setFixedWidth(56)
-            label = QLabel(text)
-            row.addWidget(cap)
-            row.addWidget(label)
-            row.addStretch(1)
-            rows.addLayout(row)
-        center = QHBoxLayout()
-        center.addStretch(1)
-        center.addWidget(grid)
-        center.addStretch(1)
-        layout.addLayout(center)
-        layout.addStretch(1)
-
-    def show_mark(self, settings):
-        """The eclipse from the app's icon (the look picked in Settings), without its tile, at half
-        strength: there, but quiet."""
-        from PyQt6.QtGui import QPainter, QPixmap
-        from . import brand
-        ratio = self.devicePixelRatioF() or 2.0
-        size = 96
-        icon = QPixmap.fromImage(brand.icon_image(round(size * ratio), brand.chosen_look(settings), tile=False))
-        faded = QPixmap(icon.size())
-        faded.fill(Qt.GlobalColor.transparent)
-        p = QPainter(faded)
-        p.setOpacity(0.5)
-        p.drawPixmap(0, 0, icon)
-        p.end()
-        faded.setDevicePixelRatio(ratio)
-        self.mark.setPixmap(faded)
 
 
 class ContentFrame(QFrame):
@@ -342,7 +294,7 @@ class ContentFrame(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
 
         self.stack = QStackedWidget(self)
-        self.empty = EmptyState(browser.store.settings)
+        self.empty = EmptyState()
         self.stack.addWidget(self.empty)
 
         self.progress = QFrame(self)
@@ -381,6 +333,7 @@ class ContentFrame(QFrame):
         from .split import SplitView  # split.py builds on this module's Corner
         self.split_view = SplitView(browser)
         self.stack.addWidget(self.split_view)
+        self._update_chrome()  # (it starts empty: no card)
 
     @property
     def splitting(self) -> bool:
@@ -391,12 +344,19 @@ class ContentFrame(QFrame):
         self._rounded = rounded
         self._update_chrome()
 
+    @property
+    def blank(self) -> bool:
+        """Nothing open: like Arc, just the Space's background, no page card."""
+        return self.stack.currentWidget() is self.empty
+
     def _update_chrome(self):
-        # In Split View each pane is its own rounded card, so the frame itself disappears
+        # In Split View each pane is its own rounded card, so the frame itself disappears; with nothing
+        # open it's a faint, rounded shade of the Space's colours
         for c in self.corners:
             c.setVisible(self._rounded and not self.splitting)
-        if (self.property("split") is True) != self.splitting:
+        if (self.property("split") is True) != self.splitting or (self.property("blank") is True) != self.blank:
             self.setProperty("split", self.splitting)
+            self.setProperty("blank", self.blank)
             self.style().unpolish(self)
             self.style().polish(self)
 

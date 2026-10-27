@@ -2,6 +2,8 @@ import importlib.util
 import plistlib
 from pathlib import Path
 
+import pytest
+
 from browser import brand, keychain
 
 
@@ -72,3 +74,57 @@ def test_building_the_app_uses_the_icon_picked_in_settings(qapp, data_dir):
     assert brand.saved_look() == "sunset"
     a, b = brand.icon_image(64, "sunset"), brand.icon_image(64, "original")
     assert a.pixelColor(20, 20) != b.pixelColor(20, 20)  # they really are different pictures
+
+
+def test_the_launcher_compiles(tmp_path):
+    import shutil
+    if shutil.which("clang") is None:
+        pytest.skip("needs clang (Xcode's command line tools)")
+    build_app = _build_app_module()
+    build_app.compile_launcher(tmp_path / "Eclipse")
+    assert (tmp_path / "Eclipse").stat().st_size > 0
+
+
+def test_the_launcher_compiles_from_a_folder_with_quotes_and_backslashes(tmp_path, monkeypatch):
+    import shutil
+    if shutil.which("clang") is None:
+        pytest.skip("needs clang (Xcode's command line tools)")
+    build_app = _build_app_module()
+    odd = tmp_path / 'my "odd" \\ folder'
+    odd.mkdir()
+    monkeypatch.setattr(build_app, "ROOT", odd)
+    assert build_app.c_string('/a/b"c\\d') == '"/a/b\\"c\\\\d"'
+    build_app.compile_launcher(tmp_path / "Eclipse")
+    assert str(odd / "main.py").encode() in (tmp_path / "Eclipse").read_bytes()  # the path, exactly as it is
+
+
+def test_downloads_get_the_quarantine_flag(tmp_path):
+    import subprocess
+    import sys
+    from browser import macos
+    if sys.platform != "darwin":
+        pytest.skip("macOS's own attribute")
+    target = tmp_path / "tool.command"
+    target.write_text("echo hi")
+    assert macos.quarantine(str(target))
+    listed = subprocess.run(["xattr", "-p", "com.apple.quarantine", str(target)], capture_output=True, text=True)
+    assert listed.stdout.startswith("0081;") and "Eclipse" in listed.stdout
+
+
+def test_installs_where_finder_shows_it_and_retires_the_home_folder_copy():
+    from pathlib import Path
+    build_app = _build_app_module()
+    assert build_app.APP == Path("/Applications/Eclipse.app")
+    assert Path.home() / "Applications" / "Eclipse.app" in build_app.OLD_APPS
+    assert build_app.APP not in build_app.OLD_APPS
+
+
+def test_falls_back_to_the_home_folder_when_applications_has_someone_elses_eclipse(tmp_path, monkeypatch):
+    build_app = _build_app_module()
+    taken = tmp_path / "Applications" / "Eclipse.app"
+    _fake_app(taken, "org.eclipse.sdk.ide")  # (the Eclipse IDE)
+    monkeypatch.setattr(build_app, "APP", taken)
+    monkeypatch.setattr(build_app.Path, "home", lambda: tmp_path / "home")
+    chosen = build_app.install_path()
+    assert chosen == tmp_path / "home" / "Applications" / "Eclipse.app" and build_app.APP == chosen
+    assert chosen not in build_app.OLD_APPS

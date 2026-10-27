@@ -25,6 +25,7 @@ def _path_hint(url: str) -> str:
     path = QUrl(url).path().rstrip("/")
     return "" if not path else path if len(path) <= 40 else path[:38] + "…"
 from .content import answer_browser, fit_answer
+from .github_status import matching_repos
 from .models import display_host, frecency
 from .storage import favicon
 from .sidebar import tab_icon
@@ -164,6 +165,12 @@ MAX_ROWS = 8
 
 _DOMAIN = re.compile(r"^([\w-]+\.)+[a-z]{2,}(:\d+)?([/?#].*)?$", re.IGNORECASE)
 _LOCAL = re.compile(r"^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?([/?#].*)?$", re.IGNORECASE)
+# A router or a machine on your network: 192.168.1.1, 10.0.0.5:8080/admin (http: they rarely have https)
+_IPV4 = re.compile(r"^((25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(25[0-5]|2[0-4]\d|1?\d?\d)(:\d+)?([/?#].*)?$")
+_LAN = re.compile(r"^[\w-]+(\.[\w-]+)*\.(local|lan|home\.arpa|internal)(:\d+)?([/?#].*)?$", re.IGNORECASE)
+# File names that look like addresses ("node.js", "index.html"): they open, but search comes first
+_FILE_LIKE = re.compile(r"^[\w-]+\.(js|ts|jsx|tsx|mjs|html?|css|json|ya?ml|toml|txt|pdf|png|jpe?g|gif|svg|csv|xml|"
+                        r"py|rb|rs|go|java|kt|swift|cpp|c|h|sh|zsh|lock|log|zip|md)$", re.IGNORECASE)
 _SCHEME = re.compile(r"^(https?|file|about|chrome|view-source|data):", re.IGNORECASE)
 
 
@@ -174,11 +181,16 @@ def to_url(text: str) -> str | None:
         return None
     if _SCHEME.match(text):
         return text
-    if _LOCAL.match(text):
+    if _LOCAL.match(text) or _IPV4.match(text) or _LAN.match(text):
         return "http://" + text
     if _DOMAIN.match(text):
         return "https://" + text
     return None
+
+
+def looks_like_a_file(text: str) -> bool:
+    """"node.js", "config.yaml": more likely something to search for than a site to open."""
+    return bool(_FILE_LIKE.match(text.strip()))
 
 
 def search_url(text: str, engine: str = "google") -> str:
@@ -229,7 +241,7 @@ class ResultDelegate(QStyledItemDelegate):
             path.addRoundedRect(rect, 9, 9)
             painter.fillPath(path, highlight)
         if option.state & QStyle.StateFlag.State_Selected:
-            text = QColor("white")
+            text = QColor(theme.on_accent)  # (white, or dark on a pale Space colour)
 
         icon_rect = QRectF(rect.left() + 12, rect.center().y() - 9, 18, 18)
         result.icon.paint(painter, icon_rect.toRect())
@@ -249,6 +261,7 @@ class ResultDelegate(QStyledItemDelegate):
             right -= badge_w + 14
 
         font.setPixelSize(14)
+        font.setWeight(QFont.Weight.Medium)  # (SF Pro Medium, like the sidebar and Arc)
         painter.setFont(font)
         fm = painter.fontMetrics()
         title = fm.elidedText(result.title, Qt.TextElideMode.ElideRight, int((right - left) * 0.7))
@@ -259,6 +272,7 @@ class ResultDelegate(QStyledItemDelegate):
         if result.subtitle:
             sub_left = left + fm.horizontalAdvance(title) + 10
             font.setPixelSize(12)
+            font.setWeight(QFont.Weight.Normal)
             painter.setFont(font)
             dim = QColor(text)
             dim.setAlphaF(0.5)
@@ -338,6 +352,7 @@ class CommandBar(QWidget):
         self._candidates = [(e["url"], e.get("title", ""), frecency(e, now)) for e in self._ranked]
         self._candidates += [(t.home_url or t.url, t.label, 400) for t in store.all_tabs()
                              if (t.home_url or t.url).startswith(("http://", "https://"))]
+        self.browser.github_repos.refresh_if_stale()  # (in the background: for next time, if it's old)
         self._set_site(None)
         self.input.setPlaceholderText("Open a page next to this one…" if mode == "split" else "Search or Enter URL…")
         self.setGeometry(self.parentWidget().rect())
@@ -420,8 +435,9 @@ class CommandBar(QWidget):
                 else:
                     self.close_bar()
                 return True
-            if key == Qt.Key.Key_Tab and self.site is None and site_for_tab(self.input.text()):
-                self._set_site(site_for_tab(self.input.text()))
+            # (what was typed, not the autocompleted address: "you" + "tube.com" is still YouTube's Tab)
+            if key == Qt.Key.Key_Tab and self.site is None and site_for_tab(self._typed()):
+                self._set_site(site_for_tab(self._typed()))
                 return True
             if key == Qt.Key.Key_Backspace and self.site is not None and not self.input.text():
                 self._set_site(None)
@@ -601,14 +617,18 @@ class CommandBar(QWidget):
             if url:
                 results.append(Result(url, "", "Open", self._icon("ph.globe-simple"), self._open(url)))
             engine = self.browser.store.settings.get("search_engine", "google")
-            results.append(Result(query, f"Search {SEARCH_ENGINES.get(engine, SEARCH_ENGINES['google'])[0]}",
-                                  "Search" if url else "", self._icon("ph.magnifying-glass"),
-                                  self._open(search_url(query, engine))))
+            search = Result(query, f"Search {SEARCH_ENGINES.get(engine, SEARCH_ENGINES['google'])[0]}",
+                            "Search" if url else "", self._icon("ph.magnifying-glass"),
+                            self._open(search_url(query, engine)))
+            if url and looks_like_a_file(query):  # (Return searches; the address is a row below)
+                results.insert(len(results) - 1, search)
+            else:
+                results.append(search)
             ai = self.browser.assistant()
             if ai is not None and not url and len(query.split()) >= 2:
                 name = self.browser.assistant_name(ai)
                 ask = Result(query, f"Ask {name}", name.split(" ")[0].capitalize(),
-                             qta.icon("ph.sparkle", color=theme.accent), lambda a=ai: self.ask(query, a), keep_open=True)
+                             qta.icon("ph.sparkle", color=theme.accent_text), lambda a=ai: self.ask(query, a), keep_open=True)
                 # A question goes straight to Claude on Return; anything else still searches first
                 results.insert(0 if looks_like_question(query) else 1, ask)
                 other = self.browser.assistant(other=True)
@@ -616,10 +636,10 @@ class CommandBar(QWidget):
                     other_name = self.browser.assistant_name(other)
                     results.insert(results.index(ask) + 1, Result(
                         query, f"Ask {other_name}", other_name.split(" ")[0].capitalize(),
-                        qta.icon("ph.cpu" if other is self.browser.local_ai else "ph.sparkle", color=theme.accent),
+                        qta.icon("ph.cpu" if other is self.browser.local_ai else "ph.sparkle", color=theme.accent_text),
                         lambda a=other: self.ask(query, a), keep_open=True))
                 browse = Result(query, "Browse for Me · reads the top results", "⌘↩",
-                                qta.icon("ph.compass", color=theme.accent), lambda: self.browser.browse_for_me(query))
+                                qta.icon("ph.compass", color=theme.accent_text), lambda: self.browser.browse_for_me(query))
                 results.insert(results.index(ask) + 1, browse)
 
         if tab_site:  # a hint that Tab searches this site (after the search, so Return still searches)
@@ -654,6 +674,16 @@ class CommandBar(QWidget):
                 results.append(Result(tab.label, display_host(tab.url), badge, tab_icon(tab, theme), run))
             if len(results) >= MAX_ROWS:
                 break
+
+        if self.mode != "split":  # your GitHub repos, by name
+            for repo in matching_repos(self.browser.github_repos.repos, query):
+                if repo["url"] in seen:
+                    continue
+                seen.add(repo["url"])
+                detail = repo.get("description") or repo.get("nameWithOwner", "")
+                results.append(Result(repo.get("name", ""), detail, "GitHub",
+                                      self._icon("ph.lock-simple" if repo.get("isPrivate") else "ph.github-logo"),
+                                      self._open(repo["url"])))
 
         limit = MAX_ROWS + 4
         for entry in self._ranked:  # most-used first, not just most recent

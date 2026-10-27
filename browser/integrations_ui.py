@@ -19,7 +19,7 @@ from .integrations import (DEFAULTS, ISSUE_TEXT, SETTING, STATE_DOTS, away_task_
                            matching_projects, open_external, open_in_app, search_shortcut_presets, summarize)
 from .live_folders import token_account
 from .models import display_host
-from .theme import dot_icon, stylesheet
+from .theme import FittedLabel, dot_icon, stylesheet
 
 
 def _dialog(browser, title, width=520):
@@ -189,7 +189,7 @@ class AppsUI(QObject):
         task = QPlainTextEdit(away_task_text(owner, repo, number, found.get("title") or tab.label,
                                              found.get("body", ""), tab.url))
         task.setMinimumHeight(220)
-        note = QLabel("The local model works on it in its own branch next time the desktop is idle; you "
+        note = FittedLabel("The local model works on it in its own branch next time the desktop is idle; you "
                       "review and accept it from homebase.")
         note.setObjectName("Hint")
         note.setWordWrap(True)
@@ -331,7 +331,7 @@ class AppsUI(QObject):
             edit.editingFinished.connect(lambda k=key, e=edit: self._save(k, e.text().strip()))
             fields[key] = edit
             form.addRow(label, edit)
-        hint = QLabel("Clear an address to leave that app out. The desktop ones are reached over Tailscale.")
+        hint = FittedLabel("Clear an address to leave that app out. The desktop ones are reached over Tailscale.")
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
         form.addRow("", hint)
@@ -355,7 +355,7 @@ class AppsUI(QObject):
             model.addItem(n) for n in names if n != cfg["local_model"]])
         ai.addRow("Questions answered by", who)
         ai.addRow("Local model", model)
-        note = QLabel("For ⌘T questions and Ask on Page (⌘F, then a question). The other one is always a row "
+        note = FittedLabel("For ⌘T questions and Ask on Page (⌘F, then a question). The other one is always a row "
                       "below in ⌘T. Tidy, Translate and Browse for Me stay with Claude.")
         note.setObjectName("Hint")
         note.setWordWrap(True)

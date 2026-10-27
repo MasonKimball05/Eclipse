@@ -85,7 +85,7 @@ class EntryDelegate(QStyledItemDelegate):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(theme.accent)
             painter.drawRoundedRect(rect.adjusted(2, 1, -2, -1), 8, 8)
-            ink = QColor("white")
+            ink = QColor(theme.on_accent)  # (dark on a pale Space colour)
         elif option.state & QStyle.StateFlag.State_MouseOver:
             hover = QColor(ink)
             hover.setAlphaF(0.06)
@@ -194,7 +194,7 @@ class LibraryWindow(FadesIn, QWidget):
         theme = self.browser.theme
         self.setStyleSheet(stylesheet(theme))
         for i, (_, icon, _) in enumerate(SECTIONS):
-            self.nav.item(i).setIcon(qta.icon(icon, color=theme.panel_text, color_active="white"))
+            self.nav.item(i).setIcon(qta.icon(icon, color=theme.panel_text, color_active=theme.on_accent))
         self.list.viewport().update()
 
     def open(self, section="history"):
@@ -219,9 +219,9 @@ class LibraryWindow(FadesIn, QWidget):
 
     def _icon(self, url):
         if url.startswith("note:"):
-            return qta.icon("ph.note-pencil", color=self.browser.theme.accent)
+            return qta.icon("ph.note-pencil", color=self.browser.theme.accent_text)
         if "/browse/" in url and url.startswith("file:"):
-            return qta.icon("ph.compass", color=self.browser.theme.accent)
+            return qta.icon("ph.compass", color=self.browser.theme.accent_text)
         return storage.favicon(url) or letter_icon(display_host(url) or "?", self.browser.theme.accent)
 
     def _entries(self) -> list[dict]:

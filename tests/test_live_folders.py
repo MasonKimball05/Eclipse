@@ -1,5 +1,5 @@
 from browser.live_folders import apply_items, find_feed_link, mark_seen, parse_feed
-from browser.models import Folder, Tab, node_from_dict
+from browser.models import Folder, Tab, node_from_dict, walk_tabs
 
 RSS = b"""<?xml version="1.0"?><rss version="2.0"><channel><title>Example Blog</title>
 <item><title>Second post</title><link>https://blog.example/2</link></item>
@@ -88,3 +88,169 @@ def test_an_item_listed_twice_is_one_tab():
     extra = Tab("https://b/1", "One", home_url="https://b/1")
     folder.children.append(extra)
     assert apply_items(folder, [("One", "https://b/1")]) == [extra]
+
+
+def test_github_addresses_follow_their_hidden_feeds():
+    from browser.live_folders import feed_name, github_feed, github_repo
+    assert github_feed("https://github.com/qt/qtwebengine") == "https://github.com/qt/qtwebengine/releases.atom"
+    assert github_feed("github.com/qt/qtwebengine.git") == "https://github.com/qt/qtwebengine/releases.atom"
+    assert github_feed("https://github.com/qt/qtwebengine/releases/tag/v6.11") == \
+        "https://github.com/qt/qtwebengine/releases.atom"
+    assert github_feed("https://github.com/qt/qtwebengine/tags") == "https://github.com/qt/qtwebengine/tags.atom"
+    assert github_feed("https://github.com/qt/qtwebengine/commits/dev") == \
+        "https://github.com/qt/qtwebengine/commits/dev.atom"
+    assert github_feed("https://github.com/torvalds") == "https://github.com/torvalds.atom"
+    # One file's history: the branch's feed (a file has none)
+    assert github_feed("https://github.com/a/b/commits/main/src/x.py") == "https://github.com/a/b/commits/main.atom"
+    # Not repos or people, other sites, and feeds already
+    for url in ("https://github.com/settings/profile", "https://github.com/explore", "https://github.com/apps/dependabot",
+                "https://github.com/users/foo/projects/1", "https://github.com/codespaces", "https://gitlab.com/a/b",
+                "https://github.com/qt/qtwebengine/releases.atom", "https://github.com/"):
+        assert github_feed(url) is None, url
+    assert github_repo("https://www.github.com/qt/qtwebengine/pull/3") == ("qt", "qtwebengine")
+    assert github_repo("https://github.com/apps/dependabot") is None
+    assert github_repo("https://github.com/notifications/beta") is None and github_repo("https://github.com/qt") is None
+    assert feed_name("https://github.com/qt/qtwebengine") == "qtwebengine"
+
+
+def _row(title, repo, number, pr=False):
+    return {"title": title, "url": f"https://github.com/me/{repo}/{'pull' if pr else 'issues'}/{number}",
+            "repository": {"name": repo}, "number": number, "isPullRequest": pr}
+
+
+def test_github_sections_sort_everything_into_sub_folders():
+    from browser.live_folders import github_sections
+    review = _row("Fix login", "parliament", 7, pr=True)
+    assigned = _row("Crash on start", "eclipse", 3)
+    results = {
+        "review": [review], "mine": [], "assigned": [assigned],
+        "yours": [_row("Dark mode", "eclipse", 9), assigned, _row("Bump deps", "eclipse", 10, pr=True),
+                  _row("Menu", "shelf", 1)],
+    }
+    sections = github_sections(results)
+    assert [name for name, _ in sections] == ["Review Requested", "Assigned to Me", "eclipse", "shelf"]  # (no empty one)
+    assert sections[0][1] == [("Fix login · parliament", review["url"])]
+    eclipse = dict(sections)["eclipse"]
+    # Its pull requests first, numbered; what's already in a section above isn't repeated
+    assert [t for t, _ in eclipse] == ["PR #10 Bump deps", "#9 Dark mode"]
+
+
+def test_nested_items_keep_tabs_and_sub_folders_across_refreshes():
+    folder = Folder("GitHub", live={"kind": "github", "query": "overview"})
+    a, b = "https://github.com/me/x/issues/1", "https://github.com/me/x/issues/2"
+    apply_items(folder, [("Assigned to Me", [("One", a)]), ("x", [("Two", b)])])
+    assigned, repo = folder.children
+    assert isinstance(assigned, Folder) and [t.url for t in assigned.children] == [a]
+    assert not any(t.fresh for t in walk_tabs(folder.children))  # (the first look: nothing's new)
+    tab_one = assigned.children[0]
+    assigned.expanded = True
+    c = "https://github.com/me/x/issues/3"
+    dropped = apply_items(folder, [("Assigned to Me", [("Two", b), ("One", a)]), ("x", [("Three", c)])])
+    assert folder.children[0] is assigned and assigned.expanded  # the same sub-folder, still open
+    assert assigned.children[1] is tab_one  # the same tab, moved
+    new = folder.children[1].children[0]
+    assert new.url == c and new.fresh and not dropped
+    # A section that empties goes; its tabs are dropped
+    dropped = apply_items(folder, [("x", [("Three", c)])])
+    assert [f.name for f in folder.children] == ["x"] and {t.url for t in dropped} == {a, b}
+    # Seen state, and loading, reach into sub-folders
+    mark_seen(folder, new)
+    again = node_from_dict(folder.to_dict())
+    assert not any(t.fresh for t in walk_tabs(again.children))
+
+
+def test_nothing_moves_into_or_out_of_a_live_folders_sub_folders(store):
+    from browser.models import PINNED
+    space = store.active_space
+    live = store.add_folder(space, "GitHub")
+    live.live = {"kind": "github", "query": "overview", "refreshed": 1}
+    apply_items(live, [("x", [("One", "https://github.com/me/x/issues/1")])])
+    sub = live.children[0]
+    assert store.live_folder_of(sub) is live and store.live_folder_of(sub.children[0]) is live
+    loose = Tab("https://example.com")
+    store.add_tab(loose, PINNED)
+    store.move_tab(loose, PINNED, folder=sub)
+    assert loose not in sub.children
+    store.move_tab(sub, PINNED, index=0)
+    assert sub in live.children and sub not in space.pinned
+
+
+def test_notifications_become_a_section_of_web_pages():
+    from browser.live_folders import github_sections, notification_rows
+    api = [{"subject": {"title": "Fix login", "url": "https://api.github.com/repos/me/x/pulls/7", "type": "PullRequest"},
+            "repository": {"name": "x", "html_url": "https://github.com/me/x"}},
+           {"subject": {"title": "v2.0", "url": "https://api.github.com/repos/me/x/releases/99", "type": "Release"},
+            "repository": {"name": "x", "html_url": "https://github.com/me/x"}},
+           {"subject": {"title": "Bug", "url": "https://api.github.com/repos/me/y/issues/3", "type": "Issue"},
+            "repository": {"name": "y", "html_url": "https://github.com/me/y"}}]
+    rows = notification_rows(api)
+    assert [r["url"] for r in rows] == ["https://github.com/me/x/pull/7", "https://github.com/me/x#notification-",
+                                        "https://github.com/me/y/issues/3"]  # (a release: its repo's page)
+    review = {"title": "Fix login", "url": "https://github.com/me/x/pull/7", "repository": {"name": "x"}}
+    sections = dict(github_sections({"review": [review], "notifications": api}))
+    # Already under Review Requested: not again under Notifications
+    assert [t for t, _ in sections["Notifications"]] == ["v2.0 · x", "Bug · y"]
+
+
+def test_an_empty_github_folder_drops_its_old_sub_folders_and_keeps_seen():
+    folder = Folder("GitHub", live={"kind": "github", "query": "overview"})
+    a = "https://github.com/me/x/issues/1"
+    apply_items(folder, [("x", [("One", a)])])
+    apply_items(folder, [])  # inbox zero
+    assert folder.children == []
+    apply_items(folder, [("x", [("One", a)])])
+    assert not folder.children[0].children[0].fresh  # (seen before: not new again)
+
+
+def test_a_repo_named_like_a_section_goes_by_its_full_name():
+    from browser.live_folders import github_sections
+    note = {"title": "n", "url": "https://github.com/o/x/pull/1", "repository": {"name": "x"}}
+    mine = {"title": "i", "url": "https://github.com/me/Notifications/issues/2",
+            "repository": {"name": "Notifications", "nameWithOwner": "me/Notifications"}, "number": 2}
+    api = [{"id": "7", "subject": {"title": "n", "url": "https://api.github.com/repos/o/x/pulls/1"},
+            "repository": {"name": "x", "html_url": "https://github.com/o/x"}}]
+    names = [name for name, _ in github_sections({"notifications": api, "yours": [mine]})]
+    assert names == ["Notifications", "me/Notifications"]
+    assert note  # (the notification's own section keeps its name)
+
+
+def test_notifications_without_their_own_page_each_stay_separate():
+    from browser.live_folders import notification_rows
+    api = [{"id": str(i), "subject": {"title": f"v{i}", "url": None, "type": "Release"},
+            "repository": {"name": "x", "html_url": "https://github.com/me/x"}} for i in (1, 2)]
+    urls = [r["url"] for r in notification_rows(api)]
+    assert urls == ["https://github.com/me/x#notification-1", "https://github.com/me/x#notification-2"]
+
+
+def test_calendar_time_zones_and_weekly_repeats():
+    import datetime
+    from zoneinfo import ZoneInfo
+    from browser.live_folders import upcoming_events
+    ics = """BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:a
+SUMMARY:Standup
+DTSTART;TZID=America/New_York:20260105T090000
+RRULE:FREQ=WEEKLY;BYDAY=MO,WE
+END:VEVENT
+BEGIN:VEVENT
+UID:b
+SUMMARY:Ended
+DTSTART:20260105T090000Z
+RRULE:FREQ=DAILY;COUNT=3
+END:VEVENT
+END:VCALENDAR"""
+    now = datetime.datetime(2026, 10, 27, 12, 0)  # a Tuesday
+    items = upcoming_events(ics, "https://cal.example/feed.ics", now=now)
+    assert len(items) == 1 and "Standup" in items[0][0]  # (the daily one ran out long ago)
+    # Next: Wednesday Oct 28, 9:00 New York time, shown in this Mac's time
+    expected = datetime.datetime(2026, 10, 28, 9, 0, tzinfo=ZoneInfo("America/New_York")).astimezone()
+    assert items[0][0].startswith(expected.strftime("%b %-d"))
+    assert expected.strftime("%-I:%M %p") in items[0][0]
+
+
+def test_notifications_that_cant_be_read_are_kept():
+    from browser.live_folders import github_sections, notification_rows
+    kept = [{"title": "Old one · x", "url": "https://github.com/me/x/issues/1"}]
+    assert notification_rows(kept) == kept
+    assert dict(github_sections({"notifications": kept}))["Notifications"][0][1] == "https://github.com/me/x/issues/1"

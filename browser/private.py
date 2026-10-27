@@ -18,6 +18,7 @@ from PyQt6.QtWebEngineCore import QWebEngineNewWindowRequest, QWebEngineProfile
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QStackedWidget,
                              QToolButton, QVBoxLayout, QWidget)
 
+from .webview import harden
 from . import macos, spelling
 from .command_bar import search_url, to_url
 from .content import RADIUS, Corner
@@ -38,13 +39,13 @@ PRIVATE_STYLE = f"""
     QLineEdit#PrivateUrl:focus {{ background: rgba(255,255,255,0.13); border-color: {rgba(THEME.accent, 0.7)}; }}
     QPushButton#PrivateNewTab {{
         background: transparent; border: none; border-radius: 8px; color: rgba(242,242,244,0.7);
-        text-align: left; padding: 7px 8px; font-size: 13px;
+        text-align: left; padding: 7px 8px; font-size: 13px; font-weight: 500;
     }}
     QPushButton#PrivateNewTab:hover {{ background: rgba(255,255,255,0.07); color: {rgba(THEME.text)}; }}
     QFrame#PrivateTab {{ border-radius: 8px; }}
     QFrame#PrivateTab:hover {{ background: rgba(255,255,255,0.06); }}
     QFrame#PrivateTab[current="true"] {{ background: rgba(255,255,255,0.14); }}
-    QFrame#PrivateTab QLabel {{ color: {rgba(THEME.text)}; font-size: 13px; }}
+    QFrame#PrivateTab QLabel {{ color: {rgba(THEME.text)}; font-size: 13px; font-weight: 500; }}
     QToolButton#PrivateClose {{ background: transparent; border: none; border-radius: 5px; padding: 2px; }}
     QToolButton#PrivateClose:hover {{ background: rgba(255,255,255,0.12); }}
     QLabel#PrivateHint {{ color: rgba(242,242,244,0.45); font-size: 11px; }}
@@ -411,6 +412,7 @@ class PrivateSession(QObject):
     def new_window(self, url=None, request=None):
         if self.profile is None:
             self.profile = QWebEngineProfile(self.browser)  # no storage name: off the record
+            harden(self.profile)
             self.profile.setHttpUserAgent(self.browser.profile.httpUserAgent())
             self.browser.adblock.attach(self.profile)  # ads still blocked, cookie banners still rejected
             spelling.apply([self.profile], self.browser.store.settings)

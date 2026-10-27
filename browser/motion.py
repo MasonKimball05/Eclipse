@@ -87,7 +87,7 @@ class SidebarSlide:
     behind, while the real layout has already changed underneath. Moving pictures instead of the
     widgets keeps the tab titles from squashing and reflowing on the way."""
 
-    def __init__(self, window, rect, sidebar_image, behind_image, showing, done=None, hold=False):
+    def __init__(self, window, rect, sidebar_image, behind_image, showing, done=None, hold=False, right=False):
         from PyQt6.QtCore import QPointF
         from PyQt6.QtGui import QPainter
         from PyQt6.QtWidgets import QWidget
@@ -96,7 +96,7 @@ class SidebarSlide:
             def paintEvent(cover, event):
                 p = QPainter(cover)
                 p.drawPixmap(QPointF(0, 0), behind_image)
-                p.drawPixmap(QPointF(-cover.offset, 0), sidebar_image)
+                p.drawPixmap(QPointF(cover.offset if right else -cover.offset, 0), sidebar_image)  # (off its own edge)
                 p.end()
 
         self.cover = Cover(window)

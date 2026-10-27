@@ -1,0 +1,8 @@
+<!doctype html>
+<title>Frames</title>
+<p>A page with a frame from another origin (given as ?inner=…), like an ad inside a bank's page.</p>
+<script>
+  const frame = document.createElement('iframe');
+  frame.src = new URLSearchParams(location.search).get('inner');
+  document.body.appendChild(frame);
+</script>

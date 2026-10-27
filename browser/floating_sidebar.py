@@ -9,7 +9,7 @@
 
 import time
 
-from PyQt6.QtCore import QRectF, Qt, QTimer
+from PyQt6.QtCore import QAbstractAnimation, QPoint, QRectF, Qt, QTimer
 from PyQt6.QtGui import QColor, QCursor, QPainter, QPainterPath, QPixmap
 from PyQt6.QtWidgets import QApplication, QWidget
 
@@ -81,13 +81,27 @@ class FloatingSidebar:
     def sidebar(self):
         return self.window.sidebar
 
+    @property
+    def _right(self) -> bool:
+        return self.window.sidebar_on_right
+
+    def _out_x(self):
+        """Where it sits when it's out."""
+        root = self.window.centralWidget()
+        return root.width() - self.sidebar.width() - MARGIN if self._right else MARGIN
+
+    def _away_x(self):
+        """Just past the window's edge, shadow and all."""
+        root = self.window.centralWidget()
+        return root.width() + Shadow.SPREAD if self._right else -self.sidebar.width() - Shadow.SPREAD
+
     def _x(self, x):
         self.sidebar.move(round(x), MARGIN)
         if self.shadow is not None:
             self.shadow.follow(self.sidebar.geometry())
 
     def edge_touched(self):
-        """The pointer reached the window's left edge."""
+        """The pointer reached the window's edge (the sidebar's side)."""
         w = self.window
         if self.state == "in" or w.command_bar.isVisible() or not w.isActiveWindow():
             return
@@ -95,29 +109,53 @@ class FloatingSidebar:
             w._float_sidebar()  # out of the layout, over the page
             self.shadow = Shadow(w.centralWidget())
             self.place()
-            self._x(-self.sidebar.width() - Shadow.SPREAD)
+            self._x(self._away_x())
             self.shadow.show()
             self.sidebar.show()
             self.shadow.stackUnder(self.sidebar)
             self.sidebar.raise_()
-            self.sidebar.align_with_traffic_lights()
+            self._lights(False)  # (where they'll be once it's out, so its buttons line up with them)
+            self.sidebar.align_with_traffic_lights(QPoint(round(self._out_x()), MARGIN))
             self.timer.start()
         self.state = "in"
         self._away_since = None
-        motion.animate(self.sidebar, self.sidebar.x(), MARGIN, self._x, motion.NORMAL)  # (from wherever it is)
+        motion.animate(self.sidebar, self.sidebar.x(), self._out_x(), self._x, motion.NORMAL,  # (from wherever it is)
+                       lambda: self.state == "in" and self._lights(True))
 
     def place(self):
         root = self.window.centralWidget()
         width = self.window.store.settings.get("sidebar_width", 250)
-        self.sidebar.setGeometry(self.sidebar.x() if self.state else MARGIN, MARGIN, width, root.height() - 2 * MARGIN)
+        moving = getattr(getattr(self.sidebar, "_pb_animation", None), "state", lambda: None)() == \
+            QAbstractAnimation.State.Running
+        x = self.sidebar.x() if moving or self.state == "out" else (
+            root.width() - width - MARGIN if self._right else MARGIN)
+        self.sidebar.setGeometry(x, MARGIN, width, root.height() - 2 * MARGIN)
+        if moving and self.state == "in":  # the window changed size on its way out: aim for the new spot
+            motion.animate(self.sidebar, x, self._out_x(), self._x, motion.FAST,
+                           lambda: self.state == "in" and self._lights(True))  # (this replaced the one that would)
         if self.shadow is not None:
             self.shadow.follow(self.sidebar.geometry())
+        if self.state == "in":  # (a resize: macOS may have laid the lights out again, and it's moved)
+            showing = not moving and self.window.traffic_lights.showing
+            self._lights(showing)
+            QTimer.singleShot(0, lambda: self.state == "in" and self._lights(showing))
+
+    def _lights(self, showing):
+        """The traffic lights, in the sidebar as it sits when it's out: where they are on the docked
+        sidebar, but MARGIN in from its corner with it (rather than squeezed into its rounded corner).
+        They come out once it has, and go as it leaves."""
+        if self.window.isFullScreen():  # (full screen: macOS shows them in its menu bar, where they are)
+            self.window.traffic_lights.place(True, 0, 0)
+            return
+        self.window.traffic_lights.place(showing, self._out_x(), MARGIN)
 
     def _wanted(self) -> bool:
         if QApplication.activePopupWidget() or QApplication.activeModalWidget():
             return True  # a menu from it (or a dialog) is open
         pos = self.window.centralWidget().mapFromGlobal(QCursor.pos())
         inside_window = -4 <= pos.y() <= self.window.centralWidget().height() + 4
+        if self._right:
+            return inside_window and self.sidebar.geometry().left() - LINGER <= pos.x() <= self.window.centralWidget().width() + 40
         return inside_window and -40 <= pos.x() <= self.sidebar.geometry().right() + LINGER
 
     def _check(self):
@@ -142,7 +180,8 @@ class FloatingSidebar:
         if self.state != "in":
             return
         self.state = "out"
-        motion.animate(self.sidebar, self.sidebar.x(), -self.sidebar.width() - Shadow.SPREAD, self._x,
+        self._lights(False)
+        motion.animate(self.sidebar, self.sidebar.x(), self._away_x(), self._x,
                        motion.FAST + 40, self._gone)
 
     def _gone(self):

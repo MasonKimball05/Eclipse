@@ -68,17 +68,21 @@
     // Grab what we use now, before any other script in this world could replace it.
     const log = console.debug.bind(console);
     const stringify = JSON.stringify;
-    const frame = window.top === window ? 'top' : Math.random().toString(36).slice(2);
+    const here = window.location;
+    // A subframe's name is a secret between this runtime and Python, which uses it to find the frame
+    const frame = window.top === window ? 'top' : Array.from(crypto.getRandomValues(new Uint32Array(4)), (n) => n.toString(36)).join('');
     const callbacks = {};
     let nextCall = 0;
     host = {
       call: (method, argsJson, callback) => {
         const id = ++nextCall;
         callbacks[id] = callback;
-        log('\u2063pbx:' + stringify([PB_TOKEN, frame, id, method, argsJson]));
+        // Each call says where this frame is now; Python checks it against the frame it found
+        log('\u2063pbx:' + stringify([PB_TOKEN, frame, id, method, argsJson, here.href]));
       },
     };
     const fixed = (name, fn) => Object.defineProperty(window, name, { value: fn, writable: false, configurable: false });
+    fixed('__pbFrameIs', (name) => name === frame);  // Python asking each frame "is this you?"
     fixed('__pbReply', (target, id, raw) => {
       if (target !== frame) return;
       const callback = callbacks[id];
@@ -237,7 +241,8 @@
         reload: (tabId, props, callback) => done(call('tabs.update', tabId ?? null, { reload: true }), typeof props === 'function' ? props : callback),
         sendMessage: (tabId, message, ...rest) => {
           const callback = lastArgCallback(rest);
-          return done(call('tabs.sendMessage', tabId, message).then((replyId) => pb.waitFor(replyId)), callback);
+          const frameId = rest[0] && typeof rest[0] === 'object' && rest[0].frameId !== undefined ? rest[0].frameId : null;
+          return done(call('tabs.sendMessage', tabId, message, { frameId }).then((replyId) => pb.waitFor(replyId)), callback);
         },
         onUpdated: makeEvent('tabs.updated'), onActivated: makeEvent('tabs.activated'),
         onRemoved: makeEvent('tabs.removed'), onCreated: makeEvent(null), onReplaced: makeEvent(null),
@@ -479,7 +484,8 @@
       };
       return port;
     };
-    const connect = (tabId, info) => makePort((info && info.name) || '', undefined, call('port.open', (info && info.name) || '', tabId));
+    const connect = (tabId, info) => makePort((info && info.name) || '', undefined,
+      call('port.open', (info && info.name) || '', tabId, info && info.frameId !== undefined ? info.frameId : null));
     // Native messaging: a helper program on this Mac (Python checks it's registered and allows us)
     chrome.runtime.connectNative = (name) => makePort(name, undefined, call('native.connect', name));
     chrome.runtime.sendNativeMessage = (name, message, callback) => done(
