@@ -415,6 +415,8 @@ class PrivateSession(QObject):
             harden(self.profile)
             self.profile.setHttpUserAgent(self.browser.profile.httpUserAgent())
             self.browser.adblock.attach(self.profile)  # ads still blocked, cookie banners still rejected
+            self.browser.passkeys.attach_profile(self.profile)  # (security keys work there too)
+            self.browser.passwords.attach_profile(self.profile)  # (filling works; saving still asks)
             spelling.apply([self.profile], self.browser.store.settings)
             self.profile.downloadRequested.connect(self._download_started)
             self.profile.downloadRequested.connect(self.browser._on_download)

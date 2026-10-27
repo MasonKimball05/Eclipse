@@ -7,6 +7,9 @@
 #
 # It never touches your own work: a checkout with uncommitted changes, local commits that aren't
 # pushed, or no upstream branch is left alone (a check from Settings says why).
+#
+# The release app (everything inside it, signed) has no checkout: it updates from GitHub's releases
+# instead, through release_update.py, with the same offer.
 
 import hashlib
 import os
@@ -19,7 +22,8 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, QProcess, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
-from . import brand
+from . import brand, release_update, verified
+from .features import Feature
 
 REPO = Path(__file__).resolve().parents[1]
 VENV = Path.home() / "Library" / "Application Support" / brand.INTERNAL_NAME / "venv"  # same as run.sh
@@ -38,9 +42,16 @@ def _git(*args, timeout=GIT_TIMEOUT) -> tuple[int, str]:
     return done.returncode, (done.stdout or done.stderr).strip()
 
 
+def release_bundle() -> Path | None:
+    """The release app this runs from (no checkout around it), or None."""
+    return None if (REPO / ".git").exists() else verified.app_bundle(REPO)
+
+
 def inspect(fetch=True) -> dict:
     """Where this checkout stands: {"state": …, "behind": n, "subjects": […], "reason": …}.
     state: "current", "available", "blocked" (an update exists but can't be applied) or "unavailable"."""
+    if (bundle := release_bundle()) is not None:
+        return release_update.inspect(bundle) if fetch else {"state": "current", "behind": 0}
     if not (REPO / ".git").exists():
         return {"state": "unavailable", "reason": f"{brand.NAME} isn't running from a git checkout."}
     code, upstream = _git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
@@ -92,6 +103,8 @@ def precompile():
     """Compile any changed code now, so the next launch doesn't spend a couple of seconds doing it
     (Python compiles what's changed the first time it runs it). Quick when nothing has changed."""
     import compileall
+    if not (REPO / ".git").exists():
+        return  # (a release app: compiled ahead, and sealed by its signature, so nothing's written into it)
     try:
         compileall.compile_dir(str(REPO / "browser"), quiet=2)
     except Exception:  # (never worth failing an update or a quit over)
@@ -110,14 +123,18 @@ def relaunch_command() -> list[str]:
 class SelfUpdater(QObject):
     checked = pyqtSignal(dict)
     applied = pyqtSignal(bool, str)
+    progressed = pyqtSignal(int)  # (a release's download, in percent)
 
     def __init__(self, browser):
         super().__init__(browser)
         self.browser = browser
         self._busy = False
         self._manual = False
+        self._found = {}
+        self._staged = None  # (a release: the checked new copy, swapped in after quitting)
         self.checked.connect(self._checked)
         self.applied.connect(self._applied)
+        self.progressed.connect(lambda percent: self.browser.toast(f"Downloading the update… {percent}%"))
         self._timer = QTimer(self, interval=3600 * 1000, timeout=self._maybe_check)
         self._timer.start()
         QTimer.singleShot(FIRST_CHECK_MS, self._maybe_check)
@@ -160,14 +177,19 @@ class SelfUpdater(QObject):
                 self.browser.toast(result.get("reason") or "Couldn't check for updates")
 
     def _offer(self, result):
+        self._found = result
         subjects = "\n".join(f"• {s}" for s in result.get("subjects", []))
         more = result["behind"] - len(result.get("subjects", []))
         if more > 0:
             subjects += f"\n…and {more} more"
         box = QMessageBox(self.browser)
         box.setWindowTitle("Update Available")
-        box.setText(f"A new version of {brand.NAME} is ready ({result['behind']} "
-                    f"change{'s' if result['behind'] != 1 else ''}).")
+        if "build" in result:  # (a release)
+            size = f", {result['size'] // 1_000_000} MB" if result.get("size") else ""
+            box.setText(f"{result['version']} is ready{size}.")
+        else:
+            box.setText(f"A new version of {brand.NAME} is ready ({result['behind']} "
+                        f"change{'s' if result['behind'] != 1 else ''}).")
         box.setInformativeText(subjects + "\n\nYour tabs come back after the restart.")
         update = box.addButton("Update && Restart", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("Later", QMessageBox.ButtonRole.RejectRole)
@@ -177,7 +199,21 @@ class SelfUpdater(QObject):
 
     def update_and_restart(self):
         self.browser.toast(f"Updating {brand.NAME}…")
+        if (bundle := release_bundle()) is not None and "build" in self._found:
+            threading.Thread(target=lambda: self._prepare(bundle), daemon=True).start()  # (a few hundred MB)
+            return
         threading.Thread(target=lambda: self.applied.emit(*apply_update()), daemon=True).start()  # pip can be slow
+
+    def _prepare(self, bundle):
+        shown = [-1]
+
+        def progress(fraction):
+            percent = int(fraction * 100) // 10 * 10
+            if percent != shown[0]:
+                shown[0] = percent
+                self.progressed.emit(percent)
+        self._staged, why = release_update.prepare(self._found, bundle, progress)
+        self.applied.emit(self._staged is not None, why or "Updated")
 
     def _applied(self, ok, message):
         if not ok:
@@ -186,8 +222,33 @@ class SelfUpdater(QObject):
         if message != "Updated":
             QMessageBox.information(self.browser, "Updated", message)
         self.browser.store.save()
+        if (bundle := release_bundle()) is not None and self._staged is not None:
+            swap = release_update.swap_command(bundle, self._staged, os.getpid())
+            QProcess.startDetached(swap[0], swap[1:])
+            QApplication.instance().quit()
+            return
         command = relaunch_command()
         # Wait for this process to be gone (it holds the single-instance socket), then start again
         script = 'while kill -0 "$0" 2>/dev/null; do sleep 0.2; done; exec "$@"'
         QProcess.startDetached("/bin/sh", ["-c", script, str(os.getpid()), *command])
         QApplication.instance().quit()
+
+
+class UpdatesFeature(Feature):
+    """Updates from GitHub: the daily look, Check Now in Settings, and the ⌘T command."""
+    name = "self_update"
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.updater = SelfUpdater(window)
+        if release_bundle() is not None and not os.environ.get("PYBROWSER_DATA_DIR"):
+            threading.Thread(target=release_update.tidy, daemon=True).start()  # (what the last update left)
+
+    def check(self):
+        self.updater.check(manual=True)
+
+    def commands(self):
+        return [(f"Check for {brand.NAME} Updates", "ph.arrows-clockwise", self.check)]
+
+
+FEATURE = UpdatesFeature

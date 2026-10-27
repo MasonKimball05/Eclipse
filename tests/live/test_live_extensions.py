@@ -39,7 +39,7 @@ def _js(target, source, timeout=10.0):
 
 def test_extension_messages_say_which_frame_they_come_from(window, site, other_origin):
     from browser.ext import chrome
-    host = window.extensions
+    host = window.feature("extensions").host
     ext_id = chrome.install_folder(FIXTURES / "frames_extension")
     host.add_extension(ext_id)
     assert wait_until(lambda: ext_id in host.backgrounds and not host.backgrounds[ext_id].isLoading(), 10)

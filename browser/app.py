@@ -8,9 +8,9 @@ from PyQt6.QtCore import QEvent, QObject, QTimer, QUrl
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication
 
-from . import backup, brand, crash, macos, spelling, storage, whats_new
+from . import backup, brand, crash, features, macos, spelling, storage, whats_new
 from .models import Store
-from .ext.chrome import register_scheme
+from .theme import DropdownLists
 from .webview import build_profile
 from .window import MainWindow
 
@@ -85,10 +85,11 @@ def run() -> int:
     QApplication.setApplicationName(brand.INTERNAL_NAME)  # where your data lives: never renamed
     QApplication.setApplicationDisplayName(brand.NAME)
     QApplication.setOrganizationName(brand.ORGANIZATION)
-    register_scheme()  # pbext:// (extension files) has to be known before the app starts
+    features.before_app()  # (pbext://, for extension files, has to be known before the app starts)
     spelling.prepare()  # where spell-check dictionaries live, also before the app starts
     macos.name_in_menu_bar(brand.NAME)
     app = QApplication(sys.argv)
+    app.installEventFilter(dropdowns := DropdownLists(app))  # (every dropdown's list, styled like the menus)
 
     links = _links(sys.argv[1:])
     if _hand_off(links):
@@ -120,6 +121,5 @@ def run() -> int:
     code = app.exec()
     window.shutdown()
     crash.clean_exit()
-    from .self_update import precompile
-    precompile()  # (what changed while it ran, pulled from GitHub say: so the next launch is quick)
+    features.after_app()
     return code

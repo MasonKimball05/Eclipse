@@ -5,10 +5,13 @@
 #   ./run.sh           run with your normal profile
 #   ./run.sh --fresh   run with a throwaway profile (wiped each launch)
 #   ./run.sh --reset   rebuild the virtualenv from scratch, then run
-#   ./run.sh --build-app   build Eclipse.app into /Applications (Dock icon, default browser);
-#                          add --sign "<identity>" [--notarize PROFILE] for a properly signed app
+#   ./run.sh --build-app   build Eclipse.app into /Applications (Dock icon, default browser): a launcher that
+#                          runs this checkout, signed with the team's certificate if this Mac has one
+#   ./run.sh --release     the release app in dist/: everything inside it, signed with the Developer ID;
+#                          add --notarize PROFILE to send it to Apple, --install to put it in /Applications
 #   ./run.sh --tests       run the unit tests
-#   ./run.sh --live-tests  run the live tests too (a browser window opens while they run, ~30 s)
+#   ./run.sh --live-tests  run the live tests too (a browser window opens while they run, ~3 min)
+#   ./run.sh --core        run without the features (browser/features.py): the plain browser
 #   ./run.sh <url>     open a link (in the already-running browser, if there is one)
 
 set -e
@@ -19,6 +22,7 @@ SCRIPT_DIR="${0:A:h}"
 VENV="$HOME/Library/Application Support/PythonBrowser/venv"
 PYTHON="${PYTHON:-python3}"
 BUILD_APP=0
+RELEASE=0
 TESTS=""
 PASS=()
 
@@ -34,11 +38,17 @@ for arg in "$@"; do
     --build-app)
       BUILD_APP=1
       ;;
+    --release)
+      RELEASE=1
+      ;;
     --tests)
       TESTS="unit"
       ;;
     --live-tests)
       TESTS="live"
+      ;;
+    --core)
+      export ECLIPSE_CORE_ONLY=1
       ;;
     *)
       PASS+=("$arg")
@@ -66,6 +76,9 @@ if [[ -n "$TESTS" ]]; then
     exec "$VENV/bin/python" -m pytest tests --live -q
   fi
   exec "$VENV/bin/python" -m pytest tests -q
+fi
+if (( RELEASE )); then
+  exec "$VENV/bin/python" tools/release.py "${PASS[@]}"  # e.g. --notarize PROFILE --install
 fi
 if (( BUILD_APP )); then
   exec "$VENV/bin/python" tools/build_app.py "${PASS[@]}"  # e.g. --sign "Developer ID Application: …"

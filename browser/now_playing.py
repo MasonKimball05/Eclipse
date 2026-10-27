@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QToolButton, QVBoxLayou
 import qtawesome as qta
 
 from .models import display_host
+from .features import Feature
 
 WORLD = 1  # the application world: the page's DOM, not its JavaScript
 POLL_MS = 1500
@@ -262,3 +263,39 @@ class NowPlaying(QObject):
         tab = self.tab
         if tab is not None:
             self.browser.activate_tab(tab)
+
+
+class NowPlayingFeature(Feature):
+    """The sidebar's card for a tab you've left that's playing music or a video."""
+    name = "now_playing"
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.player = NowPlaying(window)
+
+    @property
+    def card(self):
+        return self.player.card
+
+    def sidebar_cards(self):
+        self.player.card = NowPlayingCard(self.player)
+        return [self.player.card]
+
+    def profile_ready(self, profile):
+        self.player.attach_profile(profile)
+
+    def view_destroyed(self, tab):
+        self.player.forget(tab)
+
+    def audible_changed(self, tab):
+        self.player.audible_changed(tab)
+
+    def tab_shown(self, tab):
+        if tab is not None:
+            self.player.tab_shown(tab)
+
+    def tab_left(self, tab):
+        self.player.left_tab(tab)
+
+
+FEATURE = NowPlayingFeature

@@ -65,10 +65,11 @@ def new_permissions(old: dict, new: dict) -> set[str]:
 
 
 class Updater(QObject):
-    def __init__(self, browser):
+    def __init__(self, browser, host, installer):
         super().__init__(browser)
         self.browser = browser
-        self.host = browser.extensions
+        self.host = host
+        self.installer = installer
         self.store = browser.store
         self._timer = QTimer(self, interval=3600 * 1000, timeout=self._maybe_check)  # hourly: is a day up?
         self._timer.start()
@@ -158,7 +159,7 @@ class Updater(QObject):
                     "It comes from an insecure (http) address, so it may have been changed on the way here."):
                 return
             fresh.id, fresh.enabled = script.id, script.enabled  # same script: keep its stored values
-            self.browser.installer.fetch_requires_and_install(fresh, quiet=True)
+            self.installer.fetch_requires_and_install(fresh, quiet=True)
             self._report.append(f"{fresh.name} to {fresh.version}")
         finally:
             self._done_one()

@@ -296,3 +296,12 @@ def test_a_folder_moving_between_pinned_and_today_changes_its_tabs(store):
     a.custom_title = "Mine"
     store.move_tab(folder, TODAY)
     assert [t.home_url for t in folder.children] == [None, None] and a.custom_title is None
+
+
+def test_nothing_can_be_moved_into_a_live_folder(store):
+    folder = store.add_folder(store.active_space, "Feed")
+    folder.live = {"kind": "feed", "url": "x"}
+    tab = Tab("https://mine.example/")
+    store.add_tab(tab)
+    store.move_tab(tab, PINNED, folder=folder)
+    assert tab not in folder.children

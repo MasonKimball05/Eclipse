@@ -14,6 +14,7 @@ from PyQt6.QtGui import (QFont, QKeySequence, QShortcut, QTextBlockFormat, QText
 from PyQt6.QtWidgets import QTextEdit
 
 from . import storage
+from .features import Feature
 from .models import new_id
 
 NOTE_SCHEME = "note:"
@@ -204,3 +205,27 @@ class NoteEditor(QTextEdit):
         if not event.buttons():  # (a hand over a box: it can be clicked)
             over = self.box_at(event.position().toPoint()) is not None
             self.viewport().setCursor(Qt.CursorShape.PointingHandCursor if over else Qt.CursorShape.IBeamCursor)
+
+
+class NotesFeature(Feature):
+    """Notes: tabs you write in (note:<id>), made with ⇧⌘N or ⌘T."""
+    name = "notes"
+
+    def view_for(self, tab):
+        return NoteEditor(tab.url) if is_note(tab.url) else None
+
+    def new_note(self):
+        from .models import TODAY, Tab
+        window = self.window
+        tab = Tab(new_note_url(), "Untitled Note")
+        window.store.add_tab(tab, TODAY, window.store.active_space, 0)
+        window.activate_tab(tab)
+
+    def commands(self):
+        return [("New Note", "ph.note-pencil", self.new_note)]
+
+    def menus(self, add, menus, bar):
+        add(menus["File"], "New Note", "Ctrl+Shift+N", self.new_note)
+
+
+FEATURE = NotesFeature

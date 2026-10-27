@@ -2,7 +2,8 @@
 #
 # In a backup: Spaces, tabs, folders, favorites, history, the archive and every setting (which
 # includes Boosts, Air Traffic rules and the extension lists), plus notes, easels, Browse for Me answers,
-# userscripts, extensions and their saved data.
+# userscripts, extensions and their saved data, and your passwords and passkeys (encrypted, with their keys
+# only in the copy locked with your recovery PIN: without the PIN, a backup can't sign in anywhere).
 # Not in it: the browser profiles (cookies, logins, cache), which are private and large, and
 # favicons and ad-block lists, which rebuild themselves.
 #
@@ -20,7 +21,7 @@ from . import brand, storage
 
 FORMAT = "pythonbrowser-backup"
 INCLUDED = ["session.json", "notes", "easels", "browse", "userscripts", "extension_storage", "extensions",
-            "NativeMessagingHosts"]
+            "NativeMessagingHosts", "passkeys", "passwords", "recovery.json"]
 PENDING = "restore-pending"
 
 

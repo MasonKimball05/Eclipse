@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFileDialog, 
                              QLabel, QMenu, QMessageBox, QPushButton, QVBoxLayout, QWidget)
 
 from .. import brand
+from ..features import Feature
 from ..theme import stylesheet
 from ..webview import WebView
 from . import chrome, userscripts
@@ -99,9 +100,9 @@ class UserscriptDialog(QDialog):
 class Installer:
     """Every way into the runtime: links to .user.js files, files on disk, the Chrome Web Store, Arc."""
 
-    def __init__(self, browser):
+    def __init__(self, browser, host):
         self.browser = browser
-        self.host = browser.extensions
+        self.host = host
         self.busy = False  # a Web Store install is downloading or waiting for an answer
 
     def _error(self, title, message):
@@ -288,7 +289,7 @@ class ExtensionPopup(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.view = WebView(browser.profile, self)
-        browser.extensions.attach_page(self.view.page(), extension_page=True)
+        browser.feature("extensions").host.attach_page(self.view.page(), extension_page=True)
         layout.addWidget(self.view)
         # Like Chrome, start as small as possible and grow to fit the page; shown once it's sized
         self.resize(POPUP_MIN)
@@ -329,7 +330,8 @@ class ExtensionPopup(QFrame):
 
 def extensions_menu(browser, menu: QMenu):
     """The puzzle-piece menu: each extension (click for its popup), then management."""
-    host = browser.extensions
+    feature = browser.feature("extensions")
+    host = feature.host
     theme = browser.theme
     exts = [e for e in host.extensions.values() if e.enabled]
     for ext in exts:
@@ -337,7 +339,7 @@ def extensions_menu(browser, menu: QMenu):
         badge = host.badge_text(ext, browser.current_tab.url if browser.current_tab else "")
         label = ext.name + (f"   [{badge}]" if badge else "")
         action = menu.addAction(icon, label)
-        action.triggered.connect(lambda _=False, e=ext: browser.click_extension(e))
+        action.triggered.connect(lambda _=False, e=ext: feature.click_extension(e))
     scripts = [s for s in host.scripts.values() if s.enabled]
     if scripts:
         tab = browser.current_tab
@@ -352,12 +354,12 @@ def extensions_menu(browser, menu: QMenu):
         menu.addSeparator()
     if exts:
         pins = menu.addMenu(qta.icon("ph.push-pin", color=theme.panel_text), "Pin to URL Bar")
-        pinned = {e.id for e in browser.pinned_extensions()}
+        pinned = {e.id for e in feature.pinned_extensions()}
         for ext in exts:
             action = pins.addAction(ext.name)
             action.setCheckable(True)
             action.setChecked(ext.id in pinned)
-            action.triggered.connect(lambda _=False, e=ext: browser.toggle_pinned_extension(e))
+            action.triggered.connect(lambda _=False, e=ext: feature.toggle_pinned_extension(e))
     menu.addAction(qta.icon("ph.gear-six", color=theme.panel_text), "Manage Extensions…",
                    lambda: browser.open_settings("extensions"))
 
@@ -450,8 +452,9 @@ class ExtensionsPage(QWidget):
         super().__init__()
         self.settings = settings
         self.browser = settings.browser
-        self.host = self.browser.extensions
-        self.installer = self.browser.installer
+        self.feature = self.browser.feature("extensions")
+        self.host = self.feature.host
+        self.installer = self.feature.installer
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(14)
@@ -476,7 +479,7 @@ class ExtensionsPage(QWidget):
         actions.addWidget(add_ext)
         actions.addStretch(1)
         updates = QPushButton("Check for Updates")
-        updates.clicked.connect(lambda: self.browser.ext_updates.check(manual=True))
+        updates.clicked.connect(lambda: self.feature.updates.check(manual=True))
         actions.addWidget(updates)
         layout.addLayout(actions)
 
@@ -584,3 +587,227 @@ class ExtensionsPage(QWidget):
         if QMessageBox.question(self, "Remove Extension", f"Remove “{ext.name}” and its saved data?") == \
                 QMessageBox.StandardButton.Yes:
             self.host.remove_extension(ext.id)
+
+
+class ExtensionsFeature(Feature):
+    """Chrome extensions and userscripts, on our own runtime (Qt's own extension support crashes): the puzzle
+    piece and pinned extensions in the address pill, their popups and shortcuts, the Extensions page in
+    Settings, installing from the Chrome Web Store, files or Arc, and daily updates."""
+    name = "extensions"
+
+    def __init__(self, window):
+        super().__init__(window)
+        from .host import ExtensionHost
+        from .updates import Updater
+        self.host = ExtensionHost(window)  # userscripts and Chrome extensions (our own runtime)
+        self.installer = Installer(window, self.host)
+        self.updates = Updater(window, self.host, self.installer)  # daily update checks
+        self._shortcuts = []
+        self.host.changed.connect(self.install_shortcuts)
+        self.page = None    # (Settings' Extensions page, once it's been made)
+        self.chip = None
+
+    def shutdown(self):
+        self.host.shutdown()
+
+    def before_backup(self):
+        self.host._flush_storage()
+
+    # --- Pages -------------------------------------------------------------------------------------------
+
+    def profile_ready(self, profile):
+        self.host.attach_profile(profile)
+
+    def view_created(self, view, tab):
+        self.host.attach_page(view.page())
+
+    def page_menu(self, menu, request, view, tab):
+        self.host.extend_context_menu(view, menu, request)
+
+    def url_changed(self, tab, url):
+        self.host.tab_updated(tab, url=tab.url)
+
+    def load_finished(self, tab, ok):
+        self.host.tab_updated(tab, status="complete")
+
+    def tab_shown(self, tab):
+        if tab is not None:
+            self.host.tab_activated(tab)
+
+    def tab_closed(self, tab):
+        self.host.tab_removed(tab)
+
+    def console_message(self, tab, message):
+        from .host import STORE_MESSAGE
+        if not message.startswith(STORE_MESSAGE):
+            return False
+        # "Add to Eclipse" on a Chrome Web Store page: only our button knows the secret, and only on the store
+        prefix = self.host.store_prefix
+        if (message.startswith(prefix) and QUrl(tab.url).host() == "chromewebstore.google.com"
+                and not self.installer.busy):
+            self.installer.extension_from_store(message[len(prefix):])
+        return True
+
+    # --- The puzzle piece and pinned extensions ----------------------------------------------------------
+
+    def pill_buttons(self):
+        from PyQt6.QtCore import QPoint, QSize
+        from PyQt6.QtWidgets import QHBoxLayout, QToolButton, QWidget
+        chip = self.chip = QWidget()
+        chip.setProperty("pill_end", True)  # (after the shield, at the end of the pill)
+        row = QHBoxLayout(chip)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
+        self.pinned_row = QHBoxLayout()  # pinned extensions get their own buttons, just left of the puzzle piece
+        self.pinned_row.setContentsMargins(0, 0, 0, 0)
+        self.pinned_row.setSpacing(0)
+        self.pinned_buttons = []
+        row.addLayout(self.pinned_row)
+        # The puzzle piece, shown once anything is installed; carries a badge like Chrome's
+        self.puzzle = QToolButton()
+        self.puzzle.setObjectName("ExtButton")
+        self.puzzle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.puzzle.setIconSize(QSize(12, 12))
+        self.puzzle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.puzzle.setToolTip("Extensions")
+        self.puzzle.clicked.connect(lambda: self.show_menu(self.puzzle.mapToGlobal(QPoint(0, self.puzzle.height()))))
+        row.addWidget(self.puzzle)
+        self.host.badges_changed.connect(lambda: self.update_pill(self.window.current_tab))
+        chip.hide()
+        return [chip]
+
+    def update_pill(self, tab):
+        from PyQt6.QtCore import QSize
+        from PyQt6.QtGui import QIcon
+        from PyQt6.QtWidgets import QToolButton
+        import qtawesome as qta
+        from ..theme import letter_icon
+        if self.chip is None:
+            return
+        window, host = self.window, self.host
+        for button in self.pinned_buttons:
+            button.hide()
+            button.setParent(None)
+            button.deleteLater()
+        self.pinned_buttons = []
+        if not host.extensions and not host.scripts:
+            self.chip.hide()
+            window.sidebar.fit_pill()
+            return
+        url = tab.url if tab else ""
+        pinned = self.pinned_extensions()
+        for ext in pinned:
+            button = QToolButton()
+            button.setObjectName("ExtButton")
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            button.setIconSize(QSize(14, 14))
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.setIcon(QIcon(str(ext.icon_file)) if ext.icon_file else letter_icon(ext.name, window.theme.accent))
+            button.setText(host.badge_text(ext, url))
+            button.setToolTip(ext.name)
+            button.setAccessibleName(ext.name)
+            button.clicked.connect(lambda _=False, e=ext, b=button: self.click_extension(e, b))
+            self.pinned_row.addWidget(button)
+            self.pinned_buttons.append(button)
+        # The puzzle piece shows a badge only for extensions that aren't pinned (those show their own)
+        badge = next((b for b in (host.badge_text(e, url) for e in host.extensions.values()
+                                  if e.enabled and e not in pinned) if b), "")
+        self.puzzle.setIcon(qta.icon("ph.puzzle-piece", color=_alpha(window.theme.text, 0.55)))
+        self.puzzle.setText(badge)
+        self.chip.show()
+        window.sidebar.fit_pill()
+
+    def show_menu(self, pos):
+        menu = self.window._menu()
+        extensions_menu(self.window, menu)
+        menu.exec(pos)
+
+    def pinned_extensions(self):
+        pinned = self.window.store.settings.get("pinned_extensions", [])
+        exts = self.host.extensions
+        return [exts[i] for i in pinned if i in exts and exts[i].enabled]
+
+    def toggle_pinned_extension(self, ext):
+        store = self.window.store
+        pinned = store.settings.setdefault("pinned_extensions", [])
+        if ext.id in pinned:
+            pinned.remove(ext.id)
+        else:
+            pinned.append(ext.id)
+        store.schedule_save()
+        self.update_pill(self.window.current_tab)
+
+    def click_extension(self, ext, button=None):
+        from PyQt6.QtCore import QPoint
+        window = self.window
+        if ext.popup:
+            button = button or self.puzzle
+            anchor = button.mapToGlobal(QPoint(0, button.height() + 4))
+            ExtensionPopup(window, ext, anchor)  # shows itself once sized
+        else:  # no popup: the extension handles the click itself (chrome.action.onClicked)
+            tab = window.current_tab
+            self.host.broadcast("action.clicked:" + ext.id, [self.host.tab_info(tab) if tab else None],
+                                only_extension=ext.id)
+
+    # --- Shortcuts, menus, commands, Settings ------------------------------------------------------------
+
+    def install_shortcuts(self):
+        """Keyboard shortcuts from extensions' manifests (e.g. ⌘⇧X opens Proton Pass), unless one would take
+        over a shortcut the browser already uses."""
+        from PyQt6.QtGui import QAction, QKeySequence, QShortcut
+        window = self.window
+        for shortcut in self._shortcuts:
+            shortcut.setParent(None)
+            shortcut.deleteLater()
+        self._shortcuts = []
+        taken = {a.shortcut().toString() for a in window.findChildren(QAction) if not a.shortcut().isEmpty()}
+        for ext in self.host.extensions.values():
+            if not ext.enabled:
+                continue
+            for name, keys, _description in ext.commands:
+                sequence = QKeySequence(keys)
+                if sequence.isEmpty() or sequence.toString() in taken:
+                    continue
+                taken.add(sequence.toString())
+                shortcut = QShortcut(sequence, window)
+                shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+                shortcut.activated.connect(lambda e=ext, n=name: self._command(e, n))
+                self._shortcuts.append(shortcut)
+
+    def _command(self, ext, name):
+        if name in ("_execute_action", "_execute_browser_action", "_execute_page_action"):
+            self.click_extension(ext)
+            return
+        tab = self.window.current_tab
+        self.host.broadcast("commands:" + ext.id, [name, self.host.tab_info(tab) if tab else None],
+                            only_extension=ext.id)
+
+    def menus(self, add, menus, bar):
+        self.install_shortcuts()  # after every menu, so they can't steal a browser shortcut
+
+    def commands(self):
+        window = self.window
+        return [("Extensions & Userscripts", "ph.puzzle-piece", lambda: window.open_settings("extensions")),
+                ("Install Extension from Chrome Web Store", "ph.puzzle-piece",
+                 lambda: self.installer.extension_from_store()),
+                ("Import Extensions from Arc", "ph.arrow-square-in", self.installer.import_from_arc)]
+
+    def settings_pages(self):
+        return [("extensions", "ph.puzzle-piece", "Extensions", self._page, "shortcuts")]
+
+    def _page(self, settings):
+        self.page = ExtensionsPage(settings)
+        return self.page
+
+    def settings_shown(self, settings):
+        if self.page is not None:
+            self.page.refresh()
+
+
+def _alpha(color, alpha):
+    c = color.__class__(color)
+    c.setAlphaF(alpha)
+    return c
+
+
+FEATURE = ExtensionsFeature

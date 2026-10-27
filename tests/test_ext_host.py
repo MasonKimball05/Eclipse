@@ -2,9 +2,9 @@ import json
 
 from PyQt6.QtCore import QObject, QUrl
 
+from browser.webview import EXTENSION_CALL
 from browser.ext.chrome import ChromeExtension
 from browser.ext.host import EXT, USERSCRIPT, ExtensionHost, PageBridge, WorldBridge
-from browser.webview import EXTENSION_CALL
 
 
 class FakeFrame:

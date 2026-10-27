@@ -8,7 +8,6 @@ from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton
                              QToolButton, QVBoxLayout, QWidget)
 
 from . import motion
-from .ai import looks_like_question
 from .models import display_host
 
 RADIUS = 10
@@ -146,7 +145,8 @@ class FindBar(QFrame):
         self.count.setText(f"{active}/{total}" if self.input.text() and not self.ask_hint.isVisible() else "")
 
     def _is_question(self):
-        return self.browser.claude.available and looks_like_question(self.input.text())
+        claude = self.browser.feature("claude")  # (Ask on Page: a question asks Claude about the page)
+        return claude is not None and claude.is_question(self.input.text())
 
     def _on_text(self):
         self.ask_hint.setVisible(self._is_question())
@@ -167,7 +167,7 @@ class FindBar(QFrame):
         self._ask_id += 1
         ask_id = self._ask_id
         self._show_answer("*Reading the page…*")
-        self.browser.ask_page(self.input.text().strip(), lambda req: self._attach(req, ask_id))
+        self.browser.feature("claude").ask_page(self.input.text().strip(), lambda req: self._attach(req, ask_id))
 
     def _attach(self, request, ask_id):
         if ask_id != self._ask_id or not self.isVisible():

@@ -20,8 +20,8 @@ from PyQt6.QtWidgets import QApplication  # noqa: E402
 @pytest.fixture(scope="session", autouse=True)
 def qapp():
     if QApplication.instance() is None:
-        from browser.ext.chrome import register_scheme
-        register_scheme()  # pbext:// must be known before the app exists, as in the real app
+        from browser import features
+        features.before_app()  # (pbext://, for extension files, must be known before the app exists, as in the app)
     # (Qt WebEngine needs a program name to start Chromium: never an empty argv)
     return QApplication.instance() or QApplication(["pytest"])
 
@@ -33,6 +33,22 @@ def data_dir(tmp_path, monkeypatch):
     from browser import storage
     storage._icons.clear()
     return tmp_path / "data"
+
+
+@pytest.fixture(autouse=True)
+def no_real_keychain(monkeypatch):
+    """Secrets go to a dict in every test, never your login Keychain (a test that passes its own throwaway
+    keychain file still reaches the real thing, in that file)."""
+    from browser import secure_store
+    kept = {}
+    real = (secure_store.store, secure_store.load, secure_store.delete)
+    monkeypatch.setattr(secure_store, "store", lambda account, secret, keychain=None: real[0](account, secret, keychain)
+                        if keychain is not None else (bool(secret) and kept.__setitem__(account, secret) is None))
+    monkeypatch.setattr(secure_store, "load", lambda account, keychain=None: real[1](account, keychain)
+                        if keychain is not None else kept.get(account))
+    monkeypatch.setattr(secure_store, "delete", lambda account, keychain=None: real[2](account, keychain)
+                        if keychain is not None else (kept.pop(account, None), True)[1])
+    return kept
 
 
 @pytest.fixture

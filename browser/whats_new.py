@@ -8,12 +8,34 @@ from . import brand
 from .motion import FadesIn
 from .theme import quiet_scrollbars, stylesheet
 
-EDITION = 9
+EDITION = 12
 SETTING = "whats_new_seen"
 
 NOTES = """
 ## Lately
 
+- **Updates for the app you download**: the signed Eclipse checks for a new release once a day and offers it.
+  Before anything changes, macOS checks the download is signed by Eclipse's maker and notarized by Apple.
+- **Sign-in boxes inside a page** (in a frame) get your saved passwords too, when they're the same site as the
+  page. A frame from anywhere else, like an ad, never does.
+- **A smaller download**: the parts of Qt Eclipse never uses are left out.
+- **Passwords**: Eclipse saves and fills your passwords (after Touch ID), and imports them from Arc or from the
+  file Apple's Passwords app exports. They're encrypted, with the key in the Keychain where only Eclipse can read
+  it, so a password stealer can't just copy them. Signing up, it offers a strong password; the list in
+  Settings → Passwords & Passkeys points out reused and easy-to-guess ones.
+- **Passkeys**: when a site offers to make one, Eclipse can save it, and you sign in with Touch ID or your Mac's
+  password, no password to type. Set a recovery PIN in Settings → Passkeys and they go into your backups, locked
+  with it, so you can get them back on another Mac. Security keys (a YubiKey, say) work too.
+- **Dropdowns match the menus**: in Settings, the Space editor and everywhere else, a dropdown's list opens
+  just under its box, as wide as it, rounded and in your Space's colours.
+- **Verified builds**: Settings → General says whether this copy of Eclipse is a signed release, unchanged
+  since, or built from source. macOS does the checking.
+- **Your cards** fit Settings at its usual size, and a new Eclipse card starts in its own colours. Your Arc card
+  is copied out of Arc as soon as Eclipse starts, so it's safe when Arc's data goes.
+- **Your cards** (Settings, the first page): a fresh Eclipse membership card, and your Arc card kept as it was.
+- **Ask About This Page** (⇧⌘A): a conversation about the page in a panel beside it, with follow-ups. Drag its
+  edge to resize it, or pop it out into a small window that can stay on top.
+- **Livelier hover**: buttons and tiles everywhere light up under the pointer, tinted with your Space's colour.
 - **Arc's type**: the sidebar and ⌘T are set in SF Pro Medium, as in Arc.
 - **Notes** have checklists (type "[] ", click a box to tick it, or ⇧⌘L) and headings ("# ").
 - **A fresh start**: Eclipse opens on your Space's colours, like Arc, not on the last page you had open.

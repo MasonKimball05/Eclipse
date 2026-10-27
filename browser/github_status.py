@@ -17,6 +17,7 @@ from PyQt6.QtCore import QObject, QProcess, QTimer, QUrl, pyqtSignal
 
 from . import storage
 from .downloads import find_tool
+from .features import Feature
 
 FIELDS = "state,isDraft,reviewDecision,mergeable,statusCheckRollup"
 FRESH_S = 60          # an answer is good for this long (and gh failing isn't asked again for as long)
@@ -236,3 +237,98 @@ class GitHubRepos(QObject):
         process.errorOccurred.connect(lambda error: error == QProcess.ProcessError.FailedToStart and (
             setattr(self, "_process", None), process.deleteLater()))
         process.start(gh, ["repo", "list", "--limit", "500", "--json", REPO_FIELDS])
+
+
+class GitHubFeature(Feature):
+    """GitHub, through the gh CLI: your repos in ⌘T, and on a pull request a chip in the address pill that says
+    how its checks are doing and what review decided (click it for each check)."""
+    name = "github"
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.repos = GitHubRepos(window)  # your repos, for ⌘T
+        self.pr_status = PullStatus(window)  # a pull request's checks and review, for the chip
+        self.pr_status.changed.connect(self._answered)
+        self.chip = None
+
+    def command_bar_opened(self):
+        self.repos.refresh_if_stale()  # (in the background: for next time, if it's old)
+
+    def command_results(self, bar, query, seen):
+        from .command_bar import Result
+        if bar.mode == "split":
+            return []
+        found = []
+        for repo in matching_repos(self.repos.repos, query):
+            if repo["url"] in seen:
+                continue
+            seen.add(repo["url"])
+            detail = repo.get("description") or repo.get("nameWithOwner", "")
+            found.append(Result(repo.get("name", ""), detail, "GitHub",
+                                bar._icon("ph.lock-simple" if repo.get("isPrivate") else "ph.github-logo"),
+                                bar._open(repo["url"])))
+        return found
+
+    # --- The pull request chip ---------------------------------------------------------------------------
+
+    def pill_buttons(self):
+        from PyQt6.QtCore import QPoint, Qt
+        from PyQt6.QtWidgets import QToolButton
+        self.chip = QToolButton()
+        self.chip.setObjectName("PrChip")
+        self.chip.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.chip.clicked.connect(lambda: self.show_checks(self.chip.mapToGlobal(QPoint(0, self.chip.height()))))
+        self.chip.hide()
+        return [self.chip]
+
+    def update_pill(self, tab):
+        if self.chip is None:
+            return
+        data = self.pr_status.lookup(tab.url) if tab is not None and tab.url else None
+        if data is None:
+            self.chip.hide()
+        else:
+            text, state, tip = summarize(data)
+            self.chip.setText(text)
+            self.chip.setToolTip(tip)
+            self.chip.setProperty("state", state)
+            self.chip.style().unpolish(self.chip)
+            self.chip.style().polish(self.chip)
+            self.chip.show()
+        self.pr_status.watch(tab.url if tab is not None else "", data)
+
+    def _answered(self, url):
+        tab = self.window.current_tab
+        if tab is not None and github_pull(tab.url) is not None and github_pull(tab.url) == github_pull(url):
+            self.update_pill(tab)
+            self.window.sidebar.fit_pill()
+
+    def show_checks(self, pos):
+        """The chip's menu: each check (failing first), to open; the checks page; and look again now."""
+        import qtawesome as qta
+        window = self.window
+        tab = window.current_tab
+        pull = github_pull(tab.url) if tab is not None else None
+        data = self.pr_status.lookup(tab.url) if pull else None
+        if data is None:
+            return
+        menu = window._menu()
+        icons = {"pass": ("ph.check-circle", "#30a46c"), "fail": ("ph.x-circle", "#e5484d"),
+                 "running": ("ph.circle-dashed", "#f5a623")}
+        found = checks(data)
+        for name, state, link in found[:25]:
+            icon, color = icons[state]
+            action = menu.addAction(qta.icon(icon, color=color), name.replace("&", "&&"),
+                                    lambda link=link: window.open_url(link))
+            action.setEnabled(bool(link))
+        if not found:
+            menu.addAction("No checks on this pull request").setEnabled(False)
+        menu.addSeparator()
+        owner, repo, number = pull
+        window._act(menu, "ph.checks", "Open Checks Page",
+                    lambda: window.open_url(f"https://github.com/{owner}/{repo}/pull/{number}/checks"))
+        window._act(menu, "ph.arrows-clockwise", "Check Again", lambda: self.pr_status.lookup(tab.url, force=True))
+        menu.exec(pos)
+
+
+FEATURE = GitHubFeature

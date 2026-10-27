@@ -69,11 +69,11 @@ def unique_path(folder: Path, stem: str, suffix: str, current: Path | None = Non
 def tidy(browser, item, request):
     """Ask Claude for a better name for a finished BrowserDownload, then rename it."""
     path = Path(item.path)
-    if not path.exists() or not browser.claude.available:
+    if not path.exists() or not browser.feature("claude").claude.available:
         return
     page = request.page()
     title = page.title() if page is not None else ""
-    ask = browser.claude.ask(build_prompt(path.name, request.url().toString(), title, excerpt(path)))
+    ask = browser.feature("claude").claude.ask(build_prompt(path.name, request.url().toString(), title, excerpt(path)))
 
     def rename(reply):
         stem = clean_name(reply)

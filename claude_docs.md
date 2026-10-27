@@ -20,13 +20,37 @@ This builds `/Applications/Eclipse.app`, in Finder's Applications folder, which 
 - **Links from other apps** (Slack, Mail, Messages…) open in a Little window, the same as Arc.
 - **No rebuild needed for code changes:** the app is a small native launcher that runs this checkout with its virtualenv, so your next launch picks them up. Rebuild only if you move the checkout or Homebrew moves to a new Python version (3.15+). If you open an app whose checkout has moved, it says so ("Eclipse can't find its code") and how to rebuild, instead of quietly not starting.
 - **Only one copy runs.** Opening it again, or running `./run.sh https://…`, hands the link to the window that's already open.
-- **Signing:** by default the app is signed ad hoc, which is all your own Mac needs. To sign it properly (needed for Apple's Passwords helper; see Extensions below):
+- **Signing:** the build signs the app with the best certificate of Eclipse's team (`verified.TEAM_ID`) on this Mac: a Developer ID Application one, else an Apple Development one, else ad hoc. A real certificate keeps the app the same app to the Keychain across rebuilds, so the key to your passwords doesn't ask again each time (an ad hoc app is a new app every build). Choose one yourself with `--sign "IDENTITY"`, or `--sign -` for ad hoc:
 
   ```bash
   ./run.sh --build-app --sign "Developer ID Application: Your Name (TEAMID)"
   ```
 
   This uses Apple's hardened runtime, with the exceptions a Python/Qt browser needs (loading the virtualenv's libraries, and run-time code for JavaScript and ctypes). Tested with an Apple Development certificate: the app runs and loads pages normally. To also notarize, save your credentials once with `xcrun notarytool store-credentials PROFILE --apple-id you@example.com --team-id TEAMID`, then add `--notarize PROFILE`. `--output FOLDER` builds elsewhere for testing; only the copy in /Applications registers as a browser with macOS.
+
+### The release app (to share)
+
+```bash
+./run.sh --release
+```
+
+This builds `dist/Eclipse.app` (and `dist/Eclipse.zip` to send). Unlike `--build-app`, everything is inside it: its own Python, Qt and Qt WebEngine, and Eclipse's code. It runs without this checkout, and doesn't change when the checkout does. It's for **Macs with Apple silicon**, on the macOS it's built on or later: Homebrew's Python and OpenSSL are built for the Mac they're installed on (macOS 27 today), and PyQt's Qt is Apple-silicon only. The build works out the real minimum from the binaries and writes it into the app, so an older Mac says it needs a newer macOS rather than failing to start. (To reach older Macs, it would need python.org's Python, which is built for macOS 11 and up.)
+
+- **Signed with the Developer ID** ("Developer ID Application: Mason Kimball (F4P3T9JYP2)"), found in the Keychain by itself. Every library and Qt's helper app is signed from the inside out, with the hardened runtime and Apple's secure timestamp, as notarization requires. Library validation stays on: everything the app loads is signed by the team.
+- **Sealed:** the Python is compiled ahead of time and Python is told never to write into the app, since one changed file breaks the signature. That's what lets **Settings → General** say **Verified** for this copy (once it's notarized), and **Not verified** for one that's been changed.
+- **Notarizing:** save your Apple ID's notarization credentials once (they stay in your Keychain; make an app-specific password at appleid.apple.com first):
+
+  ```bash
+  xcrun notarytool store-credentials eclipse-notary --apple-id you@example.com --team-id F4P3T9JYP2
+  ```
+
+  Then `./run.sh --release --notarize eclipse-notary` sends it to Apple, waits (a few minutes), and staples the ticket into the app, so it opens without a warning on any Mac, even offline.
+- `--install` also puts it in /Applications, in place of the development app. Both use the same data folder, so your Spaces, passwords and settings carry over. The first time, macOS asks whether the release may use the passwords' key (it's signed differently from the development app). Click Always Allow.
+- **Versions:** each build is numbered by when it was made: version `2026.10.27`, build `202610271452` (what updates compare).
+- **Publishing:** `./run.sh --release --notarize eclipse-notary --publish` also puts it on GitHub as a release (tag `release-<build>`, with `Eclipse.zip` and the commit subjects since the last one as its notes), through `gh`. It refuses a checkout with uncommitted changes or a commit that isn't pushed, so a release is always a commit anyone can look at.
+- **Updates:** a release copy checks GitHub's latest release once a day and offers it (*Update & Restart*). The download is checked by macOS before anything happens: signed by the maker's team (codesign, with the same requirement as Verified), notarized (spctl), Eclipse's bundle ID, and a newer build. Anything else is refused. After Eclipse quits, the new copy takes the old one's place (which goes back if that fails), and Eclipse opens again. Same team, same signature requirement, so the Keychain doesn't ask again. A copy macOS is running from Downloads (translocated) asks to be moved to Applications first. Code: `browser/release_update.py`.
+- **Checked before signing:** the build runs the finished app's own Qt and Eclipse offscreen (no windows): every module imports, and Qt WebEngine loads a page. A build that wouldn't run stops there.
+- How it's put together: `tools/release.py`. Python's own libraries from Homebrew (OpenSSL, SQLite, zstd, xz, mpdecimal) are copied into `Contents/Frameworks` with their paths rewritten to point there. Of Qt, only what Eclipse uses goes in: the Python modules it imports (`QT_MODULES`), the plugins they load (`QT_PLUGINS`), and the Qt libraries those link to, worked out from the links themselves. That leaves out Qt Quick 3D, Designer, multimedia and its FFmpeg, QML and the database drivers, about a quarter of the app.
 
 ### From the terminal
 
@@ -67,7 +91,7 @@ With VoiceOver, every tab, folder, Favorite and sidebar button reads out its nam
 
 ### Importing from Arc
 
-**File → Import from Arc…** (also offered automatically on first launch) reads Arc's local data in `~/Library/Application Support/Arc`, read-only:
+**File → Import from Arc…** (also offered automatically on first launch, except in a throwaway profile: tests and `--fresh`) reads Arc's local data in `~/Library/Application Support/Arc`, read-only:
 
 - **Brought across:** Spaces (with name, emoji and colour), pinned tabs including nested folders, Favorites, Today tabs, your last 5,000 history entries (used for ⌘T suggestions) and site icons.
 - **Not brought across:** logins and cookies, which are encrypted with Arc's own key, so you'll sign in again. Extensions are imported separately: *Settings → Extensions → Add Extension → Import from Arc* (see Extensions & userscripts below).
@@ -83,6 +107,7 @@ With VoiceOver, every tab, folder, Favorite and sidebar button reads out its nam
 
 | Feature | How to use it |
 |---|---|
+| **Your cards** | The first page of Settings, named after you (as Arc's was): your **Eclipse card**, a little membership card with your name, a made-up title (*Shuffle* for another), a shape and colours you choose, the day you started using Eclipse, and a stamp for each year since. Below it, if you had one, your **Arc card**, just as it was in Arc (name, title, colours, shape and the day you joined). It's copied out of Arc as soon as Eclipse starts, into Eclipse's settings and into `arc-card.json` in its data folder, so it stays after Arc deletes its data. Either card copies or saves as an image. Only the card file and the name and join date from Arc's account file are read, never its sign-in tokens or email. |
 | **Editing a Space** | Click the Space's name at the top of its tabs, or right-click it or its icon in the switcher. A popover lets you rename it, pick an icon (line icons or emoji), choose a colour, switch its profile, open the theme editor, add a folder or delete the Space. Every change applies immediately. |
 | **Space themes** | Right-click a Space and choose *Edit Theme…*. Pick up to 3 colours for a gradient, set the intensity, choose light/dark/auto, and add optional grain. Changes preview live. |
 | **Split View** | Choose *Tabs → Split View…* (⌃⇧=), drag a tab from the sidebar onto the page, or right-click a tab and choose *Open in Split View*. Up to 4 panes. Click a pane to focus it; hover a pane and click × to take it out, or press ⌃⇧- to separate. Panes settle in with a short crossfade. |
@@ -116,7 +141,7 @@ With VoiceOver, every tab, folder, Favorite and sidebar button reads out its nam
 | **Pull request status** | On any page of a GitHub pull request, a chip in the URL pill says how its checks are doing (✓ 4 green, ✕ 1 failing red, ● 2 running amber) and what review decided (Approved, Changes requested), or that it's Merged, Closed, a Draft, or has Conflicts. Click it for each check, failing first, to open its log; *Open Checks Page*; or *Check Again*. Read with `gh pr view` (private repos too), kept a minute; while checks run it looks again every 30 seconds as long as you're on the page. |
 | **Your repos in ⌘T** | Type a few letters of one of your GitHub repos' names ("grad", "parliament new") and it's offered, with its description, to open on GitHub. The list comes from `gh repo list`, kept in the data folder and refreshed in the background when ⌘T opens and it's over an hour old. |
 | **Traffic lights** | Like Arc, the window's close/minimise/zoom buttons belong to the sidebar: there while it is (on the right too), gone while it's hidden, and out with it when it slides out over the page. They stay dim until the pointer comes near. |
-| **Site icons** | Pinned tabs, Favorites and Today tabs show their sites' icons even before you open them: for any site without one yet, Eclipse reads its home page (without your cookies or sign-ins), takes the best icon it names (a touch icon, an SVG or the largest PNG, else `/favicon.ico`) and keeps it with the icons pages give it. Each site is tried once a session, a few at a time. |
+| **Site icons** | Pinned tabs, Favorites and Today tabs show their sites' icons even before you open them: for any site without one yet, Eclipse reads its home page (without your cookies or sign-ins), takes the best icon it names (a touch icon, an SVG or the largest PNG, else `/favicon.ico`) and keeps it with the icons pages give it. Each site is tried once a session, a few at a time. Part of a site with an icon of its own keeps it for that part (Google Maps' pin, a subreddit's), so opening Maps doesn't turn your Google Favorite into a pin. |
 | **Links that open apps** | A page can't open another app by itself (Zoom, VS Code, Mail, FaceTime…): a card at the top of the page says *zoom.us wants to open zoom.us*, with *Cancel*, *Always Allow* (for that site and that kind of link; not in private windows) and *Open*. The buttons take a moment to become clickable, so a page can't slip the question under a click; a tab in the background can't ask, and pages you can't see (an extension's background, Browse for Me) never open apps at all. Remembered choices are in *Settings → Privacy → Site permissions*. |
 | **Copy Links** | Right-click a folder → *Copy Links*, or the archive button → *Copy Links of Today's Tabs*, or ⌘T → "Copy Links of All Tabs in This Space": a Markdown list (`- [Title](url)`), one line per tab. |
 | **Print, PDF & saving** | ⌘P prints, ⌥⌘P saves the page as a PDF, ⇧⌘S saves it as a web archive (.mhtml), and ⌥⇧⌘C copies the page as a Markdown link (`[Title](url)`). |
@@ -126,7 +151,7 @@ With VoiceOver, every tab, folder, Favorite and sidebar button reads out its nam
 | **Reader view** | ⌥⌘R (or ⌘T → "Reader View") shows just the article: a clean column with the site, title and reading time, in light, sepia or dark, with bigger or smaller text. It's rebuilt from safe tags and shown with JavaScript off. Esc closes it. |
 | **Translate Page** | ⌘T → "Translate Page", or *Translate* in Reader view: the page's text is translated in place by the local Claude CLI, top of the page first, into your Mac's language. Run it again to show the original. Code and anything marked `translate="no"` is left alone. |
 | **Crash recovery** | Tabs are saved as you go (with the previous copy kept as a spare), so after a crash everything comes back, with a note saying so. A page whose renderer crashes shows a card with Reload; one in the background reloads when you return to it. Errors and hard-crash stacks go to the `logs` folder (⌘T → "Show Crash Logs"). |
-| **Updates** | Once a day Eclipse checks its GitHub branch and offers *Update & Restart* when there are new commits: it fast-forwards the checkout, installs new requirements, and relaunches with your tabs. A checkout with uncommitted changes or unpushed commits is never touched. *Settings → General → Updates* has Check Now. |
+| **Updates** | Once a day Eclipse checks its GitHub branch and offers *Update & Restart* when there are new commits: it fast-forwards the checkout, installs new requirements, and relaunches with your tabs. A checkout with uncommitted changes or unpushed commits is never touched. The release app updates from GitHub's releases instead, after macOS has checked the download is signed and notarized (see *The release app*). *Settings → General → Updates* has Check Now. |
 | **Private windows** | ⇧⌘P (*File → New Private Window*, ⌘T, or right-click a link → *Open Link in Private Window*). A dark window with its own tabs, sharing one in-memory profile: no history, suggestions, site icons, zoom levels, remembered permissions or page text are kept, and extensions don't run. Cookies and logins are forgotten when the last private window closes. Ads are still blocked. |
 | **Clean links** | Tracking tags such as `utm_source`, `fbclid` and `gclid` are taken off a link before it opens, and off links you copy (⇧⌘C, *Copy Link*, the Markdown link). Everything else in the address stays exactly as it was. YouTube's and Spotify's `si` share tags go too. Off in *Settings → Privacy*. |
 | **Certificate warnings** | A site with a bad security certificate (expired, for another site, or not from a trusted authority) shows *This connection isn't private* instead of loading. **Go Back** returns you to the previous page, or closes the tab if it was opened just for that site. *Details* says what's wrong and, where the site allows it, offers *Visit Anyway* for the rest of the session. Local development servers say that this is expected. |
@@ -161,6 +186,7 @@ Set up in *Settings → My Apps* (addresses default to your setup: homebase and 
 
 ### How it feels
 
+- **Hover:** buttons, tiles and rows all light up under the pointer, with a hint of the Space's colour. In the sidebar the highlight fades in and out, as in Arc.
 - **Motion:** the sidebar slides away and back (⌘S) and slides out from the edge when hidden, the command bar settles into place as the page dims, the sidebar slides between Spaces, and toasts, notification banners and permission cards fade in and out. Everything is under a quarter of a second. With *Reduce motion* on in macOS's Accessibility settings, things just appear.
 - **Type:** SF Pro, the Mac's own font, as in Arc: Medium weight for the sidebar's tabs, folders and address, and for ⌘T's results (Arc's own fonts in its app bundle, such as Inter, are only for Boosts).
 - **Controls:** on/off settings are macOS-style switches, and sliders match them, in your Space's colour (system blue for grey Spaces). Scrollbars stay hidden until you scroll or point at them.
@@ -242,6 +268,7 @@ These use the `claude` command-line tool (Claude Code) that's already logged in 
 | **Tidy Tab Titles** | Pin a tab and Claude renames it to something short, like "Arc Browser". To redo it, pick *Tabs → Tidy Tab Title*. |
 | **Tidy Tabs** | Click **✦ Tidy** above Today, which appears once you have 4+ loose Today tabs, or use *Tabs → Tidy Today's Tabs*. Claude groups related tabs into topic folders such as "Rome Trip" or "React Docs", and leaves unrelated ones alone. For 15 seconds afterwards, **↶ Undo Tidy** puts everything back. Claude only sees tab titles and site names. |
 | **Ask on Page** | ⌘F, type a question ("who owns this?" or "summarize"), then press Return. The answer is based on the page's text. |
+| **Ask About This Page** | ⇧⌘A (*View → Ask About This Page*, or ⌘T): a panel beside the page for a conversation about it. Start with *Summarize*, *Key points* or *Explain simply*, or type a question; follow-ups know what was said. Each tab keeps its own conversation (until it closes), and every question reads the page as it is now. ↺ starts over, ⇧⌘A closes it. Drag its edge by the page to make it wider (double-click for its usual width). ⧉ pops it out into a small window of its own that follows the tab you're on and stays on top of other windows while its pin is in (click the pin to let it go behind them); ⧉ there puts it back. ⇧⌘A opens it wherever it was last. |
 | **Command bar answers** | ⌘T, type a question. Ending it with "?" makes "Ask Claude" the top result. The answer streams in right there. |
 | **Browse for Me** | In ⌘T, type a question and press ⌘↩ (or pick *Browse for Me*). It searches DuckDuckGo, reads the top results one at a time in the background, and opens a tab with one answer that cites its sources as numbered links. The answer is saved, so it survives restarts. |
 | **5-second Previews** | Hover a link and tap Shift. A card summarizes the linked page; click the card to open it. |
@@ -252,6 +279,46 @@ How it works (`browser/ai.py`):
 - Starting the CLI takes about 8 seconds. To hide that, one `claude -p` process is kept **warm**, already started and waiting for input. Answers begin in under a second.
 - Each process answers one request (a fresh context every time) and is then replaced.
 - Web pages are untrusted, so the CLI runs with **all tools disabled** (`--tools ""`), no MCP servers, no settings or CLAUDE.md files, and from a neutral folder. The worst a malicious page can do is make an answer wrong.
+
+### Passwords
+
+Eclipse keeps your passwords, encrypted, and fills them in. Everything's in **Settings → Passwords & Passkeys**.
+
+- **Saving:** sign in somewhere and a card offers **Save your password for github.com?** (or **Update…** when it changed), with **Never for This Site**. A sign-in that asks for the username on a page of its own (Google's, Microsoft's) saves it with the password from the next page.
+- **Strong passwords:** making an account, a card offers one (three groups of six, like Apple's Passwords); **Use Strong Password** fills it in, password and confirm both, and it's saved when you send the form.
+- **Filling:** on a sign-in page, a card offers your accounts for that site. Picking one asks for **Touch ID or your Mac's password** first: once each time Eclipse opens, or every time (your choice). Nothing is ever filled by itself. A site only gets its own passwords, or its own subdomains' (accounts.google.com's on google.com, never one github.io site's on another), and never on a page sent in the clear (http).
+- **Sign-in forms in a frame** (a sign-in box embedded in the page) are filled and saved too, when the frame is the same site as the page (accounts.example.com's inside example.com). A frame from another site, like an ad, is never offered a password. The frame's address comes from Eclipse's script, which the page can't touch, and filling runs in that frame alone.
+- **Importing:** **Import ▾ → From Arc…** reads Arc's saved passwords directly. macOS asks whether Eclipse may use Arc's key; click Allow. **From a File…** takes the CSV that Apple's Passwords app exports (File → Export All Passwords), or Chrome's, Firefox's or Bitwarden's. Afterwards Eclipse offers to move that file to the Trash, since it holds every password as plain text.
+- **Seeing them:** **Show…** asks for Touch ID, then lists them, with search. **Copy** clears the clipboard a minute later. **Edit** changes one (with **Suggest a Strong One**), **Add…** saves one by hand. The list points out passwords **reused** on more than one site and ones **easy to guess**, worked out on this Mac (nothing's sent anywhere).
+
+**How they're kept safe:** `passwords/logins.json` is encrypted (AES-256-GCM) with a random key, and the key isn't in the data folder. It's in the macOS Keychain, written through Apple's Security framework (`secure_store.py`) so that the Keychain trusts only Eclipse with it: any other program asking gets macOS's prompt, which you can refuse. That's the trouble Chrome had: its key could be read by any program, so stealing passwords meant copying two files. (Items made with the `security` command trust that command, so any program can read them silently: none of Eclipse's secrets use it any more. App tokens from older versions are moved into Eclipse's own items the first time they're read.) The files in `passwords/` and `passkeys/`, and `recovery.json`, can only be read by your account. The page script that notices forms and fills them runs in a world of its own that the page can't see. Its messages go straight to the browser, never to the console, and carry a token made fresh each launch, so a page can't pretend to be it.
+
+**Recovery PIN** (shared with passkeys, `recovery.py`): with one set, a copy of the passwords' key, sealed with the PIN, goes into backups with the encrypted passwords, so the PIN brings them back on another Mac.
+
+Until Eclipse is a signed release, "Eclipse" to the Keychain is the program running it (the app, or Python from a checkout). A rebuilt app is new to it, so the first use after a rebuild asks once.
+
+### Passkeys and security keys
+
+**Eclipse keeps passkeys itself**, as Chrome does in Google Password Manager. When a site offers to make one, a card asks **Save a passkey for github.com?**. Eclipse then checks it's you with **Touch ID or your Mac's password**, and saves it. Next time the site asks, the card lists your accounts there; pick one, confirm it's you, and you're in. Sites see Eclipse as a browser with passkeys of its own, so they offer to make them. Buttons on these cards wait a moment before they can be clicked, so a page can't slip one under a click meant for something else.
+
+- **Where they're kept:** each passkey's private key is in the macOS **Keychain**, where only Eclipse can read it; which site and account it's for is in `passkeys/` in the data folder. Signing happens in the browser, for the page's real address (as Qt reports it), so a page can only ever use its own site's passkeys.
+- **Recovery PIN** (Settings → Passwords & Passkeys, shared with passwords): set one (at least 8 characters) and a copy of every passkey, locked with the PIN, goes into your backups. On another Mac, or after reinstalling, restore the backup and **Recover…** with the PIN. Nobody can open that copy without the PIN, and there's no server limiting guesses, which is why it's longer than Chrome's 6 digits.
+- **iCloud Keychain:** Settings → Passwords & Passkeys has the switch, off for now. macOS lets only a signed browser (with a Developer ID and Apple's browser permission) make passkeys in iCloud Keychain. Once Eclipse is a signed release, new passkeys can go there, and ones Eclipse kept can move over with macOS's passkey import.
+- **Security keys** (a YubiKey or similar, over USB) work too: **Use a Security Key** on the card, or when a site asks for one. The card says to plug it in and touch it, asks for its PIN (or a new one, typed twice), lets you pick the account, or explains what went wrong, with Try Again.
+- **Passkey autofill**: a sign-in page that waits in the background for a passkey (GitHub's does) gets a quiet card, **Sign in to github.com with your passkey?**, but only if Eclipse has one for the site; otherwise nothing shows. **Not Now** puts the card away.
+- A site that asks outright when you have no passkey there gets a card saying so, with how to get one: sign in another way, then add a passkey in the site's settings, and Eclipse offers to save it.
+
+How it works: `passkey_store.py` makes passkeys and signs with them (P-256, through the `cryptography` package) and keeps the recovery copy (scrypt, then AES-256-GCM). `passkeys.py` has the cards, and a small script in each page, in the page's own world, which hands every passkey request to the browser first. The browser answers it with one of Eclipse's passkeys, passes it on to Chromium for a security key (whose steps Qt hands back as `webAuthUxRequested`), or refuses it. The Touch ID and password check is LocalAuthentication, through `macos.verify_owner`.
+
+### Verified builds
+
+Eclipse is open source (MIT): anyone can build and change their own copy. **Settings → General** says what this copy is:
+
+- **Verified**: a release, signed with Eclipse's maker's Developer ID, notarized by Apple, and unchanged since. macOS checks every file in the app against its signature, so a single changed file means it's no longer verified.
+- **Built from source**: it runs from source code (a checkout, or the app `./run.sh --build-app` makes, which runs the checkout's code). Nothing wrong with it; it just isn't a signed release.
+- **Not verified**: it's unsigned, signed by someone else, not notarized, or changed since it was signed.
+
+The answer comes from macOS's own tools, not from Eclipse. Anyone can also check from Terminal: `spctl -a -vv /Applications/Eclipse.app` names who signed it. It turns on once `verified.TEAM_ID` holds the maker's Apple Developer team ID and releases ship as a signed app with Eclipse's code inside it.
 
 ### Keyboard shortcuts
 
@@ -321,7 +388,7 @@ The tests cover:
 
 They run headless and use a throwaway data folder.
 
-**Live tests** (`./run.sh --live-tests`, or `python -m pytest tests --live`) drive the real window against pages from a local server in `tests/live/site`, about a minute. The test windows open behind your other windows and the test app never becomes the active app, so you can keep working while they run. They cover: swipes (and not over a carousel), cookie banners (and not other buttons), private windows keeping nothing, ⌘T completion, sums and page-text search, Reader, the Developer Mode console and Reload on Save, the crashed-page card, pinned tabs going home, Now Playing, menus showing "&", links losing their tracking tags, Space and page swipes following the fingers (and springing back when let go early), rows sliding in and out (and Clear sweeping them), rows parting for a dragged tab, picking the app icon, the hidden sidebar staying out and turning round, the resize handle on the page edge, Peek easing in and out, Split View crossfading, Favorites springing when pressed, the command bar highlight gliding, every sidebar control having a name for VoiceOver, hover highlights fading, dragging finished downloads out, undoing Clear, Little windows fading in and out, panels fading in, the find bar sliding, tabs keeping their scroll position through sleep and restart, dark websites (and a site left light), whole-page screenshots (stitched, the fixed header once, a sticky heading kept in place, scroll put back, stopping when you switch away), copying a folder's or Today's links, picking several tabs with ⌘- and ⇧-click (closing them with Undo, back into their folders, and dragging them together), resizing on an easel with the mouse and exporting it, following a GitHub repo's releases, the GitHub folder filling its sub-folders (with `gh` answered by the test, and carrying on when notifications can't be read) and counting what's new in them, a pull request's status chip and its menu (and looking again only while checks run), your repos in ⌘T, links that open other apps (end to end through macOS, with a small background helper app the test builds, registers for its own made-up link type and removes again: nothing reaches it unless Open or Always Allow is clicked once the card is ready, not from a hidden page or a background tab), the traffic lights going with the sidebar (hidden with it, out with it, moved into it on the right, dim until pointed at), Favorites filling their row however many there are, the sidebar's scrollbar staying hidden until you scroll, a pinned tab getting its site's icon without loading, tab previews, the sidebar on the right (and its hidden version coming out of the right edge), keeping a tab awake, muting other tabs, reloading a folder, Browse for Me stopping with its tab, and the tricky moments in between (a keyboard Space switch mid-swipe, dragging a tab to another section, a second swipe while the first lands, the mouse wheel after a swipe), certificate warnings (against a local HTTPS server with a self-signed certificate), and spell check. The spell-check test needs a real dictionary: it uses yours once you've turned spell check on, or `PB_TEST_DICTIONARY=/path/to/en-US.bdic`, and is skipped otherwise. Plain `pytest` skips them.
+**Live tests** (`./run.sh --live-tests`, or `python -m pytest tests --live`) drive the real window against pages from a local server in `tests/live/site`, about three minutes. The test windows open behind your other windows and the test app never becomes the active app, so you can keep working while they run. They cover: swipes (and not over a carousel), cookie banners (and not other buttons), private windows keeping nothing, ⌘T completion, sums and page-text search, Reader, the Developer Mode console and Reload on Save, the crashed-page card, pinned tabs going home, Now Playing, menus showing "&", links losing their tracking tags, Space and page swipes following the fingers (and springing back when let go early), rows sliding in and out (and Clear sweeping them), rows parting for a dragged tab, picking the app icon, the hidden sidebar staying out and turning round, the resize handle on the page edge, Peek easing in and out, Split View crossfading, Favorites springing when pressed, the command bar highlight gliding, every sidebar control having a name for VoiceOver, hover highlights fading, dragging finished downloads out, undoing Clear, Little windows fading in and out, panels fading in, the find bar sliding, tabs keeping their scroll position through sleep and restart, dark websites (and a site left light), whole-page screenshots (stitched, the fixed header once, a sticky heading kept in place, scroll put back, stopping when you switch away), copying a folder's or Today's links, picking several tabs with ⌘- and ⇧-click (closing them with Undo, back into their folders, and dragging them together), resizing on an easel with the mouse and exporting it, following a GitHub repo's releases, the GitHub folder filling its sub-folders (with `gh` answered by the test, and carrying on when notifications can't be read) and counting what's new in them, a pull request's status chip and its menu (and looking again only while checks run), your repos in ⌘T, links that open other apps (end to end through macOS, with a small background helper app the test builds, registers for its own made-up link type and removes again: nothing reaches it unless Open or Always Allow is clicked once the card is ready, not from a hidden page or a background tab), the traffic lights going with the sidebar (hidden with it, out with it, moved into it on the right, dim until pointed at), Favorites filling their row however many there are, the sidebar's scrollbar staying hidden until you scroll, a pinned tab getting its site's icon without loading, tab previews, the sidebar on the right (and its hidden version coming out of the right edge), keeping a tab awake, muting other tabs, reloading a folder, Browse for Me stopping with its tab, and the tricky moments in between (a keyboard Space switch mid-swipe, dragging a tab to another section, a second swipe while the first lands, the mouse wheel after a swipe), certificate warnings (against a local HTTPS server with a self-signed certificate), and spell check. The spell-check test needs a real dictionary: it uses yours once you've turned spell check on, or `PB_TEST_DICTIONARY=/path/to/en-US.bdic`, and is skipped otherwise. Plain `pytest` skips them. `test_live_core` starts the window with every feature blocked (`tests/live/core_only.py`) and checks that the plain browser still works.
 
 ## Code layout (`browser/`)
 
@@ -331,6 +398,7 @@ They run headless and use a throwaway data folder.
 | `models.py` | Pure data: `Tab`, `Space` and `Store` (load/save, move/archive tabs, history). It contains no widgets. |
 | `storage.py` | Disk paths, atomic JSON writes, favicon cache keyed by host. |
 | `theme.py` | Space palette, light/dark tinting (follows macOS), the app-wide stylesheet, letter/dot icons. |
+| `features.py` | The feature loader. Everything beyond a plain browser (Claude, Live Folders, extensions, Easels, Notes, Boosts, GitHub, cards, Arc import, updates…) is a feature: a module ending in `FEATURE = …`, listed in `FEATURE_MODULES`, that hooks in where it needs to. The core never imports one by name, so one can be added or taken out without touching it. `ECLIPSE_CORE_ONLY=1` (`./run.sh --core`) starts the core alone. |
 | `window.py` | `MainWindow`: the controller. It owns the web views and every user action (tabs, spaces, menus, shortcuts, downloads, fullscreen, devtools). |
 | `sidebar.py` | The sidebar widgets: tab rows, favorites grid, drag-and-drop zones, space switcher. |
 | `command_bar.py` | The ⌘T overlay and its result ranking (`to_url()` decides URL vs search). |
@@ -348,30 +416,13 @@ They run headless and use a throwaway data folder.
 | `screenshots.py` | Copying what's on screen and stitching whole-page screenshots. |
 | `peek.py` | The Peek overlay (it moves, never resizes, as it opens: a page resized every frame would stutter). |
 | `floating_sidebar.py` | The hidden sidebar sliding out on hover: where the pointer counts as "still there", reversing mid-slide, and its painted shadow. |
-| `boosts.py` | Boosts (per-site CSS/JS) and the Zap tool. |
-| `notes.py` | Note tabs (Markdown editor). |
 | `adblock.py` | The request interceptor, block lists, and cosmetic/YouTube scripts. |
 | `downloads.py` | The Downloads panel, yt-dlp integration and download settings. |
-| `ai.py` | The Claude CLI worker pool. |
 | `settings.py` | The Settings window and the Keyboard Shortcuts page. |
 | `library.py` | The Library window. |
-| `browse.py` | Browse for Me, plus `PageReader` (reads a page's text off-screen without waiting for its ads). |
-| `arc_import.py` | Importing from Arc. |
-| `ext/host.py` | Extension runtime, Python side: installs scripts into profiles, `PageBridge` (extension pages, web channel) and `WorldBridge` (content scripts and userscripts, isolated worlds), and every `chrome.*`/`GM_*` call. |
-| `ext/runtime.js` | Extension runtime, page side: the bridge client, `chrome.*` for an extension, `GM_*` for a userscript. |
-| `ext/chrome.py` | Chrome extensions: manifests, content scripts, the `pbext://` scheme, CRX/zip/Web Store/Arc installs. |
-| `ext/dnr.py` | Blocking rules (`declarativeNetRequest`): parsing, the domain/keyword index, matching, redirects. No Qt. |
-| `ext/netrules.py` | Applies those rules in the request interceptor; each extension's rulesets, dynamic and session rules. |
-| `ext/native.py` | Native messaging: finding registered helpers, access checks, running one (`NativePort`). |
-| `ext/updates.py` | Daily update checks for Web Store extensions and userscripts. |
-| `ext/userscripts.py`, `ext/patterns.py` | Userscript metadata and match-pattern → regex conversion. |
-| `ext/ui.py` | Install dialogs, the toolbar popup and menu, Settings → Extensions. |
 | `traffic_lights.py` | The window's traffic lights going with the sidebar, and dim until pointed at (moved and styled through `macos.py`). |
 | `external_links.py` | Links that open other apps: the card that asks first, and the sites allowed to open them. |
 | `favicons.py` | Icons for sites whose pages haven't loaded yet: read from their home page, then kept with the rest. |
-| `github_status.py` | GitHub through `gh`: a pull request's checks and review (the URL pill's chip), and your repos for ⌘T. |
-| `easel.py` | Easels (whiteboard tabs) and the Capture overlay (⇧⌘2). |
-| `live_folders.py` | Live Folders: feed parsing and discovery, GitHub via `gh`, refreshing a folder in place. |
 | `tidy_downloads.py` | Tidy Downloads: the prompt, PDF/text excerpts, and safe renaming. |
 | `mini_player.py` | The floating mini player (moves a tab's live view into a small window, video only). |
 | `air_traffic.py` | Air Traffic Control rules (which Space an outside link opens in). |
@@ -381,13 +432,9 @@ They run headless and use a throwaway data folder.
 | `tab_switcher.py` | The ⌃Tab recent-tabs switcher. |
 | `zoom.py` | Per-site zoom levels. |
 | `page_actions.py` | Helpers for printing and saving: safe file names, Markdown links. |
-| `gestures.py` | Swipes that follow your fingers: back/forward (`SwipeNavigator`, `PageSlide`, page `Snapshots`, with the page asked whether it scrolls sideways itself) and Spaces (`SpaceSwipe`, `SpaceSlide`, also used when you click a Space), plus the shared release rules (speed, rubber-banding, settle time). |
 | `devmode.py` | Developer Mode: which pages count, the console drawer, Reload on Save (a polling folder watcher). |
-| `now_playing.py` | The sidebar's Now Playing card and the page scripts that find and control what's playing. |
 | `reader.py` | Reader view: article extraction (in the page's isolated world) and the script-free reader page. |
-| `translate.py` | Translate Page via the Claude CLI: collecting text nodes, batching, writing translations back, Show Original. |
 | `crash.py` | Crash recovery: the "did it quit properly" marker, error and native crash logs, the crashed-page card. |
-| `self_update.py` | Updating Eclipse itself from its git upstream (fast-forward only) and relaunching. |
 | `private.py` | Private windows and the shared off-the-record profile. |
 | `spelling.py` | Spell check: which Chrome dictionary fits your language, downloading it once, turning checking on in every profile. |
 | `dark_pages.py` | Dark websites: which pages are darkened, and the sites left light. |
@@ -397,13 +444,42 @@ They run headless and use a throwaway data folder.
 | `page_index.py` | The local full-text index of pages you've read (SQLite FTS5, written on its own thread). |
 | `answers.py` | The command bar's instant answers: safe arithmetic, unit conversion, world time, colours. |
 | `motion.py` | Animation helpers (eased values, fades, the sidebar slide, crossfading a rearranged area such as Split View); respects Reduce Motion. |
+| `keychain.py` | Tokens for your apps, in the Keychain where only Eclipse can read them (moving older ones over). |
+| `whats_new.py` | The What's New window, shown once after an update with something new (⌘T → What's New). |
+| `macos.py` | Native macOS tweaks via the Objective-C runtime (hides the title text, sets the Dock badge). |
+| `secure_store.py` | Secrets only Eclipse can read: Keychain items made through the Security framework, so other programs get macOS's prompt. |
+| `recovery.py` | The recovery PIN shared by passwords and passkeys: scrypt, sealing copies, bringing them back. |
+| `password_store.py` | Saved passwords: encrypted on disk with a key in the Keychain; matching pages; importing CSVs and Arc's. |
+| `passwords.py` | Filling and saving passwords on pages (the cards, the page script) and Settings → Passwords & Passkeys. |
+| `passkeys.py` | Passkeys: the cards (save one, sign in with one, a security key's steps), the page script that hands a site's request to the browser, and Settings → Passkeys. |
+| `passkey_store.py` | The passkeys Eclipse keeps: making them, signing with them, the Keychain, and the copy locked with the recovery PIN. |
+| `verified.py` | Verified builds: asks macOS (codesign, spctl) whether this copy is a signed, notarized release, unchanged since. Shown in Settings → General. |
+| `arc_import.py` | Importing from Arc. |
+| `boosts.py` | Boosts (per-site CSS/JS) and the Zap tool. |
+| `notes.py` | Note tabs (Markdown editor). |
+| `ai.py` | The Claude CLI worker pool. |
+| `browse.py` | Browse for Me, plus `PageReader` (reads a page's text off-screen without waiting for its ads). |
+| `ext/host.py` | Extension runtime, Python side: installs scripts into profiles, `PageBridge` (extension pages, web channel) and `WorldBridge` (content scripts and userscripts, isolated worlds), and every `chrome.*`/`GM_*` call. |
+| `ext/runtime.js` | Extension runtime, page side: the bridge client, `chrome.*` for an extension, `GM_*` for a userscript. |
+| `ext/chrome.py` | Chrome extensions: manifests, content scripts, the `pbext://` scheme, CRX/zip/Web Store/Arc installs. |
+| `ext/dnr.py` | Blocking rules (`declarativeNetRequest`): parsing, the domain/keyword index, matching, redirects. No Qt. |
+| `ext/netrules.py` | Applies those rules in the request interceptor; each extension's rulesets, dynamic and session rules. |
+| `ext/native.py` | Native messaging: finding registered helpers, access checks, running one (`NativePort`). |
+| `ext/updates.py` | Daily update checks for Web Store extensions and userscripts. |
+| `ext/userscripts.py`, `ext/patterns.py` | Userscript metadata and match-pattern → regex conversion. |
+| `ext/ui.py` | Install dialogs, the toolbar popup and menu, Settings → Extensions. |
+| `github_status.py` | GitHub through `gh`: a pull request's checks and review (the URL pill's chip), and your repos for ⌘T. |
+| `easel.py` | Easels (whiteboard tabs) and the Capture overlay (⇧⌘2). |
+| `live_folders.py` | Live Folders: feed parsing and discovery, GitHub via `gh`, refreshing a folder in place. |
+| `gestures.py` | Swipes that follow your fingers: back/forward (`SwipeNavigator`, `PageSlide`, page `Snapshots`, with the page asked whether it scrolls sideways itself) and Spaces (`SpaceSwipe`, `SpaceSlide`, also used when you click a Space), plus the shared release rules (speed, rubber-banding, settle time). |
+| `now_playing.py` | The sidebar's Now Playing card and the page scripts that find and control what's playing. |
+| `translate.py` | Translate Page via the Claude CLI: collecting text nodes, batching, writing translations back, Show Original. |
+| `self_update.py` | Updating Eclipse itself from its git upstream (fast-forward only) and relaunching; a release copy goes through `release_update.py`. |
+| `release_update.py` | Updates for the release app: GitHub's latest release, downloaded, checked by macOS (signed by the maker, notarized, newer), and swapped in after quitting. |
 | `integrations.py` | My Apps: addresses, presets, homebase status and control, the local AI client, Send To links. |
 | `integrations_ui.py` | The homebase menu and logs, Send To actions, the security-grade card, the My Apps settings page. |
 | `live_folder_dialog.py` | The New Live Folder dialog (feed, GitHub, JSON API, page links, calendar, Repo Radar). |
 | `upnext.py` | The Up Next card: the next event from Daybook's hop.json, with Join for meeting links. |
-| `keychain.py` | Tokens for your apps, kept in the macOS Keychain. |
-| `whats_new.py` | The What's New window, shown once after an update with something new (⌘T → What's New). |
-| `macos.py` | Native macOS tweaks via the Objective-C runtime (hides the title text, sets the Dock badge). |
 
 ### How the pieces talk
 
@@ -411,6 +487,7 @@ They run headless and use a throwaway data folder.
 - `MainWindow` changes the `Store`. The Store emits `structure_changed`, and the sidebar is rebuilt once per event-loop pass.
 - Per-tab updates (title, favicon, URL) go out through `Tab.changed`. Each sidebar row listens to its own tab, so nothing is rebuilt.
 - Web views are **lazy**. A restored or pinned tab gets no Chromium page until you click it.
+- Features talk to the core through hooks (`browser/features.py` lists them all). The window sends them out with `emit(hook, …)`, collects what they add with `gather(hook, …)` (menus, ⌘T commands, Settings pages, sidebar buttons), and takes the first answer with `first(hook, …)`. `window.feature("claude")` gets one feature, or None when it isn't there, so the core checks before using one.
 
 ### Ideas for next steps
 

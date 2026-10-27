@@ -195,3 +195,36 @@ def test_redirects_are_checked_like_the_first_address():
     assert not redirect_ok("http://example.com/", "http://localhost:8080/x")
     assert redirect_ok("http://127.0.0.1:5000/", "http://127.0.0.1:5000/favicon.png")  # (a site that is local)
     assert not redirect_ok("https://example.com/", "file:///etc/passwd")
+
+
+def test_a_section_with_its_own_icon_doesnt_change_the_sites(qapp, data_dir):
+    from PyQt6.QtGui import QColor, QIcon, QPixmap
+    from browser import storage
+
+    def solid(color):
+        pixmap = QPixmap(32, 32)
+        pixmap.fill(QColor(color))
+        return QIcon(pixmap)
+
+    def colour(icon):
+        return icon.pixmap(32, 32).toImage().pixelColor(16, 16).name()
+    storage.save_favicon("https://www.google.com/", solid("#4285f4"))            # Google's G
+    storage.save_favicon("https://www.google.com/maps/place/x", solid("#34a853"))  # Maps' pin
+    assert colour(storage.favicon("https://www.google.com/")) == "#4285f4"       # (your Favorite keeps its G)
+    assert colour(storage.favicon("https://www.google.com/maps/@1,2")) == "#34a853"
+    assert colour(storage.favicon("https://www.google.com/search?q=x")) == "#4285f4"
+    # Pages whose icon is the site's own don't each get a copy
+    storage.save_favicon("https://www.google.com/search?q=y", solid("#4285f4"))
+    assert not (data_dir / "favicons" / "google.com_search.png").exists()
+    # The first page seen of a site stands in for it until its home page says otherwise
+    storage.save_favicon("https://github.com/anthropics/claude-code", solid("#000000"))
+    assert colour(storage.favicon("https://github.com/")) == "#000000"
+    storage._icons.clear()  # (and it's all still there next launch)
+    assert colour(storage.favicon("https://www.google.com/maps")) == "#34a853"
+
+
+def test_each_subreddit_has_its_own_section():
+    from browser.storage import _section_key
+    assert _section_key("https://www.reddit.com/r/Python/comments/1") == "reddit.com/r/python"
+    assert _section_key("https://www.google.com/maps/@1,2") == "google.com/maps"
+    assert _section_key("https://example.com/") == "" and _section_key("https://example.com/?q=1") == ""

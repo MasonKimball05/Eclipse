@@ -42,6 +42,7 @@ def harden(profile):
 # Content scripts and userscripts call the extension runtime with console messages starting with
 # this (see ext/host.py); an invisible character, so it can't collide with a site's own logging
 EXTENSION_CALL = "\u2063pbx:"
+PASSWORD_CALL = "\u2063pbp:"  # (the password script's messages: they can hold a password, so never logged)
 
 
 class WebPage(QWebEnginePage):
@@ -53,6 +54,8 @@ class WebPage(QWebEnginePage):
     navigation_filter = None
     # Set by the extension runtime: receives EXTENSION_CALL messages
     extension_messages = None
+    # Set by passwords.py: receives PASSWORD_CALL messages (never shown in the console)
+    password_messages = None
     # Set by the window: url -> darken this page? (dark_pages.py), decided as each page starts loading
     dark_rule = None
     # Set by the window, for every page: (page, url, main_frame, redirect) when a page tries to open
@@ -79,6 +82,13 @@ class WebPage(QWebEnginePage):
         return super().acceptNavigationRequest(url, nav_type, is_main_frame)
 
     def javaScriptConsoleMessage(self, level, message, line, source):
+        if message.startswith(PASSWORD_CALL):
+            if self.password_messages is not None:
+                try:
+                    self.password_messages(message)
+                except Exception:  # a page's message must never take the browser down
+                    traceback.print_exc()
+            return
         if message.startswith(EXTENSION_CALL):
             if self.extension_messages is not None:
                 try:

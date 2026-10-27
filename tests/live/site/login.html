@@ -1,0 +1,13 @@
+<!doctype html>
+<html><head><title>Sign in</title></head>
+<body>
+<form id="f" action="welcome.html">
+  <label>Email <input id="user" type="email" autocomplete="username"></label>
+  <label>Password <input id="pass" type="password" autocomplete="current-password"></label>
+  <button type="submit">Sign in</button>
+</form>
+<script>
+  // (the static test server can't take a POST: the page goes on by itself, as a signed-in site would)
+  document.getElementById('f').addEventListener('submit', e => { e.preventDefault(); location = 'welcome.html'; });
+</script>
+</body></html>

@@ -81,6 +81,12 @@ def site(tmp_path_factory):
 
 
 @pytest.fixture(scope="session")
+def site_root(site):
+    """The folder `site` serves, for a test that adds a file to it."""
+    return _site_root[0]
+
+
+@pytest.fixture(scope="session")
 def bad_https(site, tmp_path_factory):
     """https://127.0.0.1:<port>/ with a self-signed certificate: the same pages, an untrusted connection."""
     folder = tmp_path_factory.mktemp("cert")
@@ -106,7 +112,8 @@ def window(data_dir, qapp):
     store = Store(storage.session_path())
     store.is_new = False  # no first-launch Arc import offer
     w = MainWindow(store, build_profile(qapp))
-    w.github_repos.fetched = float("inf")  # never ask GitHub (gh) for your repos from a test
+    if w.feature("github") is not None:
+        w.feature("github").repos.fetched = float("inf")  # never ask GitHub (gh) for your repos from a test
     w.favicons.want = lambda urls: None  # nor fetch site icons from the internet
     w.resize(1100, 760)
     w.show()

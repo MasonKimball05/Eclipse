@@ -14,7 +14,6 @@ from PyQt6.QtWidgets import (QApplication, QFrame, QGraphicsDropShadowEffect, QL
                              QListWidgetItem, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
 from . import motion
-from .ai import looks_like_question
 from .answers import answer
 
 COPIED_FRESH_SECONDS = 5 * 60
@@ -25,7 +24,6 @@ def _path_hint(url: str) -> str:
     path = QUrl(url).path().rstrip("/")
     return "" if not path else path if len(path) <= 40 else path[:38] + "…"
 from .content import answer_browser, fit_answer
-from .github_status import matching_repos
 from .models import display_host, frecency
 from .storage import favicon
 from .sidebar import tab_icon
@@ -352,7 +350,7 @@ class CommandBar(QWidget):
         self._candidates = [(e["url"], e.get("title", ""), frecency(e, now)) for e in self._ranked]
         self._candidates += [(t.home_url or t.url, t.label, 400) for t in store.all_tabs()
                              if (t.home_url or t.url).startswith(("http://", "https://"))]
-        self.browser.github_repos.refresh_if_stale()  # (in the background: for next time, if it's old)
+        self.browser.emit("command_bar_opened")  # (your GitHub repos, say, refreshed for next time)
         self._set_site(None)
         self.input.setPlaceholderText("Open a page next to this one…" if mode == "split" else "Search or Enter URL…")
         self.setGeometry(self.parentWidget().rect())
@@ -450,9 +448,10 @@ class CommandBar(QWidget):
             if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
                 # ⌘↩: Browse for Me with whatever is typed
                 query = self.input.text().strip()
-                if query and self.browser.claude.available:
+                claude = self.browser.feature("claude")
+                if query and claude is not None and claude.available():
                     self.close_bar()
-                    self.browser.browse_for_me(query)
+                    claude.browse_for_me(query)
                 return True
             if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 item = self.list.currentItem()
@@ -526,7 +525,10 @@ class CommandBar(QWidget):
 
     def ask(self, question, ai=None, prompt=None):
         self._cancel_answer()
-        ai = ai or self.browser.assistant() or self.browser.claude
+        claude = self.browser.feature("claude")
+        ai = ai or self.browser.assistant() or (claude.claude if claude is not None else None)
+        if ai is None:
+            return
         self._show_answer("*Thinking…*")
         self.request = ai.ask(prompt or (
             "Answer this question from someone using their web browser. Be direct and concise "
@@ -624,23 +626,7 @@ class CommandBar(QWidget):
                 results.insert(len(results) - 1, search)
             else:
                 results.append(search)
-            ai = self.browser.assistant()
-            if ai is not None and not url and len(query.split()) >= 2:
-                name = self.browser.assistant_name(ai)
-                ask = Result(query, f"Ask {name}", name.split(" ")[0].capitalize(),
-                             qta.icon("ph.sparkle", color=theme.accent_text), lambda a=ai: self.ask(query, a), keep_open=True)
-                # A question goes straight to Claude on Return; anything else still searches first
-                results.insert(0 if looks_like_question(query) else 1, ask)
-                other = self.browser.assistant(other=True)
-                if other is not None:  # the other one, a row below, to compare or when one is busy
-                    other_name = self.browser.assistant_name(other)
-                    results.insert(results.index(ask) + 1, Result(
-                        query, f"Ask {other_name}", other_name.split(" ")[0].capitalize(),
-                        qta.icon("ph.cpu" if other is self.browser.local_ai else "ph.sparkle", color=theme.accent_text),
-                        lambda a=other: self.ask(query, a), keep_open=True))
-                browse = Result(query, "Browse for Me · reads the top results", "⌘↩",
-                                qta.icon("ph.compass", color=theme.accent_text), lambda: self.browser.browse_for_me(query))
-                results.insert(results.index(ask) + 1, browse)
+            self.browser.emit("query_rows", self, query, results, url)  # (Ask Claude, Browse for Me…)
 
         if tab_site:  # a hint that Tab searches this site (after the search, so Return still searches)
             results.insert(min(len(results), 2), Result(f"Search {SITE_SEARCHES[tab_site][0]}", "", "Tab",
@@ -675,15 +661,7 @@ class CommandBar(QWidget):
             if len(results) >= MAX_ROWS:
                 break
 
-        if self.mode != "split":  # your GitHub repos, by name
-            for repo in matching_repos(self.browser.github_repos.repos, query):
-                if repo["url"] in seen:
-                    continue
-                seen.add(repo["url"])
-                detail = repo.get("description") or repo.get("nameWithOwner", "")
-                results.append(Result(repo.get("name", ""), detail, "GitHub",
-                                      self._icon("ph.lock-simple" if repo.get("isPrivate") else "ph.github-logo"),
-                                      self._open(repo["url"])))
+        results += self.browser.gather("command_results", self, query, seen)  # (your GitHub repos, by name…)
 
         limit = MAX_ROWS + 4
         for entry in self._ranked:  # most-used first, not just most recent

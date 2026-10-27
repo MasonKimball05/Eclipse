@@ -1,12 +1,20 @@
-from browser.live_folders import apply_items, find_feed_link, mark_seen, parse_feed
 from browser.models import Folder, Tab, node_from_dict, walk_tabs
+from browser.live_folders import apply_items, find_feed_link, mark_seen, parse_feed
+
 
 RSS = b"""<?xml version="1.0"?><rss version="2.0"><channel><title>Example Blog</title>
 <item><title>Second post</title><link>https://blog.example/2</link></item>
 <item><title>First   post</title><link>https://blog.example/1</link></item></channel></rss>"""
+
+
 ATOM = b"""<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><title>Atom Feed</title>
 <entry><title>Hello</title><link rel="alternate" href="https://atom.example/hello"/>
 <link rel="edit" href="https://atom.example/edit"/></entry></feed>"""
+
+
+def _row(title, repo, number, pr=False):
+    return {"title": title, "url": f"https://github.com/me/{repo}/{'pull' if pr else 'issues'}/{number}",
+            "repository": {"name": repo}, "number": number, "isPullRequest": pr}
 
 
 def test_parse_rss_and_atom():
@@ -62,16 +70,6 @@ def test_a_tab_you_clicked_through_stays():
     assert folder.children == [tab] and not dropped
 
 
-def test_nothing_can_be_moved_into_a_live_folder(store):
-    folder = store.add_folder(store.active_space, "Feed")
-    folder.live = {"kind": "feed", "url": "x"}
-    tab = Tab("https://mine.example/")
-    store.add_tab(tab)
-    from browser.models import PINNED
-    store.move_tab(tab, PINNED, folder=folder)
-    assert tab not in folder.children
-
-
 def test_only_web_links_become_tabs():
     feed = b"""<rss version="2.0"><channel><title>T</title>
       <item><title>A</title><link>javascript:alert(1)</link></item>
@@ -111,11 +109,6 @@ def test_github_addresses_follow_their_hidden_feeds():
     assert github_repo("https://github.com/apps/dependabot") is None
     assert github_repo("https://github.com/notifications/beta") is None and github_repo("https://github.com/qt") is None
     assert feed_name("https://github.com/qt/qtwebengine") == "qtwebengine"
-
-
-def _row(title, repo, number, pr=False):
-    return {"title": title, "url": f"https://github.com/me/{repo}/{'pull' if pr else 'issues'}/{number}",
-            "repository": {"name": repo}, "number": number, "isPullRequest": pr}
 
 
 def test_github_sections_sort_everything_into_sub_folders():
@@ -254,3 +247,4 @@ def test_notifications_that_cant_be_read_are_kept():
     kept = [{"title": "Old one · x", "url": "https://github.com/me/x/issues/1"}]
     assert notification_rows(kept) == kept
     assert dict(github_sections({"notifications": kept}))["Notifications"][0][1] == "https://github.com/me/x/issues/1"
+

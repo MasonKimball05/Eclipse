@@ -3,7 +3,7 @@ import http.server
 import threading
 import time
 
-from PyQt6.QtCore import QCoreApplication
+from PyQt6.QtCore import QCoreApplication, QEvent
 
 from browser import spelling
 
@@ -23,6 +23,10 @@ def _wait(download):
     while not result and time.monotonic() < deadline:
         QCoreApplication.processEvents()
         time.sleep(0.01)
+    # Let Qt take it down now, while nothing's in flight, not whenever Python's garbage collector gets to it (a
+    # network manager collected mid-way through a later test can crash the process)
+    download.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     return result[0] if result else None
 
 

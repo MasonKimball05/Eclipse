@@ -39,14 +39,15 @@ def is_site_name(part: str, host: str) -> bool:
     mail.google.com, "Google Docs" for docs.google.com)."""
     squashed, names = _squash(part), _host_names(host)
     words = [w for w in re.split(r"[^a-z0-9]+", part.lower()) if w]
-    if not squashed or not names or len(words) > 3:
+    if not squashed or not names or len([w for w in words if not w.isdigit()]) > 3:
         return False
     if squashed in names or squashed == "".join(names) or squashed == "".join(reversed(names)):
         return True
     # Whole words only, each one the host's or a usual part of a name ("Google Docs", "BBC News"), so a
     # title's own words ("GitHub Actions", "Mail merge", "Team standup") are never taken for the site's
     own = [w in names or _ALIASES.get(w) in names for w in words]
-    return any(own) and all(o or w in _NAME_WORDS for o, w in zip(own, words))
+    # (a version number belongs with the name: "Python 3.15.2 documentation")
+    return any(own) and all(o or w in _NAME_WORDS or w.isdigit() for o, w in zip(own, words))
 
 
 def tidy(title: str, url: str) -> str:
@@ -56,13 +57,20 @@ def tidy(title: str, url: str) -> str:
     if not host or len(pieces) < 3:
         return text or title
     site = None
-    for end in (-1, 0):  # the site's name is at one end: most often the last
-        if is_site_name(pieces[end], host):
-            site = pieces[end].strip()
+    for end in (-1, 0):  # the site's name is at one end, most often the last (sometimes both: GitHub's)
+        if len(pieces) >= 3 and is_site_name(pieces[end], host):
+            site = site or pieces[end].strip()
             pieces = pieces[:-2] if end == -1 else pieces[2:]
-            break
     if site is None:
         return text
+    address = urlsplit(url)
+    if not address.path.strip("/") and not address.query and not address.fragment \
+            and len("".join(pieces).split()) >= 4:
+        return site  # (a site's home page with a slogan is the site: "BBC News", not "Breaking news, video and…")
+    if host.removeprefix("www.") == "github.com":  # "owner/repo: what it's for" is just "owner/repo"
+        repo = re.match(r"([\w.-]+/[\w.-]+): ", "".join(pieces).strip())
+        if repo:
+            return repo.group(1)
     if len(pieces) >= 3 and _EMAIL.fullmatch(pieces[-1].strip()):
         pieces = pieces[:-2]
     rest = "".join(pieces).strip()

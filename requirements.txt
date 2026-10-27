@@ -2,3 +2,5 @@
 PyQt6>=6.9
 PyQt6-WebEngine>=6.9
 qtawesome>=1.4
+# Passkeys Eclipse keeps (P-256 signing) and their recovery copy (AES-GCM)
+cryptography>=44

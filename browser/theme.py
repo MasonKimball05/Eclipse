@@ -7,9 +7,9 @@ import random
 from dataclasses import dataclass
 from functools import lru_cache
 
-from PyQt6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, QTimer
+from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, QSize, Qt, QTimer
 from PyQt6.QtGui import QColor, QFont, QGuiApplication, QIcon, QImage, QLinearGradient, QPainter, QPixmap
-from PyQt6.QtWidgets import QLabel, QMenu, QWidget
+from PyQt6.QtWidgets import QComboBox, QLabel, QMenu, QStyledItemDelegate, QWidget
 
 PALETTE = [
     ("Lavender", "#8b7cf6"),
@@ -161,6 +161,39 @@ class PlainMenu(QMenu):
 
     def setTitle(self, title):
         super().setTitle(title.replace("&", "&&"))
+
+
+class DropdownLists(QObject):
+    """Every dropdown in the app (installed on the QApplication): its list styled like the menus. Qt draws a
+    dropdown's list as macOS's own (over the box, narrower, square), whatever the stylesheet says, unless the box
+    has a styled item delegate; and the list's window needs to see through for its rounded corners. Both have
+    to happen before the list is first shown, which Polish is."""
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Polish and isinstance(obj, QComboBox) and not obj.property("dropdown"):
+            obj.setProperty("dropdown", True)
+            obj.setItemDelegate(QStyledItemDelegate(obj))
+            container = obj.view().window()  # (made now, not shown yet)
+            container.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+            container.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            container.setProperty("dropdown_of", obj)
+            container.installEventFilter(self)
+        elif event.type() == QEvent.Type.Show and isinstance(box := obj.property("dropdown_of"), QComboBox):
+            self.place(box, obj)
+        return False
+
+    @staticmethod
+    def place(box, container):
+        """Just under the box and as wide as it (macOS puts it over the box, narrower), or above it if there's
+        no room below."""
+        gap = 4
+        below = box.mapToGlobal(box.rect().bottomLeft()) + QPoint(0, gap + 1)
+        width = max(box.width(), container.sizeHint().width() if box.width() < 80 else 0)
+        height = container.height()
+        screen = box.screen().availableGeometry()
+        if below.y() + height > screen.bottom():
+            below.setY(box.mapToGlobal(box.rect().topLeft()).y() - gap - height)
+        container.setGeometry(below.x(), max(screen.top(), below.y()), width, height)
 
 
 class ThemedBackground(QWidget):
@@ -487,9 +520,10 @@ def knob_image() -> str:
 
 
 def hover_color(t: Theme) -> QColor:
-    """The sidebar's hover highlight (rows paint it themselves, so it can fade)."""
-    color = QColor("white")
-    color.setAlphaF(0.07 if t.dark else 0.32)
+    """The sidebar's hover highlight (rows and buttons paint it themselves, so it can fade): a lift of
+    white with a hint of the Space's own colour in it, so it reads as part of the Space, not a grey film."""
+    color = mix(QColor("white"), t.accent, 0.28 if t.dark else 0.14)
+    color.setAlphaF(0.12 if t.dark else 0.5)
     return color
 
 
@@ -502,7 +536,7 @@ def stylesheet(t: Theme) -> str:
     dim = rgba(t.text, 0.55)
     faint = rgba(t.text, 0.10)
     white = QColor("white")
-    hover = rgba(white, 0.07) if t.dark else rgba(white, 0.32)
+    hover = rgba(hover_color(t))
     selected = rgba(white, 0.14) if t.dark else rgba(white, 0.82)
     tile = rgba(white, 0.05) if t.dark else rgba(white, 0.28)
     content_bg = "#1b1b1e" if t.dark else "#ffffff"
@@ -536,7 +570,6 @@ def stylesheet(t: Theme) -> str:
     }}
 
     QToolButton#IconButton {{ background: transparent; border: none; border-radius: 6px; padding: 3px; }}
-    QToolButton#IconButton:hover {{ background: {hover}; }}
     QToolButton#IconButton:pressed {{ background: {faint}; }}
     QToolButton#IconButton:disabled {{ background: transparent; }}
 
@@ -554,7 +587,6 @@ def stylesheet(t: Theme) -> str:
     QFrame#TabRow QLabel[fresh="true"] {{ font-weight: 700; }}
 
     QToolButton#FavoriteTile {{ background: {tile}; border: none; border-radius: 10px; }}
-    QToolButton#FavoriteTile:hover {{ background: {hover}; }}
     QToolButton#FavoriteTile[selected="true"] {{ background: {selected}; }}
 
     QToolButton#SpaceDot {{
@@ -638,6 +670,31 @@ def stylesheet(t: Theme) -> str:
     /* (a pale Space colour would look like a disabled button: those get the system blue, as switches do) */
     QPushButton#PermissionAllow {{ background: {rgba(control)}; color: {rgba(on_control)}; border: none; border-radius: 7px; }}
     QPushButton#PermissionAllow:disabled {{ background: {rgba(control, 0.45)}; }}
+
+    /* Every button answers the pointer: a little brighter, or a soft backdrop behind an icon */
+    QPushButton#PermissionAllow:hover:enabled {{ background: {rgba(control, 0.85)}; }}
+    QToolButton#CardChoice {{ background: transparent; border: 2px solid transparent; border-radius: 9px; padding: 2px; }}
+    QToolButton#CardChoice:hover {{ background: {rgba(t.panel_text, 0.07)}; }}
+    QToolButton#CardChoice:checked {{ border: 2px solid {rgba(t.accent_text)}; }}
+    QPushButton#PermissionClose:hover, QToolButton#BannerClose:hover {{ background: {rgba(t.panel_text, 0.09)}; border-radius: 6px; }}
+    QPushButton#PermissionClose:pressed, QToolButton#BannerClose:pressed {{ background: {rgba(t.panel_text, 0.16)}; border-radius: 6px; }}
+    QPushButton#CrashReload:hover {{ background: {rgba(t.accent, 0.85)}; }}
+    QToolButton#DevChip:hover {{ background: {rgba(t.accent, 0.34)}; }}
+    QToolButton#DevChip[errors="true"]:hover {{ background: rgba(229, 72, 77, 1); }}
+    QToolButton#DevChip[compact="true"]:hover {{ background: {rgba(t.accent_text, 1)}; }}
+    QToolButton#PrChip:hover {{ background: {rgba(t.accent, 0.28)}; }}
+    QToolButton#PrChip[state="pass"]:hover {{ background: rgba(48, 164, 108, 1); }}
+    QToolButton#PrChip[state="fail"]:hover {{ background: rgba(229, 72, 77, 1); }}
+    QToolButton#PrChip[state="running"]:hover {{ background: rgba(245, 166, 35, 1); }}
+    QToolButton#PrChip[state="merged"]:hover {{ background: rgba(130, 80, 223, 1); }}
+    QToolButton#PaneClose:hover {{ background: {rgba(t.panel_text, 0.12)}; }}
+    QToolButton#EaselSwatch:hover {{ border: 2px solid #d6d3d1; }}
+    QToolButton#EaselSwatch:checked:hover {{ border: 2px solid {rgba(t.accent)}; }}
+    #SpaceEditor QToolButton#ColorDot:hover {{ border: 2px solid {rgba(t.panel_text, 0.35)}; }}
+    #SpaceEditor QToolButton#ColorDot[selected="true"]:hover {{ border: 2px solid {panel_text}; }}
+    #SpaceEditor QPushButton#MiniTab:hover {{ background: {rgba(t.panel_text, 0.06)}; color: {panel_text}; }}
+    #SpaceEditor QPushButton#LinkButton:hover {{ text-decoration: underline; }}
+    *[panel="true"] QPushButton#Link:hover {{ color: {panel_text}; }}
     QPushButton#PermissionClose {{ background: transparent; border: none; padding: 4px; }}
     #FindBar QLineEdit {{
         background: transparent; border: none; color: {panel_text}; font-size: 13px; padding: 4px;
@@ -651,6 +708,26 @@ def stylesheet(t: Theme) -> str:
     #CommandPanel QTextBrowser#Answer {{ font-size: 14px; }}
 
     #PreviewCard {{ background: {panel}; border: 1px solid {panel_line}; border-radius: 12px; }}
+    /* Ask About This Page: a second sidebar on the window's own colours, made like the first */
+    #PageChat {{ background: transparent; }}
+    #PageChat QLabel#PageChatTitle {{ color: {text}; font-size: 13px; font-weight: 600; }}
+    #PageChat QLabel#PageChatSite {{ color: {dim}; font-size: 11px; }}
+    #PageChat QTextBrowser#Answer {{
+        background: transparent; color: {text}; font-size: 13px; border: none;
+        selection-background-color: {rgba(t.accent, 0.45)}; selection-color: {text};
+    }}
+    QPushButton#PageChatButton {{ background: transparent; border: none; border-radius: 6px; padding: 4px; }}
+    QPushButton#PageChatButton:hover {{ background: {hover}; }}
+    QPushButton#PageChatStarter {{
+        background: {tile}; color: {text}; border: none; border-radius: 10px;
+        padding: 8px 10px; font-size: 13px; font-weight: 500; text-align: left;
+    }}
+    QPushButton#PageChatStarter:hover {{ background: {hover}; }}
+    QLineEdit#PageChatInput {{
+        background: {tile}; color: {text}; border: 1px solid transparent; border-radius: 10px;
+        padding: 8px 10px; font-size: 13px; selection-background-color: {rgba(t.accent, 0.45)};
+    }}
+    QLineEdit#PageChatInput:focus {{ border: 1px solid {rgba(t.accent_text, 0.7)}; }}
     #TabPreview {{ background: {panel}; border: 1px solid {panel_line}; border-radius: 12px; }}
     #TabPreviewTitle {{ color: {panel_text}; font-size: 13px; font-weight: 600; }}
     #TabPreviewHost {{ color: {rgba(t.panel_text, 0.6)}; font-size: 11px; }}
@@ -792,7 +869,7 @@ def stylesheet(t: Theme) -> str:
     }}
     QListWidget#SettingsNav::item {{ color: {panel_text}; padding: 7px 8px; border-radius: 7px; margin-bottom: 2px; }}
     QListWidget#SettingsNav::item:selected {{ background: {rgba(t.accent)}; color: {rgba(t.on_accent)}; }}
-    QListWidget#SettingsNav::item:hover:!selected {{ background: {rgba(t.panel_text, 0.07)}; }}
+    QListWidget#SettingsNav::item:hover:!selected {{ background: {rgba(t.accent, 0.14)}; }}
     #SettingsBody {{ background: {panel}; }}
     *[panel="true"] QLabel#SettingTitle {{ font-weight: 600; }}
     *[panel="true"] QLabel#EditorSection {{ color: {panel_dim}; font-size: 10px; font-weight: 700; }}
@@ -847,6 +924,18 @@ def stylesheet(t: Theme) -> str:
     QMenu::separator {{ height: 1px; background: {panel_line}; margin: 4px 6px; }}
     QMenu::icon {{ padding-left: 8px; }}
     QMenu::right-arrow {{ width: 8px; height: 8px; margin-right: 6px; }}
+
+    /* A dropdown's list looks like the menus: under its box, as wide as it, rounded (see DropdownLists) */
+    QComboBox {{ combobox-popup: 0; }}
+    QComboBoxPrivateContainer {{ background: transparent; border: none; }}
+    QComboBox QAbstractItemView {{
+        background: {panel}; color: {panel_text}; border: 1px solid {panel_line}; border-radius: 10px;
+        padding: 5px; outline: 0; font-size: 13px;
+    }}
+    QComboBox QAbstractItemView::item {{ min-height: 26px; padding: 0 8px; border-radius: 6px; color: {panel_text}; }}
+    QComboBox QAbstractItemView::item:selected, QComboBox QAbstractItemView::item:hover {{
+        background: {rgba(t.accent)}; color: {rgba(t.on_accent)};
+    }}
 
     QFrame#SpaceEditor {{ background: {panel}; border: 1px solid {panel_line}; border-radius: 14px; }}
     #SpaceEditor QLabel {{ color: {panel_text}; }}

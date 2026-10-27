@@ -19,6 +19,7 @@ from PyQt6.QtWebEngineCore import QWebEngineScript
 from PyQt6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
                              QListWidget, QPlainTextEdit, QPushButton, QVBoxLayout)
 
+from .features import Feature
 from .models import new_id
 from .theme import stylesheet
 
@@ -270,3 +271,89 @@ class BoostEditor(QDialog):
     def _delete(self):
         self.manager.delete(self.boost)
         self.accept()
+
+
+class BoostsFeature(Feature):
+    """Boosts: your own CSS and JavaScript for a site, and Zap (click things to hide them for good)."""
+    name = "boosts"
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.boosts = BoostManager(window.store, window)
+        self.zap_tab = None
+        self._zap_token = None
+
+    def profile_ready(self, profile):
+        self.boosts.attach(profile)
+
+    def url_changed(self, tab, url):
+        if tab is self.zap_tab:
+            self.zap_tab = None  # navigating away ends Zap (the new page has no picker)
+
+    def view_destroyed(self, tab):
+        if tab is self.zap_tab:
+            self.zap_tab = None
+
+    def boost_site(self, boost=None):
+        window = self.window
+        if boost is None:
+            site = site_of(window.current_tab.url) if window.current_tab else ""
+            if not site:
+                window.toast("Open a website first, then boost it")
+                return
+            boost = next(iter(self.boosts.for_site(site)), None) or Boost(site)
+        if BoostEditor(self.boosts, boost, window.theme, window).exec():
+            window.reload()
+
+    def start_zap(self):
+        import secrets
+        from PyQt6.QtWebEngineCore import QWebEngineScript
+        window = self.window
+        view = window._current_view()
+        if view is None or not site_of(window.current_tab.url):
+            window.toast("Open a website first, then zap it")
+            return
+        self.zap_tab = window.current_tab
+        self._zap_token = secrets.token_hex(8)
+        view.setFocus()
+        # (an isolated world: the page can't see the script's token, so it can't speak for it)
+        view.page().runJavaScript(zap_script(self._zap_token), QWebEngineScript.ScriptWorldId.ApplicationWorld)
+
+    def console_message(self, tab, message):
+        if tab is not self.zap_tab:
+            return False  # only listen while the Zap tool is running on that tab
+        token = self._zap_token
+        if token and message.startswith(ZAP_MESSAGE + token):
+            boost = self.boosts.add_zapped(site_of(tab.url), message[len(ZAP_MESSAGE + token):])
+            if boost is not None:
+                self.window.toast(f"Zapped · {len(boost.zapped)} hidden on {boost.site}")
+            return True
+        if token and message == ZAP_DONE + token:
+            self.zap_tab = self._zap_token = None
+            return True
+        return False
+
+    def _fill_menu(self, menu):
+        menu.clear()
+        menu.addAction("Boost This Site…", self.boost_site)
+        menu.addAction("Zap Elements on This Page", self.start_zap)
+        if self.boosts.boosts:
+            menu.addSeparator()
+            for boost in self.boosts.boosts:
+                action = menu.addAction(boost.label + ("" if boost.enabled else "  (off)"),
+                                        lambda b=boost: self.boost_site(b))
+                action.setToolTip(boost.site)
+
+    def menus(self, add, menus, bar):
+        from PyQt6.QtWidgets import QMenu
+        menu = QMenu("Boosts", bar)
+        bar.insertMenu(menus["Spaces"].menuAction(), menu)  # (where it's always been: before Spaces)
+        menu.aboutToShow.connect(lambda: self._fill_menu(menu))
+        self._fill_menu(menu)
+
+    def commands(self):
+        return [("Boost This Site", "ph.rocket-launch", self.boost_site),
+                ("Zap Elements on This Page", "ph.lightning", self.start_zap)]
+
+
+FEATURE = BoostsFeature

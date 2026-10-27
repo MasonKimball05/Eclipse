@@ -7,37 +7,47 @@ from browser import keychain
 from browser.devmode import DevMode, project_files
 
 
-def test_keychain_secret_never_on_the_command_line(monkeypatch):
+def test_keychain_tokens_go_only_where_eclipse_can_read_them(monkeypatch, no_real_keychain):
     calls = []
 
     def fake_run(args, **kwargs):
-        calls.append((args, kwargs.get("input")))
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 44, "", "")  # (no old item)
+    monkeypatch.setattr(keychain.subprocess, "run", fake_run)
+    monkeypatch.setattr(keychain, "available", lambda: True)
+    assert keychain.store("acct", 'tok "q" \\ x') and keychain.load("acct") == 'tok "q" \\ x'
+    assert no_real_keychain["acct"] == 'tok "q" \\ x'.encode()  # (Eclipse's own item)
+    assert all('tok "q"' not in " ".join(a) for a in calls)  # (never on a command line)
+    assert not any(a[:2] == ["security", "add-generic-password"] or a[:2] == ["security", "-i"] for a in calls)
+    assert not keychain.store("acct", "two\nlines")
+    keychain.delete("acct")
+    assert "acct" not in no_real_keychain
+
+
+def test_an_old_token_moves_over_when_its_read(monkeypatch, no_real_keychain):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append(args)
         if args[:2] == ["security", "find-generic-password"]:
-            return subprocess.CompletedProcess(args, 0, 'tok "q" \\ x\n', "")
+            return subprocess.CompletedProcess(args, 0, "old-token\n", "")
         return subprocess.CompletedProcess(args, 0, "", "")
     monkeypatch.setattr(keychain.subprocess, "run", fake_run)
     monkeypatch.setattr(keychain, "available", lambda: True)
-    assert keychain.store("acct", 'tok "q" \\ x')
-    args, stdin = calls[0]
-    assert args == ["security", "-i"] and 'tok \\"q\\" \\\\ x' in stdin
-    assert all('tok "q"' not in " ".join(a) for a, _ in calls)  # nowhere in any argv
-    assert not keychain.store("acct", "two\nlines")
+    assert keychain.load("gh") == "old-token"
+    assert no_real_keychain["gh"] == b"old-token"
+    assert ["security", "delete-generic-password", "-s", "PythonBrowser", "-a", "gh"] in calls
+    calls.clear()
+    assert keychain.load("gh") == "old-token" and calls == []  # (from Eclipse's own item now)
 
 
-def test_keychain_timeout_doesnt_raise(monkeypatch):
+def test_keychain_timeout_doesnt_raise(monkeypatch, no_real_keychain):
     def slow(args, **kwargs):
         raise subprocess.TimeoutExpired(args, 30)
     monkeypatch.setattr(keychain.subprocess, "run", slow)
     monkeypatch.setattr(keychain, "available", lambda: True)
-    assert keychain.store("acct", "secret") is False  # and nothing for the error log to print
-
-
-class _Store:
-    settings = {}
-
-
-class _Browser:
-    store = _Store()
+    assert keychain.load("missing") is None  # (and nothing for the error log to print)
+    assert keychain.store("acct", "secret")
 
 
 def test_dev_mode_only_watches_pages_you_write(tmp_path):
@@ -59,53 +69,6 @@ def test_project_files_depth(tmp_path):
     names = {Path(p).name for p in project_files(str(tmp_path), depth=2)}
     assert names == {"top.html", "one.css"}
     assert len(project_files(str(tmp_path))) == 4
-
-
-def test_a_translation_is_dropped_when_its_page_closes(qapp):
-    from browser.translate import Translator, _Job
-
-    class Request:
-        cancelled = False
-
-        def cancel(self):
-            self.cancelled = True
-
-    class Browser:
-        pass
-    translator = Translator.__new__(Translator)
-    translator.browser = Browser()
-    translator._jobs, translator._translated, translator._watched = {}, set(), set()
-    job = _Job(object(), [], "English")
-    job.requests = [Request(), Request()]
-    translator._jobs[7] = job
-    translator._translated.add(7)
-    translator._watched.add(7)
-    translator._drop(7)  # (its view's destroyed signal)
-    assert job.cancelled and all(r.cancelled for r in job.requests)
-    assert 7 not in translator._jobs and 7 not in translator._translated and 7 not in translator._watched
-
-
-def test_away_queue_copes_with_the_tab_closing_while_homebase_answers(qapp):
-    from browser.integrations_ui import AppsUI
-
-    class Homebase:
-        def projects(self, done):
-            done(["Eclipse"], None)  # (answers: by now the tab has closed)
-
-    class Browser:
-        homebase = Homebase()
-        toasts = []
-
-        def toast(self, text, *args):
-            self.toasts.append(text)
-
-    class Tab:
-        url = "https://github.com/MasonKimball05/Eclipse/issues/12"
-        view = None  # closed
-    apps = AppsUI.__new__(AppsUI)
-    apps.browser = Browser()
-    apps.issue_to_away(Tab())
-    assert apps.browser.toasts == ["The issue's tab was closed"]
 
 
 def test_dark_websites_rules():

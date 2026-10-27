@@ -4,9 +4,11 @@ Run it with:   ./run.sh --build-app
                ./run.sh --build-app --sign "Developer ID Application: Your Name (TEAMID)"
                ./run.sh --build-app --sign "Developer ID Application: …" --notarize PROFILE
 
-By default the app is signed ad hoc, which is all your own Mac needs. --sign uses a real
-certificate with Apple's hardened runtime, which some macOS features require (Apple's
-Passwords helper, for the iCloud Passwords extension, refuses ad hoc browsers). --notarize
+By default the app is signed with the best certificate of the maker's team on this Mac (verified.TEAM_ID):
+a Developer ID Application one, else an Apple Development one, else ad hoc (--sign - asks for ad hoc).
+A real certificate means Apple's hardened runtime, and an app the Keychain knows across rebuilds (an
+ad hoc one is a new app each time, so its saved passwords' key asks again). Some macOS features need
+one too (Apple's Passwords helper refuses ad hoc browsers). --notarize
 then sends it to Apple using credentials saved once with
     xcrun notarytool store-credentials PROFILE --apple-id you@example.com --team-id TEAMID
 and staples the result to the app.
@@ -24,11 +26,13 @@ never receive those links, so the launcher embeds Python and runs main.py itself
 import argparse
 import os
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
 import sysconfig
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -233,14 +237,49 @@ def notarize(app: Path, profile: str):
     print("Notarized and stapled")
 
 
+def team_identity() -> tuple[str, str] | None:
+    """The best signing certificate of the maker's team on this Mac: (its SHA-1, its name), a Developer ID
+    Application one over an Apple Development one, the one that lasts longest of each; None if there's none.
+    (By hash: the same certificate can be in the Keychain twice, and a name would then be ambiguous.)"""
+    from browser.verified import TEAM_ID
+    if not TEAM_ID:
+        return None
+    listed = subprocess.run(["security", "find-identity", "-v", "-p", "codesigning"], capture_output=True,
+                            text=True).stdout
+    found = []
+    for sha1, name in re.findall(r'\d+\) ([0-9A-F]{40}) "([^"]+)"', listed):
+        if not name.startswith(("Developer ID Application:", "Apple Development:")):
+            continue
+        pem = subprocess.run(["security", "find-certificate", "-a", "-Z", "-p", "-c", name], capture_output=True,
+                             text=True).stdout
+        block = pem[pem.find(f"SHA-1 hash: {sha1}"):]
+        block = block[block.find("-----BEGIN"):block.find("-----END CERTIFICATE-----") + 25]
+        details = subprocess.run(["openssl", "x509", "-noout", "-subject", "-enddate"], input=block,
+                                 capture_output=True, text=True).stdout
+        if f"OU={TEAM_ID}" not in details.replace(" = ", "="):
+            continue
+        ends = re.search(r"notAfter=(.+)", details)
+        ending = time.mktime(time.strptime(ends.group(1).strip(), "%b %d %H:%M:%S %Y %Z")) if ends else 0
+        found.append((name.startswith("Developer ID Application:"), ending, sha1, name))
+    if not found:
+        return None
+    _, _, sha1, name = max(found)
+    return sha1, name
+
+
 def main():
     parser = argparse.ArgumentParser(description=f"Build {NAME}.app")
-    parser.add_argument("--sign", default=os.environ.get("PYBROWSER_SIGN_IDENTITY", "-"), metavar="IDENTITY",
-                        help='a codesigning identity (e.g. "Developer ID Application: …"); default: ad hoc')
+    parser.add_argument("--sign", default=os.environ.get("PYBROWSER_SIGN_IDENTITY"), metavar="IDENTITY",
+                        help='a codesigning identity (e.g. "Developer ID Application: …"), or - for ad hoc; '
+                             "default: the best one of the maker's team on this Mac, else ad hoc")
     parser.add_argument("--notarize", metavar="PROFILE", help="notarytool keychain profile (needs --sign)")
     parser.add_argument("--output", type=Path, default=None, metavar="FOLDER",
                         help="where to put the app (default: /Applications)")
     args = parser.parse_args()
+    if args.sign is None:
+        best = team_identity()
+        args.sign = best[0] if best else "-"
+        print(f"Signing with {best[1]}" if best else "Signing ad hoc (no certificate of the team on this Mac)")
     if args.notarize and args.sign == "-":
         parser.error("--notarize needs --sign with a Developer ID Application certificate")
     build(args.output / APP.name if args.output else install_path(), args.sign, args.notarize)

@@ -10,8 +10,15 @@ def test_the_sites_name_goes():
         == "Python (programming language)"
     assert tidy("How do I exit Vim? - Stack Overflow", "https://stackoverflow.com/q/11828270") == "How do I exit Vim?"
     assert tidy("BBC News | Home", "https://www.bbc.co.uk/news") == "BBC News"  # (at the start; "Home" says less)
+    assert tidy("Home - YouTube", "https://www.youtube.com/") == "YouTube"
     assert tidy("lofi beats — YouTube", "https://www.youtube.com/watch?v=1") == "lofi beats"
     assert tidy("arc - Google Search", "https://www.google.com/search?q=arc") == "arc"
+    assert tidy("pathlib — Object-oriented filesystem paths — Python 3.15.2 documentation",
+                "https://docs.python.org/3/library/pathlib.html") == "pathlib — Object-oriented filesystem paths"
+    assert tidy("GitHub - anthropics/claude-code: Claude Code is an agentic coding tool - all in your terminal. · GitHub",
+                "https://github.com/anthropics/claude-code") == "anthropics/claude-code"
+    assert tidy("BBC News - Breaking news, video and the latest top stories", "https://www.bbc.com/") == "BBC News"
+    assert tidy("Spotify - Web Player: Listen to Music", "https://open.spotify.com/") == "Spotify"
     assert tidy("Lisbon - Google Maps", "https://www.google.com/maps/place/Lisbon") == "Lisbon"
 
 

@@ -2,9 +2,25 @@ import datetime
 import os
 import subprocess
 
+import pytest
+
 from browser.integrations import (DEFAULTS, config, daybook_url, job_tracker_url, live_folder_presets, local_clone,
                                   search_shortcut_presets, summarize, without_thinking)
 from browser.live_folders import parse_json_items, repo_state, scan_repos, upcoming_events, web_url
+
+
+
+@pytest.fixture(autouse=True)
+def as_the_maker(monkeypatch):
+    """These tests are of the maker's own apps, whoever runs them (the last one is of anyone else's copy)."""
+    from browser import member_card
+    monkeypatch.setattr(member_card, "_maker", True)
+
+
+def _git(cwd, *args):
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@t"}
+    subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, env=env)
 
 
 def test_config_defaults_and_overrides():
@@ -54,12 +70,6 @@ def test_send_to_links():
     assert job_tracker_url(config({}), "https://jobs.example/p?id=1&x=2") == \
         DEFAULTS["jobtracker"] + "/new?url=https%3A%2F%2Fjobs.example%2Fp%3Fid%3D1%26x%3D2"
     assert daybook_url("Read this", "https://a.example/").toString().startswith("daybook://add-task?text=Read")
-
-
-def _git(cwd, *args):
-    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t",
-           "GIT_COMMITTER_EMAIL": "t@t"}
-    subprocess.run(["git", "-C", str(cwd), *args], check=True, capture_output=True, env=env)
 
 
 def test_repo_radar(tmp_path):
@@ -150,17 +160,18 @@ def test_site_changes():
     assert site_changes(None, bad) == [] and site_changes(ok, ok) == []
 
 
-def test_whats_new_once(monkeypatch):
-    from browser import whats_new
-    shown = []
-    monkeypatch.setattr(whats_new, "WhatsNew", lambda browser: type("W", (), {"show": lambda self: shown.append(1)})())
 
-    class Store:
-        is_new = False
-        settings = {}
-
-        def schedule_save(self):
-            pass
-    browser = type("B", (), {"store": Store()})()
-    assert whats_new.show_if_new(browser) is not None and whats_new.show_if_new(browser) is None
-    assert shown == [1]
+def test_anyone_elses_copy_has_only_the_general_parts(monkeypatch):
+    from browser import member_card
+    from browser.integrations import GENERAL, ollama_url
+    monkeypatch.setattr(member_card, "_maker", False)
+    cfg = config({})
+    assert cfg == GENERAL and not any(cfg[k] for k in ("homebase", "parliament", "jobtracker", "daybook", "editor"))
+    assert [p["id"] for p in live_folder_presets(cfg)] == ["repo-radar"]
+    assert search_shortcut_presets(cfg) == []
+    assert ollama_url(cfg) == "http://localhost:11434"
+    mine = config({"my_apps": {"github_user": "someone", "ollama": "http://gpu.local:11434/"}})
+    assert {e["keyword"] for e in search_shortcut_presets(mine)} == {"mygh"} and ollama_url(mine) == "http://gpu.local:11434"
+    # The maker's copy goes through Homebase's proxy
+    monkeypatch.setattr(member_card, "_maker", True)
+    assert ollama_url(config({})) == DEFAULTS["homebase"] + "/ollama"

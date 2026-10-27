@@ -1,9 +1,8 @@
-"""Small pure functions: URL detection, ad-block matching, yt-dlp arguments, questions, themes."""
+"""Small pure functions: URL detection, ad-block matching, yt-dlp arguments, themes."""
 
 import pytest
 
 from browser.adblock import _site, parse_list, should_block
-from browser.ai import looks_like_question
 from browser.command_bar import search_url, to_url
 from browser.downloads import DEFAULT_SETTINGS, InfoFetch, _error_message, build_arguments
 from browser.theme import make_theme
@@ -53,14 +52,6 @@ def test_should_block():
     assert not should_block("doubleclick.net", "doubleclick.net", domains)       # ...even if it's on the list
     assert not should_block("example.com", "news.com", domains)                  # parent of a listed host
     assert not should_block("doubleclick.net", "news.com", domains, ["news.com"])  # site allowed by the user
-
-
-def test_questions():
-    assert looks_like_question("who owns this?")
-    assert looks_like_question("what is the plot")
-    assert looks_like_question("summarize")
-    assert not looks_like_question("python docs")
-    assert not looks_like_question("?")
 
 
 def _args(**overrides):

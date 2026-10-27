@@ -18,55 +18,40 @@ from PyQt6.QtWebEngineCore import (QWebEngineDownloadRequest, QWebEngineNewWindo
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import (QApplication, QColorDialog, QDialog, QFileDialog,
                              QHBoxLayout, QInputDialog, QLineEdit, QMainWindow, QMenu, QMessageBox, QSplitter,
-                             QVBoxLayout, QWidget)
+                             QWidget)
 
 import qtawesome as qta
 
-from . import arc_import, backup, brand, clean_links, dark_pages, macos, motion, screenshots, spelling, storage
+from . import backup, brand, clean_links, dark_pages, macos, motion, screenshots, spelling, storage
 from .adblock import AdBlocker
-from .ai import Claude, page_block
-from .browse import BrowseForMe, PageReader, answer_path, js_set, new_run_id, render_page
-from .boosts import ZAP_DONE, ZAP_MESSAGE, Boost, BoostEditor, BoostManager, site_of, zap_script
 from .command_bar import CUSTOM_SETTING, CommandBar, use_custom_sites
 from .content import ContentFrame
 from .downloads import BrowserDownload, DownloadSettings, DownloadsWindow, reveal_in_finder, ytdlp_settings
-from .ext.host import STORE_MESSAGE, ExtensionHost
-from .ext.ui import ExtensionPopup, Installer, extensions_menu
-from .ext.updates import Updater
 from .library import LibraryWindow
 from .air_traffic import route
 from .little import LittleWindow
-from .live_folders import LiveFolders, feed_name, github_repo, mark_seen
 from .mini_player import MiniPlayer
 from .notify import NotificationCenter
 from .devmode import DevMode, is_dev_url
-from .github_status import GitHubRepos, PullStatus, checks as pr_checks, github_pull
-from .now_playing import NowPlaying
 from .cert_errors import CertificateGuard
 from .crash import CrashWatcher, logs_dir as crash_logs_dir
-from . import integrations
-from .integrations import Homebase, LocalAI
-from .integrations_ui import AppsUI
-from .upnext import UpNext
-from .live_folder_dialog import LiveFolderDialog
 from .page_index import PageIndex
 from .private import PrivateSession
 from .reader import ReaderView
-from .self_update import SelfUpdater
-from .translate import Translator, target_language
 from .external_links import ExternalLinks
+from . import features as feature_loader
 from .sidebar_edge import SidebarEdge
 from .favicons import Favicons
 from .floating_sidebar import EDGE as FLOAT_EDGE, FloatingSidebar
 from .traffic_lights import TrafficLights
-from .gestures import SpaceSwipe, SwipeNavigator, slide_region
+from .space_slide import slide_region
 from .tab_preview import TabPreview
 from .tab_switcher import TabSwitcher
 from .zoom import remember_zoom, step_zoom, zoom_for, zoom_key
 from .page_actions import markdown_link, safe_filename
+from .passkeys import Passkeys
+from .passwords import Passwords
 from .permissions import KINDS, PermissionManager, origin_key
-from .easel import CaptureOverlay, EaselView, is_easel, new_easel_url
-from .notes import NoteEditor, is_note, new_note_url
 from .peek import PeekOverlay
 from .split import MAX_PANES
 from .models import FAVORITES, PINNED, TODAY, Folder, Tab, display_host, node_path, walk_folders, walk_tabs
@@ -74,8 +59,6 @@ from .settings import ARCHIVE_CHOICES, DEFAULT_SLEEP_MINUTES, SettingsWindow
 from .sidebar import Sidebar
 from .icons import space_icon
 from .space_editor import SpaceEditor
-from .tidy_downloads import tidy as tidy_download
-from .tidy import MIN_TABS as TIDY_MIN_TABS, build_prompt as build_tidy_prompt, parse_groups as parse_tidy_groups
 from .theme import PALETTE, PlainMenu, ThemedBackground, dot_icon, stylesheet, theme_for_space
 from .theme_editor import ThemeEditor
 from .webview import DEFAULT_PROFILE, WebPage, WebView, build_profile
@@ -85,6 +68,12 @@ MAC = sys.platform == "darwin"
 CONTROL = "Meta" if MAC else "Ctrl"
 SIDEBAR_WIDTH = 250  # default; drag the sidebar's edge to change it
 SIDEBAR_GAP = 12     # between the sidebar's contents and the page: all of it is the resize edge
+
+
+def _save_editor(view):
+    """A tab that isn't a web page (a note, an easel) keeps its work: saved before it goes."""
+    if view is not None and not isinstance(view, QWebEngineView) and hasattr(view, "save"):
+        view.save()
 
 
 def _delete(obj):
@@ -105,62 +94,37 @@ class MainWindow(QMainWindow):
         self._extra_windows: list[QWidget] = []     # Little windows and DevTools
         self._fullscreen = False
         self._rebuild_pending = False
-
-        # Claude (Arc Max-style features) via the local Claude Code CLI
-        self.claude = Claude(self, store.settings.get("claude_model", "haiku"))
-        self.claude.enabled = store.settings.get("claude_enabled", True)
+        # Claude, Live Folders, extensions, Easels…: whichever features are here (features.py), each hooked in
         self._hovered_link = ""
         self._shift_alone = False
-        self._preview_page = None
-        self._preview_request = None
-        self._preview_cache: dict[str, tuple[str, str]] = {}
 
         self.adblock = AdBlocker(store, self)
         self._shield_timer = QTimer(self, singleShot=True, interval=300, timeout=lambda: self.sidebar.update_shield())
         self.adblock.blocked.connect(lambda _site: self._shield_timer.start())  # coalesce bursts
-        self.boosts = BoostManager(store, self)
-        self.live_folders = LiveFolders(self)  # folders that fill themselves from a feed or GitHub
         self.mini_player = MiniPlayer(self)  # floats a playing video when you switch away from its tab
         self.permissions = PermissionManager(self)  # camera, microphone, screen sharing, location…
+        self.passkeys = Passkeys(self)  # signing in with a security key: its PIN, "touch your key"
+        self.passwords = Passwords(self)  # saved passwords: filling sign-in forms, offering to save
         self.external_links = ExternalLinks(self)  # links that open other apps: asked about first
         WebPage.external_link = lambda *asked: self.external_links.requested(*asked)
         self.notifications = NotificationCenter(self)  # site notifications and unread badges
-        self.swipes = SwipeNavigator(self)  # two-finger back/forward
-        self.space_swipe = SpaceSwipe(self)  # two fingers on the sidebar: the next Space
-        self.github_repos = GitHubRepos(self)  # your repos, for ⌘T
-        self.pr_status = PullStatus(self)  # a pull request's checks and review, for the chip in the URL pill
         self.devmode = DevMode(self)  # localhost and file pages: console drawer, reload on save
-        self.now_playing = NowPlaying(self)  # the sidebar's card for a background tab playing audio
-        self.translator = Translator(self)  # Translate Page, with the Claude CLI
         self.crashes = CrashWatcher(self)  # pages whose renderer crashed get a Reload card
         self.certificates = CertificateGuard(self)  # "This connection isn't private"
         self.private = PrivateSession(self)  # ⇧⌘P: windows that remember nothing
         self.page_index = PageIndex(self)  # the text of pages you've read, searchable from ⌘T
-        self.homebase = Homebase(self)  # your desktop's apps (status, start/stop, logs)
-        self.homebase.alert.connect(self._homebase_alert)
-        self.local_ai = LocalAI(self)  # the model homebase serves (Qwen), for questions
-        self.apps = AppsUI(self)  # Send To, the homebase menu, My Apps presets
-        self.up_next = UpNext(self)  # your next event today, from Daybook
-        self.parliament_badge = integrations.ParliamentBadge(self)  # its unread count on its tabs
         use_custom_sites(store.settings.get(CUSTOM_SETTING, []))  # your own search shortcuts
-        self.self_updater = SelfUpdater(self)  # a daily look for a newer version on GitHub
-        self.extensions = ExtensionHost(self)  # userscripts and Chrome extensions (our own runtime)
-        self.installer = Installer(self)
-        self.ext_updates = Updater(self)  # daily update checks for extensions and userscripts
-        self._extension_shortcuts = []
-        self.extensions.changed.connect(self.install_extension_shortcuts)
         self._downloads: DownloadsWindow | None = None
         self._settings: SettingsWindow | None = None
         self._library: LibraryWindow | None = None
-        self._zap_tab: Tab | None = None
-        self._tidy_undo = None  # (space, Today's top-level nodes before the last Tidy)
-        self._last_easel = None  # where Capture (⇧⌘2) puts things
         self._page_shot = None   # a whole-page screenshot being taken
         self._keep_closed = 30   # how many closed tabs ⇧⌘T can bring back
         self._printing = None  # (view, printer) while a page prints
-        self._browse_runs: set = set()
         self.traffic_lights = TrafficLights(self)  # with the sidebar, dim until pointed at
         self.floating_sidebar = FloatingSidebar(self)  # the hidden sidebar, out over the page on hover
+
+        # The features (after the core's services, which they may use; before the first profile, which they hook)
+        self.features = feature_loader.load(self)
 
         # One browser profile per name; Spaces can pick their own (separate logins)
         self._profiles = {}
@@ -180,12 +144,12 @@ class MainWindow(QMainWindow):
         root_layout.setContentsMargins(0, 0, 0, 0)
 
         self.sidebar = Sidebar(self)
-        self.pr_status.changed.connect(self._pr_answered)
         self.content = ContentFrame(self)
         self.reader = ReaderView(self, self.content)  # ⌥⌘R, over the page
-        content_wrap = QWidget()
-        self.content_layout = QVBoxLayout(content_wrap)
-        self.content_layout.addWidget(self.content)
+        content_wrap = self.content_wrap = QWidget()  # (the page, and anything beside it: Ask About This Page)
+        self.content_layout = QHBoxLayout(content_wrap)
+        self.content_layout.setSpacing(SIDEBAR_GAP)
+        self.content_layout.addWidget(self.content, 1)
 
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setObjectName("SidebarSplitter")
@@ -214,6 +178,7 @@ class MainWindow(QMainWindow):
 
         self.sidebar.setVisible(store.settings.get("sidebar_visible", True))
         self._update_content_margins()
+        self.emit("ready")  # (the features: the window's there now)
 
         store.structure_changed.connect(self._schedule_rebuild)
         # Icons for tabs that haven't loaded yet (pinned tabs, Favorites…), looked for a moment after start
@@ -250,17 +215,41 @@ class MainWindow(QMainWindow):
 
         # Watch for Shift anywhere (including inside web pages) for link previews
         QApplication.instance().installEventFilter(self)
-        QTimer.singleShot(2000, self.claude.warm_up)
 
-        # First launch on a Mac that has Arc: offer to bring everything over
-        if store.is_new and arc_import.arc_installed():
-            QTimer.singleShot(800, self.import_from_arc)
+
+    # --- Features (features.py) -------------------------------------------------------------
+
+    def feature(self, name):
+        """A feature by name, or None if it isn't here."""
+        return self.features.get(name)
+
+    def emit(self, hook, *args):
+        """Tell every feature something (a Feature hook)."""
+        for feature in list(self.features.values()):
+            getattr(feature, hook)(*args)
+
+    def gather(self, hook, *args) -> list:
+        """What every feature has to add (a Feature hook that returns a list)."""
+        found = []
+        for feature in list(self.features.values()):
+            found += getattr(feature, hook)(*args) or []
+        return found
+
+    def first(self, hook, *args):
+        """The first feature's answer that isn't None."""
+        for feature in list(self.features.values()):
+            answer = getattr(feature, hook)(*args)
+            if answer is not None:
+                return answer
+        return None
 
     # --- Theme & layout ----------------------------------------------------------------
 
     def apply_theme(self):
         self.theme = theme_for_space(self.store.active_space)
         self.setStyleSheet(stylesheet(self.theme))
+        if getattr(self, "features", None) is not None:
+            self.emit("theme_changed")
         self.centralWidget().update()
         self.sidebar.rebuild()
         if self._downloads is not None:
@@ -424,12 +413,11 @@ class MainWindow(QMainWindow):
         self._profiles[name] = profile
         profile.downloadRequested.connect(self._on_download)
         self.adblock.attach(profile)
-        self.boosts.attach(profile)
-        self.extensions.attach_profile(profile)
         self.permissions.attach_profile(profile)
+        self.passkeys.attach_profile(profile)
+        self.passwords.attach_profile(profile)
         self.notifications.attach_profile(profile)
-        self.swipes.attach_profile(profile)
-        self.now_playing.attach_profile(profile)
+        self.emit("profile_ready", profile)
         spelling.apply([profile], self.store.settings)
 
     def apply_spelling(self) -> bool:
@@ -471,14 +459,15 @@ class MainWindow(QMainWindow):
     def create_view(self, profile=None) -> WebView:
         view = WebView(profile or self.profile)
         view.page().dark_rule = lambda url: dark_pages.wanted(self.store.settings, url)
-        self.extensions.attach_page(view.page())
         self.permissions.attach(view)
-        self.swipes.attach(view)
+        self.passkeys.attach(view)
+        self.passwords.attach(view)
         self.devmode.attach(view)
         self.crashes.attach(view)
         self.certificates.attach(view)
         view.urlChanged.connect(lambda _url, v=view: self._apply_site_zoom(v))
         view.loadFinished.connect(lambda _ok, v=view: self._apply_site_zoom(v))  # pages can reset it
+        self.emit("view_created", view, None)
         view.printRequested.connect(lambda v=view: self.print_page(v))  # a site's own Print button
         view.printRequestedByFrame.connect(lambda _frame, v=view: self.print_page(v))
         view.context_menu_hook = self._extend_context_menu
@@ -508,15 +497,7 @@ class MainWindow(QMainWindow):
         selected = " ".join(request.selectedText().split())
         if selected and not request.misspelledWord():  # (a typo's corrections stay first, as in any Mac app)
             self._selection_actions(view, menu, selected)
-        actions = (self.apps.send_to_actions(tab) if tab is not None and not request.linkUrl().isValid()
-                   and not selected else [])
-        if actions:
-            send = PlainMenu("Send Page To", menu)
-            for label, _icon, run in actions:
-                send.addAction(label, run)
-            first = menu.actions()[0] if menu.actions() else None
-            menu.insertMenu(first, send) if first else menu.addMenu(send)
-            menu.insertSeparator(first) if first else None
+        self.emit("page_menu", menu, request, view, tab)
         link = request.linkUrl()
         copy_link = view.page().action(QWebEnginePage.WebAction.CopyLinkToClipboard)
         if link.isValid() and copy_link in menu.actions():  # copied without its tracking tags
@@ -530,29 +511,13 @@ class MainWindow(QMainWindow):
             private.triggered.connect(lambda _=False, u=link.toString(): self.private.new_window(u))
             actions = menu.actions()
             menu.insertAction(actions[2] if len(actions) > 2 else None, private)  # after "Open Link in New Tab/Window"
-        self.extensions.extend_context_menu(view, menu, request)
 
     def _selection_actions(self, view, menu, selected):
-        """Right-clicking selected text: ask about it, translate it, look it up — at the top of the menu."""
+        """Right-clicking selected text: the features' (ask about it, translate it), then look it up, at the top
+        of the menu."""
         short = selected if len(selected) <= 28 else selected[:26].rstrip() + "…"
-        title = view.title() or display_host(view.url().toString())
-        page = page_block(title, view.url().toString(), selected[:6000])
-        explain = (page + "\n\nExplain the passage above (from that page) plainly and briefly, in under 150 "
-                   "words: what it means, and any term in it a reader might not know. Use Markdown where it helps.")
-        language = target_language(self.store.settings)
-        translate = (page + f"\n\nTranslate the passage above into {language}. Answer with only the "
-                     "translation (if it's already in that language, say so in one line).")
         first = menu.actions()[0] if menu.actions() else None
-        added = []
-        for ai in (self.assistant(), self.assistant(other=True)):
-            if ai is not None:
-                action = QAction(f"Ask {self.assistant_name(ai)} About “{short}”", menu)
-                action.triggered.connect(lambda _=False, a=ai: self.command_bar.ask_about(selected, explain, a))
-                added.append(action)
-        if self.assistant() is not None:
-            action = QAction(f"Translate “{short}”", menu)
-            action.triggered.connect(lambda: self.command_bar.ask_about(selected, translate))
-            added.append(action)
+        added = self.gather("selection_menu", menu, view, selected)
         if len(selected.split()) <= 3 and len(selected) <= 40:  # a word or a term: the Mac's own Dictionary
             action = QAction(f"Look Up “{short}” in Dictionary", menu)
             action.triggered.connect(lambda: QDesktopServices.openUrl(
@@ -565,20 +530,15 @@ class MainWindow(QMainWindow):
             menu.insertSeparator(first)
 
     def _ensure_view(self, tab, load=True):
-        if tab.view is None and is_easel(tab.url):
-            tab.view = EaselView(tab.url)
-            tab.view.title_changed.connect(lambda title: self._on_title(tab, title))
-            tab.view.open_link.connect(lambda url: self.open_url(url))
-            tab.view.export.connect(lambda kind, view=tab.view: self.export_easel(view, kind))
-            tab.title = tab.view.title
-            self.content.stack.addWidget(tab.view)
-            tab.changed.emit()
-        if tab.view is None and is_note(tab.url):
-            tab.view = NoteEditor(tab.url)
-            tab.view.title_changed.connect(lambda title: self._on_title(tab, title))
-            tab.title = tab.view.title
-            self.content.stack.addWidget(tab.view)
-            tab.changed.emit()
+        if tab.view is None and not tab.url.startswith(("http://", "https://", "file:", "about:", "data:")):
+            view = self.first("view_for", tab)  # (a feature's own kind of tab: a note, an easel)
+            if view is not None:
+                tab.view = view
+                if hasattr(view, "title_changed"):
+                    view.title_changed.connect(lambda title: self._on_title(tab, title))
+                tab.title = getattr(view, "title", tab.title)
+                self.content.stack.addWidget(view)
+                tab.changed.emit()
         if tab.view is None:
             tab.view = self.create_view(self.profile_for_tab(tab))
             self._wire(tab, tab.view)
@@ -609,16 +569,13 @@ class MainWindow(QMainWindow):
                                                                                    r.numberOfMatches()))
 
     def _destroy_view(self, tab):
-        if tab is self._zap_tab:
-            self._zap_tab = None
         if self._fullscreen and tab is self.current_tab:
             self._set_fullscreen(False)  # its page was the one filling the screen
         self.thumbnails.pop(tab.id, None)
         self.mini_player.release(tab)
-        self.now_playing.forget(tab)
+        self.emit("view_destroyed", tab)
         view, tab.view = tab.view, None
-        if isinstance(view, (NoteEditor, EaselView)):
-            view.save()
+        _save_editor(view)
         if view is not None:
             self.content.remove_view(view)
             view.deleteLater()
@@ -697,17 +654,15 @@ class MainWindow(QMainWindow):
     def _on_audible(self, tab):
         tab.changed.emit()
         self.mini_player.audible_changed(tab)
-        self.now_playing.audible_changed(tab)
+        self.emit("audible_changed", tab)
 
     def _on_url(self, tab, url):
-        if tab is self._zap_tab:
-            self._zap_tab = None  # navigating away ends Zap (the new page has no picker)
         tab.url = url.toString()
         tab.changed.emit()
         if tab is self.current_tab:
             self.sidebar.update_nav()
         self.store.schedule_save()
-        self.extensions.tab_updated(tab, url=tab.url)
+        self.emit("url_changed", tab, url)
 
     def _on_title(self, tab, title):
         tab.title = title
@@ -786,7 +741,7 @@ class MainWindow(QMainWindow):
         if tab is self.current_tab:
             self.content.set_progress(100)
             self.sidebar.update_nav()
-        self.extensions.tab_updated(tab, status="complete")
+        self.emit("load_finished", tab, ok)
 
     def handle_new_window(self, source_tab, request, profile=None):
         Dest = QWebEngineNewWindowRequest.DestinationType
@@ -885,9 +840,8 @@ class MainWindow(QMainWindow):
         private = getattr(item, "private", False)
         if download.state() == download.DownloadState.DownloadCompleted:
             macos.quarantine(item.path)  # (from the internet: Gatekeeper checks it before it opens; Qt doesn't mark it)
-        if (download.state() == download.DownloadState.DownloadCompleted and not private
-                and self.store.settings.get("tidy_downloads", True)):
-            tidy_download(self, item, download)
+        if download.state() == download.DownloadState.DownloadCompleted:
+            self.emit("download_done", item, download)  # (Claude's readable names, say)
 
     # --- Page actions: print, PDF, save, copy as Markdown -----------------------------------------
 
@@ -1044,61 +998,14 @@ class MainWindow(QMainWindow):
             self._downloads = DownloadsWindow(self)
         return self._downloads
 
-    def _pr_answered(self, url):
-        tab = self.current_tab
-        if tab is not None and github_pull(tab.url) is not None and github_pull(tab.url) == github_pull(url):
-            self.sidebar.update_pr()
-
-    def show_pr_checks(self, pos):
-        """The PR chip's menu: each check (failing first), to open; the checks page; and look again now."""
-        tab = self.current_tab
-        pull = github_pull(tab.url) if tab is not None else None
-        data = self.pr_status.lookup(tab.url) if pull else None
-        if data is None:
-            return
-        menu = self._menu()
-        icons = {"pass": ("ph.check-circle", "#30a46c"), "fail": ("ph.x-circle", "#e5484d"),
-                 "running": ("ph.circle-dashed", "#f5a623")}
-        found = pr_checks(data)
-        for name, state, link in found[:25]:
-            icon, color = icons[state]
-            action = menu.addAction(qta.icon(icon, color=color), name.replace("&", "&&"),
-                                    lambda link=link: self.open_url(link))
-            action.setEnabled(bool(link))
-        if not found:
-            menu.addAction("No checks on this pull request").setEnabled(False)
-        menu.addSeparator()
-        owner, repo, number = pull
-        self._act(menu, "ph.checks", "Open Checks Page",
-                  lambda: self.open_url(f"https://github.com/{owner}/{repo}/pull/{number}/checks"))
-        self._act(menu, "ph.arrows-clockwise", "Check Again", lambda: self.pr_status.lookup(tab.url, force=True))
-        menu.exec(pos)
-
-    def save_job_posting(self, tab=None):
-        tab = tab or self.current_tab
-        if tab is not None:
-            self.open_url(integrations.job_tracker_url(integrations.config(self.store.settings), tab.url))
-
-    def _homebase_alert(self, text):
-        self.toast(text)
-        if not self.isActiveWindow() and "down" in text:
-            QApplication.alert(self, 0)  # bounce the Dock icon: something you run needs you
-
-    def show_homebase_menu(self, pos):
-        self.apps.homebase_menu(pos)
-
     def assistant(self, other=False):
-        """Who answers questions: Claude, or the local model on homebase (Settings → My Apps).
-        other: the one that isn't chosen, for the second row in ⌘T. None if it can't answer."""
-        local = integrations.config(self.store.settings)["ai"] == "local"
-        if other:
-            local = not local
-        if local:
-            return self.local_ai if self.local_ai.available else None
-        return self.claude if self.claude.available else None
+        """Who answers questions (features.py: Claude's), or None."""
+        claude = self.feature("claude")
+        return claude.assistant(other) if claude is not None else None
 
     def assistant_name(self, ai) -> str:
-        return f"{self.local_ai.name} (local)" if ai is self.local_ai else "Claude"
+        claude = self.feature("claude")
+        return claude.assistant_name(ai) if claude is not None else ""
 
     def show_downloads(self, url=""):
         self.downloads_window.open(url)
@@ -1216,69 +1123,6 @@ class MainWindow(QMainWindow):
     def toast(self, text, action=None, label="Undo"):
         self.content.show_toast(text, action, label)
 
-    # --- Extensions --------------------------------------------------------------------------
-
-    def show_extensions_menu(self, pos):
-        menu = self._menu()
-        extensions_menu(self, menu)
-        menu.exec(pos)
-
-    def pinned_extensions(self):
-        pinned = self.store.settings.get("pinned_extensions", [])
-        return [self.extensions.extensions[i] for i in pinned
-                if i in self.extensions.extensions and self.extensions.extensions[i].enabled]
-
-    def toggle_pinned_extension(self, ext):
-        pinned = self.store.settings.setdefault("pinned_extensions", [])
-        if ext.id in pinned:
-            pinned.remove(ext.id)
-        else:
-            pinned.append(ext.id)
-        self.store.schedule_save()
-        self.sidebar.update_extensions()
-
-    def click_extension(self, ext, button=None):
-        if ext.popup:
-            button = button or self.sidebar.ext_btn
-            anchor = button.mapToGlobal(QPoint(0, button.height() + 4))
-            ExtensionPopup(self, ext, anchor)  # shows itself once sized
-        else:  # no popup: the extension handles the click itself (chrome.action.onClicked)
-            tab = self.current_tab
-            self.extensions.broadcast("action.clicked:" + ext.id,
-                                      [self.extensions.tab_info(tab) if tab else None], only_extension=ext.id)
-
-    def install_extension_shortcuts(self):
-        """Keyboard shortcuts from extensions' manifests (e.g. ⌘⇧X opens Proton Pass), unless one would
-        take over a shortcut the browser already uses."""
-        for shortcut in self._extension_shortcuts:
-            shortcut.setParent(None)
-            shortcut.deleteLater()
-        self._extension_shortcuts = []
-        taken = {a.shortcut().toString() for a in self.findChildren(QAction) if not a.shortcut().isEmpty()}
-        for ext in self.extensions.extensions.values():
-            if not ext.enabled:
-                continue
-            for name, keys, _description in ext.commands:
-                sequence = QKeySequence(keys)
-                if sequence.isEmpty() or sequence.toString() in taken:
-                    continue
-                taken.add(sequence.toString())
-                shortcut = QShortcut(sequence, self)
-                shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
-                shortcut.activated.connect(lambda e=ext, n=name: self._extension_command(e, n))
-                self._extension_shortcuts.append(shortcut)
-
-    def _extension_command(self, ext, name):
-        if name in ("_execute_action", "_execute_browser_action", "_execute_page_action"):
-            self.click_extension(ext)
-            return
-        tab = self.current_tab
-        self.extensions.broadcast("commands:" + ext.id, [name, self.extensions.tab_info(tab) if tab else None],
-                                  only_extension=ext.id)
-
-    def offer_userscript(self, url):
-        self.installer.userscript_from_url(url)
-
     # --- Tabs ------------------------------------------------------------------------------
 
     def activate_tab(self, tab):
@@ -1304,18 +1148,6 @@ class MainWindow(QMainWindow):
         if tab.notified:
             tab.notified = False
             tab.changed.emit()
-        if is_easel(tab.url):
-            self._last_easel = tab  # where captures go
-        if tab.fresh:  # opening a new Live Folder item clears its dot
-            folder = self.store.live_folder_of(tab)
-            if folder is not None:
-                mark_seen(folder, tab)
-                tab.changed.emit()
-                self.sidebar.refresh_folder(folder)
-                holder = self.store.folder_of(tab)
-                if holder is not folder:  # (and the count on the sub-folder it's in)
-                    self.sidebar.refresh_folder(holder)
-                self.store.schedule_save()
         self.mini_player.release(tab)  # coming back to the tab the mini player was showing
         view = self._ensure_view(tab)
         self._stamp_on_screen()  # (the tab you're leaving was in use until now, not since you opened it)
@@ -1341,26 +1173,28 @@ class MainWindow(QMainWindow):
         for shown in split or [tab]:
             self.permissions.flush(shown.view)  # anything it asked for while you weren't looking
         self.external_links.view_shown()  # (a card asking to open an app shows only over its own page)
+        self.passkeys.view_shown()  # (and a security key's card)
+        self.passwords.view_shown()
         if not self.command_bar.isVisible() and not view.hasFocus():
             view.setFocus()
         self.setWindowTitle(tab.label)
         self.sidebar.update_selection()
         self.sidebar.update_nav()
         self.store.schedule_save()
-        self.extensions.tab_activated(tab)
         self.devmode.update_for_current()
-        self.now_playing.tab_shown(tab)
+        self.emit("tab_shown", tab)
         if not self.reader.is_open_for(tab):
             self.reader.close_reader()
         if previous is not tab:
             self.mini_player.left_tab(previous)
-            self.now_playing.left_tab(previous)
+            self.emit("tab_left", previous)
 
     def _show_nothing(self):
         self.current_tab = None
         self.content.show_view(None)
         self.reader.close_reader()
         self.devmode.update_for_current()
+        self.emit("tab_shown", None)
         self.setWindowTitle(brand.NAME)
         self.sidebar.update_selection()
         self.sidebar.update_nav()
@@ -1399,7 +1233,7 @@ class MainWindow(QMainWindow):
         self.tab_preview.dismiss()
         self.store.remove_from_split(tab)
         self._destroy_view(tab)
-        self.extensions.tab_removed(tab)
+        self.emit("tab_closed", tab)
         if kind == TODAY:
             self._closed.append((tab.to_dict(), space.id))
             del self._closed[:-self._keep_closed]
@@ -1418,9 +1252,9 @@ class MainWindow(QMainWindow):
             self.sidebar.update_selection()
 
     def _remove_view(self, tab):
-        """A tab that's going for good (not just unloaded): its page, and extensions hear it's gone."""
+        """A tab that's going for good (not just unloaded): its page, and the features hear it's gone."""
         self._destroy_view(tab)
-        self.extensions.tab_removed(tab)
+        self.emit("tab_closed", tab)
 
     def delete_tab(self, tab):
         was_current = tab is self.current_tab
@@ -1469,7 +1303,7 @@ class MainWindow(QMainWindow):
         loc = self.store.locate(node)
         self.store.move_tab(node, kind, None if kind == FAVORITES else self.store.active_space, index, folder)
         if isinstance(node, Tab) and loc and loc[0] == TODAY and kind == PINNED:
-            self.tidy_title(node)
+            self.emit("tab_pinned", node)
 
     def move_tabs(self, tabs, kind, index=None, folder=None):
         """Several picked tabs dropped together: in their order, where the drop line was."""
@@ -1497,52 +1331,6 @@ class MainWindow(QMainWindow):
         if tab is not None:
             self.move_tab(tab, PINNED, None, folder)
 
-    def new_live_folder(self, preset=None):
-        dialog = LiveFolderDialog(self, preset)
-        while True:
-            if dialog.exec() != QDialog.DialogCode.Accepted:
-                return
-            result = dialog.result_live()
-            if result is not None:
-                break
-            self.toast("Fill in the address (and a token, if you chose one)")
-        live, name, token = result
-        if name:
-            live["named"] = True
-        self.create_live_folder(live, name or (feed_name(live["url"]) if live.get("url") else "Live Folder"), token)
-
-    def create_live_folder(self, live, name, token=None):
-        folder = self.store.add_folder(self.store.active_space, name)
-        folder.live = live
-        if token and not AppsUI.set_token(folder, token):  # into the Keychain, never the session file
-            self.toast("Couldn't keep the token in the Keychain: set it from the folder's menu")
-        self.store._changed()
-        self.toast(f"Filling “{name}”…")
-        self.live_folders.refresh(folder, lambda error: self.toast(
-            f"Couldn't update “{folder.name}”: {error}" if error else f"“{folder.name}” is up to date"))
-
-    def _mark_subfolder_seen(self, live, folder):
-        for tab in walk_tabs(folder.children):
-            if tab.fresh:
-                mark_seen(live, tab)
-                tab.changed.emit()
-        self.store._changed()
-
-    def add_github_folder(self):
-        """One Live Folder for all your GitHub: reviews asked of you, your PRs, your issues, and a sub-folder
-        for each of your repos with open issues or pull requests (read with the gh CLI)."""
-        existing = next((f for f in self.live_folders.folders() if f.live.get("kind") == "github"
-                         and f.live.get("query") == "overview"), None)
-        if existing is not None:
-            self.toast(f"You have one already: “{existing.name}”")
-            return
-        self.create_live_folder({"kind": "github", "query": "overview", "named": True}, "GitHub")
-
-    def follow_releases(self, owner, repo):
-        """A Live Folder of a GitHub repo's releases (from ⌘T on any page of the repo)."""
-        self.create_live_folder({"kind": "feed", "url": f"https://github.com/{owner}/{repo}", "named": True},
-                                f"{repo} Releases")
-
     def rename_folder(self, folder):
         name, ok = QInputDialog.getText(self, "Rename Folder", "Folder name:", text=folder.name)
         if ok and name.strip():
@@ -1558,8 +1346,7 @@ class MainWindow(QMainWindow):
                                           f"Delete “{folder.name}” and the {len(tabs)} tabs in it?")
             if answer != QMessageBox.StandardButton.Yes:
                 return
-        if folder.live and folder.live.get("auth") == "token":
-            AppsUI.forget_token(folder)  # nothing left behind in the Keychain
+        self.emit("folder_deleted", folder)
         current_inside = self.current_tab in tabs
         for tab in tabs:
             self._remove_view(tab)
@@ -1570,18 +1357,8 @@ class MainWindow(QMainWindow):
             self._relayout_split()
 
     def show_folder_menu(self, folder, pos):
-        parent = self.store.live_folder_of(folder)
-        if parent is not None:  # one of a Live Folder's sub-folders: it's the Live Folder's to change
-            menu = self._menu()
-            self._act(menu, "ph.folder" if folder.expanded else "ph.folder-open",
-                      "Collapse" if folder.expanded else "Expand", lambda: self.toggle_folder(folder))
-            self._act(menu, "ph.list-bullets", "Copy Links", lambda: self.copy_links(walk_tabs(folder.children)))
-            self._act(menu, "ph.checks", "Mark All as Seen", lambda: self._mark_subfolder_seen(parent, folder))
-            self._act(menu, "ph.arrows-clockwise", f"Refresh “{parent.name}”", lambda: self.live_folders.refresh(
-                parent, lambda error: self.toast(f"Couldn't update “{parent.name}”: {error}" if error
-                                                 else f"“{parent.name}” is up to date")))
-            menu.exec(pos)
-            return
+        if self.first("own_folder_menu", folder, pos):
+            return  # (a feature's folder, with a menu of its own: a Live Folder's sub-folder)
         menu = self._menu()
         self._act(menu, "ph.pencil-simple", "Rename…", lambda: self.rename_folder(folder))
         self._act(menu, "ph.folder" if folder.expanded else "ph.folder-open",
@@ -1590,35 +1367,11 @@ class MainWindow(QMainWindow):
         self._act(menu, "ph.list-bullets", "Copy Links", lambda: self.copy_links(walk_tabs(folder.children)))
         if not folder.live:
             self._act(menu, "ph.arrows-clockwise", "Reload Tabs", lambda: self.reload_tabs(walk_tabs(folder.children)))
-        if folder.live:
-            self._act(menu, "ph.arrows-clockwise", "Refresh Now", lambda: self.live_folders.refresh(
-                folder, lambda error: self.toast(f"Couldn't update “{folder.name}”: {error}" if error
-                                                 else f"“{folder.name}” is up to date")))
-            self._act(menu, "ph.checks", "Mark All as Seen", lambda: self._mark_folder_seen(folder))
-            if folder.live.get("auth") == "token":
-                self._act(menu, "ph.key", "Set Token…", lambda: self._set_folder_token(folder))
+        self.emit("folder_menu", menu, folder)  # (a Live Folder's Refresh Now, Mark All as Seen…)
         menu.addSeparator()
         self._act(menu, "ph.folder-minus", "Ungroup (Keep Tabs)", lambda: self.store.ungroup_folder(folder))
         self._act(menu, "ph.trash", "Delete Folder…", lambda: self.delete_folder(folder))
         menu.exec(pos)
-
-    def _set_folder_token(self, folder):
-        token, ok = QInputDialog.getText(self, "Set Token", f"Token for “{folder.name}” (kept in the Keychain):",
-                                         QLineEdit.EchoMode.Password)
-        if not ok or not token.strip():
-            return
-        if AppsUI.set_token(folder, token.strip()):
-            self.live_folders.refresh(folder, lambda error: self.toast(
-                f"Couldn't update “{folder.name}”: {error}" if error else f"“{folder.name}” is up to date"))
-        else:
-            self.toast("Couldn't keep the token in the Keychain")
-
-    def _mark_folder_seen(self, folder):
-        for tab in walk_tabs(folder.children):
-            if tab.fresh:
-                mark_seen(folder, tab)
-                tab.changed.emit()
-        self.store._changed()
 
     def toggle_pin(self, tab=None):
         tab = tab or self.current_tab
@@ -1629,7 +1382,7 @@ class MainWindow(QMainWindow):
         if loc[0] == TODAY:
             self.store.move_tab(tab, PINNED, loc[1], len(loc[1].pinned))
             self.toast("Pinned")
-            self.tidy_title(tab)
+            self.emit("tab_pinned", tab)
         else:
             self.store.move_tab(tab, TODAY, loc[1] or space, 0)
             self.toast("Unpinned")
@@ -1730,7 +1483,7 @@ class MainWindow(QMainWindow):
         self._act(menu, "ph.link-simple", "Copy as Markdown Link", lambda: self.copy_markdown_link(tab))
         if tab.url.startswith(("http://", "https://")):
             self._act(menu, "ph.share", "Share…", lambda: self.share_page(tab))
-        if not is_note(tab.url) and not is_easel(tab.url):  # two editors on one file would fight over it
+        if not tab.url.startswith(("note:", "easel:")):  # two editors on one file would fight over it
             self._act(menu, "ph.copy", "Duplicate", lambda: self.open_url(tab.url))
         self._act(menu, "ph.download-simple", "Download Video…", lambda: self.download_video(tab))
         split = self.store.split_of(tab)
@@ -1753,12 +1506,7 @@ class MainWindow(QMainWindow):
             self._act(menu, "ph.push-pin-slash", "Unpin Tab", lambda: self.toggle_pin(tab))
         self._act(menu, "ph.star", "Remove from Favorites" if kind == FAVORITES else "Add to Favorites",
                   lambda: self.toggle_favorite(tab))
-        repos_root = integrations.config(self.store.settings)["repos_root"]
-        clone = integrations.local_clone(tab.url or tab.home_url or "", repos_root)
-        if clone:  # a repo you have here (a GitHub page, or a Repo Radar item)
-            self._act(menu, "ph.code", "Open Repo in Loom", lambda: integrations.open_in_app("Loom", clone))
-            self._act(menu, "ph.folder-open", "Show Repo in Finder",
-                      lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(clone)))
+        self.emit("tab_menu", menu, tab, kind)
         if kind != TODAY:
             self._act(menu, "ph.pencil-simple", "Rename…", lambda: self.rename_tab(tab))
             if tab.home_url and tab.url != tab.home_url:
@@ -1982,12 +1730,6 @@ class MainWindow(QMainWindow):
             return
         self.reader.open_for(self.current_tab, view)
 
-    def toggle_translate(self):
-        if self.reader.is_open_for(self.current_tab):
-            self.translator.toggle(self.reader.view, self.current_tab, reader=True)
-        else:
-            self.translator.toggle(self._current_view(), self.current_tab)
-
     def toggle_dev_console(self):
         view = self._current_view()
         if view is None or not is_dev_url(view.url().toString()):
@@ -2109,69 +1851,6 @@ class MainWindow(QMainWindow):
             self._settings = SettingsWindow(self)
         self._settings.open(page)
 
-    def set_claude_model(self, model):
-        self.store.settings["claude_model"] = model
-        self.store.schedule_save()
-        self.claude.shutdown()  # the warm process was started with the old model
-        self.claude.model = model
-        self.claude.warm_up()
-        self.toast(f"Claude features now use {model.capitalize()}")
-
-    def toggle_claude(self):
-        if self.claude.exe is None:
-            self.toast("Claude Code CLI not found — install it, then run `claude` once to log in")
-            return
-        self.claude.enabled = not self.claude.enabled
-        self.store.settings["claude_enabled"] = self.claude.enabled
-        self.store.schedule_save()
-        self.claude_action.setChecked(self.claude.enabled)
-        if self.claude.enabled:
-            self.claude.warm_up()
-        else:
-            self.claude.shutdown()
-        self.toast("Claude features on" if self.claude.enabled else "Claude features off")
-
-    def tidy_title(self, tab, force=False):
-        """Arc's "Tidy Tab Titles": give a pinned tab a short, human name."""
-        if not tab or not tab.url or not self.claude.available or (tab.custom_title and not force):
-            return
-        request = self.claude.ask(
-            page_block(tab.title or "(none)", tab.url, "") +
-            "\n\nRename this browser tab to a short, clean label of 1-4 words, the way a person would "
-            "name a bookmark (for example 'GitHub Issues' or 'Q3 Budget'). Reply with the label only.")
-        request.finished.connect(lambda name: self._apply_tidy(tab, name, force))
-        if force:
-            request.failed.connect(self.toast)
-
-    def _apply_tidy(self, tab, name, force):
-        lines = name.strip().splitlines()
-        name = lines[0].strip(" \"'“”‘’`*.") if lines else ""
-        loc = self.store.locate(tab)
-        if not name or len(name) > 40 or not loc or (tab.custom_title and not force):
-            return
-        if loc[0] == TODAY and not force:
-            return  # it was unpinned while Claude was thinking
-        tab.custom_title = name
-        tab.changed.emit()
-        self.store.schedule_save()
-
-    def ask_page(self, question, on_request):
-        """Arc's "Ask on Page": read the current page's text, then ask Claude about it."""
-        tab = self.current_tab
-        if self._current_view() is None:
-            return
-        ai = self.assistant() or self.claude
-
-        def got_text(text):
-            if tab.view is None:
-                return  # (the tab closed while its text was being read)
-            on_request(ai.ask(
-                page_block(tab.label, tab.url, text) +
-                "\n\nUsing the page above, answer the question below in at most 150 words, using Markdown "
-                "where it helps. If the page doesn't cover it, say so briefly, then answer from general "
-                "knowledge if you can.\n\nQuestion: " + question))
-        tab.view.page().toPlainText(got_text)
-
     def _on_link_hovered(self, url):
         self.content.show_link(url)
         self._hovered_link = url
@@ -2187,7 +1866,8 @@ class MainWindow(QMainWindow):
             # A preview needs Shift tapped on its own, so typing a capital letter while
             # the mouse happens to rest on a link doesn't trigger one
             self._shift_alone = event.key() == Qt.Key.Key_Shift
-            if event.key() == Qt.Key.Key_Escape and self.peek.isVisible() and self._zap_tab is None:
+            zapping = getattr(self.feature("boosts"), "zap_tab", None) is not None  # (Esc is Zap's then)
+            if event.key() == Qt.Key.Key_Escape and self.peek.isVisible() and not zapping:
                 self.peek.close_peek()
                 return True
             if (event.key() == Qt.Key.Key_Escape and self.sidebar.marked and QApplication.activePopupWidget() is None
@@ -2199,7 +1879,7 @@ class MainWindow(QMainWindow):
                     return True
         elif kind == QEvent.Type.KeyRelease and event.key() == Qt.Key.Key_Shift and not event.isAutoRepeat():
             if self._shift_alone and self._hovered_link:
-                self.preview_link(self._hovered_link)
+                self.emit("preview_link", self._hovered_link)  # (a summary of where it goes)
             self._shift_alone = False
         elif kind == QEvent.Type.MouseButtonDblClick and obj is self.splitter.handle(1):
             self.reset_sidebar_width()
@@ -2251,62 +1931,6 @@ class MainWindow(QMainWindow):
         self.sidebar.align_with_traffic_lights()
 
     # --- Tidy Tabs (Arc Max) ----------------------------------------------------------------------
-
-    def tidy_today(self):
-        """Ask Claude to group the loose Today tabs into a few topic folders."""
-        space = self.store.active_space
-        loose = [n for n in space.today if isinstance(n, Tab)]
-        if len(loose) < TIDY_MIN_TABS:
-            self.toast(f"Tidy needs at least {TIDY_MIN_TABS} loose tabs in Today")
-            return
-        if not self.claude.available:
-            self.toast("Tidy Tabs needs Claude features turned on (Settings → Claude)")
-            return
-        self.sidebar.set_tidy_state("busy")
-        request = self.claude.ask(build_tidy_prompt(loose))
-        request.finished.connect(lambda reply: self._apply_tidy_groups(space, loose, reply))
-        request.failed.connect(lambda message: (self.sidebar.set_tidy_state("idle"),
-                                                self.toast(f"Couldn't tidy: {message}")))
-
-    def _apply_tidy_groups(self, space, tabs, reply):
-        before = list(space.today)
-        still_loose = {id(n) for n in before}
-        # Tabs closed or moved while Claude was thinking are left alone
-        groups = [(name, [tabs[i] for i in indexes if id(tabs[i]) in still_loose])
-                  for name, indexes in parse_tidy_groups(reply, len(tabs))]
-        groups = [(name, members) for name, members in groups if len(members) >= 2]
-        if not groups:
-            self.sidebar.set_tidy_state("idle")
-            self.toast("Your tabs already look tidy")
-            return
-        grouped = {id(t) for _, members in groups for t in members}
-        space.today[:] = ([Folder(name, members, expanded=False) for name, members in groups] +
-                          [n for n in before if id(n) not in grouped])
-        self._tidy_undo = (space, before)
-        self.store._changed()
-        self.sidebar.set_tidy_state("undo")
-        QTimer.singleShot(15_000, self._expire_tidy_undo)
-        self.toast(f"Tidied {len(grouped)} tabs into {len(groups)} folders")
-
-    def undo_tidy(self):
-        if not self._tidy_undo:
-            return
-        space, before = self._tidy_undo
-        self._tidy_undo = None
-        alive = {id(t) for t in walk_tabs(space.today)}
-        restored = [n for n in before if isinstance(n, Folder) or id(n) in alive]  # closed tabs stay closed
-        known = {id(t) for t in walk_tabs(restored)}
-        opened_since = [t for t in walk_tabs(space.today) if id(t) not in known]
-        space.today[:] = opened_since + restored
-        self.store._prune_empty_folders(space.today)
-        self.store._changed()
-        self.sidebar.set_tidy_state("idle")
-        self.toast("Put your tabs back")
-
-    def _expire_tidy_undo(self):
-        if self._tidy_undo:
-            self._tidy_undo = None
-            self.sidebar.set_tidy_state("idle")
 
     # --- Tab sleeping ----------------------------------------------------------------------------
 
@@ -2398,226 +2022,23 @@ class MainWindow(QMainWindow):
 
     # --- Browse for Me -----------------------------------------------------------------------------
 
-    def browse_for_me(self, query):
-        """Arc Max's "Browse for Me": read the top search results and open one answer page."""
-        query = query.strip()
-        if not query:
-            return
-        if not self.claude.available:
-            self.toast("Browse for Me needs Claude features turned on (View menu)")
-            return
-        path = answer_path(new_run_id())
-        state = {"sources": [], "status": "Searching…", "body": ""}
-
-        def write():
-            path.write_text(render_page(query, state["sources"], state["body"], state["status"],
-                                        self.theme.accent.name()))
-        write()
-        tab = Tab(QUrl.fromLocalFile(str(path)).toString(), "✦ " + query)
-        self.store.add_tab(tab, TODAY, self.store.active_space, 0)
-        self.activate_tab(tab)
-
-        def update(element, content):
-            view = tab.view
-            if isinstance(view, QWebEngineView) and view.url().toLocalFile() == str(path):
-                view.page().runJavaScript(js_set(element, content))
-
-        def set_status(text):
-            state["status"] = text
-            update("status", html.escape(text))
-
-        def got_sources(sources):
-            state["sources"] = sources
-            write()
-            if isinstance(tab.view, QWebEngineView):
-                tab.view.reload()  # show the source cards
-
-        def finish(body, status=""):
-            state["body"], state["status"] = body, status
-            write()  # the saved page has the final answer, for reloads and restarts
-            update("answer", body)
-            update("status", html.escape(status))
-            self._browse_runs.discard(run)
-
-        run = BrowseForMe(self.claude, self.profile_for_tab(tab), query, self)
-        self._browse_runs.add(run)
-        run.status.connect(set_status)
-        run.sources_found.connect(got_sources)
-        run.partial.connect(lambda body: (state.__setitem__("body", body), update("answer", body)))
-        run.finished.connect(finish)
-        run.failed.connect(lambda message: finish(state["body"], f"Couldn't finish: {message}"))
-
-        def tab_gone():
-            # Its tab closed (or was archived): stop reading pages and asking Claude for nobody
-            if self.store.locate(tab) is None:
-                self.store.structure_changed.disconnect(tab_gone)
-                if run in self._browse_runs:
-                    self._browse_runs.discard(run)
-                    run.cancel()
-        self.store.structure_changed.connect(tab_gone)
-        run.finished.connect(lambda *_: self._stop_watching(tab_gone))
-        run.failed.connect(lambda *_: self._stop_watching(tab_gone))
-        run.start()
-
     def _stop_watching(self, slot):
         try:
             self.store.structure_changed.disconnect(slot)
         except TypeError:
             pass  # (already done)
 
-    # --- Notes ------------------------------------------------------------------------------------
-
-    def new_note(self):
-        tab = Tab(new_note_url(), "Untitled Note")
-        self.store.add_tab(tab, TODAY, self.store.active_space, 0)
-        self.activate_tab(tab)
-
-    # --- Easels ------------------------------------------------------------------------------------
-
-    def new_easel(self, activate=True):
-        tab = Tab(new_easel_url(), "Untitled Easel")
-        self.store.add_tab(tab, TODAY, self.store.active_space, 0)
-        if activate:
-            self.activate_tab(tab)
-        else:
-            self._ensure_view(tab)
-        return tab
-
-    def export_easel(self, easel, kind):
-        """An easel's toolbar: copy it as a picture, or save it as a PNG or PDF in your downloads folder."""
-        if easel.is_empty():
-            self.toast("This easel is empty")
-            return
-        if kind == "copy":
-            QApplication.clipboard().setImage(easel.render_image())
-            self.toast("Copied the easel as an image")
-            return
-        path = self._new_file(safe_filename(easel.title, "Easel"), kind)
-        ok = easel.render_pdf(str(path)) if kind == "pdf" else easel.render_image().save(str(path), "PNG")
-        if not ok:
-            self.toast("Couldn't save the easel")
-            return
-        self.toast(f"Saved {path.name}", lambda: reveal_in_finder(str(path)), "Show")
-
-    def capture_to_easel(self):
-        """Arc's Capture (⇧⌘2): drag a box over the page; that part goes onto your easel."""
-        view, tab = self._current_view(), self.current_tab
-        if view is None:
-            self.toast("Capture works on web pages")
-            return
-        overlay = CaptureOverlay(view)
-        overlay.captured.connect(lambda image, ratio: self._add_capture(image, ratio, tab.url, tab.label))
-
-    def _add_capture(self, image, ratio, url, title):
-        # The easel you used last, if it's still around; otherwise a new one
-        easel = self._last_easel if self._last_easel is not None and self.store.locate(self._last_easel) else None
-        if easel is None:
-            easel = self._last_easel = self.new_easel(activate=False)
-        self._ensure_view(easel).add_image(image, source=url, caption=title, pixel_ratio=ratio)
-        self.toast(f"Captured to “{easel.label}”")
-
-    # --- Boosts -----------------------------------------------------------------------------------
-
-    def boost_site(self, boost=None):
-        if boost is None:
-            site = site_of(self.current_tab.url) if self.current_tab else ""
-            if not site:
-                self.toast("Open a website first, then boost it")
-                return
-            boost = next(iter(self.boosts.for_site(site)), None) or Boost(site)
-        if BoostEditor(self.boosts, boost, self.theme, self).exec():
-            self.reload()
-
-    def start_zap(self):
-        view = self._current_view()
-        if view is None or not site_of(self.current_tab.url):
-            self.toast("Open a website first, then zap it")
-            return
-        self._zap_tab = self.current_tab
-        self._zap_token = secrets.token_hex(8)
-        view.setFocus()
-        # (an isolated world: the page can't see the script's token, so it can't speak for it)
-        view.page().runJavaScript(zap_script(self._zap_token), QWebEngineScript.ScriptWorldId.ApplicationWorld)
-
     def _on_console(self, tab, message):
-        if message.startswith(STORE_MESSAGE):
-            # "Add to Eclipse" on a Chrome Web Store page: only our button knows the secret, and
-            # only on the store itself
-            prefix = self.extensions.store_prefix
-            if (message.startswith(prefix) and QUrl(tab.url).host() == "chromewebstore.google.com"
-                    and not self.installer.busy):
-                self.installer.extension_from_store(message[len(prefix):])
-            return
-        if tab is not self._zap_tab:
-            return  # only listen while the Zap tool is running on that tab
-        token = getattr(self, "_zap_token", None)
-        if token and message.startswith(ZAP_MESSAGE + token):
-            boost = self.boosts.add_zapped(site_of(tab.url), message[len(ZAP_MESSAGE + token):])
-            if boost is not None:
-                self.toast(f"Zapped · {len(boost.zapped)} hidden on {boost.site}")
-        elif token and message == ZAP_DONE + token:
-            self._zap_tab = self._zap_token = None
-
-    def _fill_boosts_menu(self, menu):
-        menu.clear()
-        menu.addAction("Boost This Site…", self.boost_site)
-        menu.addAction("Zap Elements on This Page", self.start_zap)
-        if self.boosts.boosts:
-            menu.addSeparator()
-            for boost in self.boosts.boosts:
-                action = menu.addAction(boost.label + ("" if boost.enabled else "  (off)"),
-                                        lambda b=boost: self.boost_site(b))
-                action.setToolTip(boost.site)
+        """A page said something on the console that might be for us (Zap's picks, the store's Add button)."""
+        for feature in list(self.features.values()):
+            if feature.console_message(tab, message):
+                return
 
     def toggle_peek(self):
         enabled = not self.store.settings.get("peek_enabled", True)
         self.store.settings["peek_enabled"] = enabled
         self.store.schedule_save()
         self.toast("Peek on: links from pinned tabs open in a preview" if enabled else "Peek off")
-
-    def preview_link(self, url):
-        """Arc's "5-second previews": hover a link and tap Shift to see a summary of where it goes."""
-        card = self.content.preview_card
-        if not url.startswith(("http://", "https://")) or not self.claude.available:
-            return
-        if url == card.url and card.isVisible():
-            card.keep()
-            return
-        if self._preview_request is not None:
-            self._preview_request.cancel()
-            self._preview_request = None
-        card.show_for(url)
-        if url in self._preview_cache:
-            card.set_content(*self._preview_cache[url])
-            return
-
-        # Read the page off-screen (same cookies as your tabs), then hand its text to Claude
-        if self._preview_page is not None:
-            self._preview_page.cancel()
-        reader = self._preview_page = PageReader(self.profile, url, self, timeout_ms=8_000, enough_chars=800)
-        reader.done.connect(lambda title, text: self._summarize_preview(url, title or display_host(url), text))
-
-    def _summarize_preview(self, url, title, text):
-        card = self.content.preview_card
-        if card.url != url:
-            return
-        if not text.strip():
-            card.set_content(title, "Couldn't read this page.")
-            return
-        card.set_content(title, "Summarizing…")
-        request = self.claude.ask(
-            page_block(title, url, text) +
-            "\n\nWrite a link preview for this page: 2-3 short sentences on what it is and its key "
-            "takeaway. Plain text only, no preamble.")
-        self._preview_request = request
-        request.partial.connect(lambda t: card.url == url and card.set_content(None, t))
-        request.finished.connect(lambda t: self._finish_preview(url, title, t))
-        request.failed.connect(lambda m: card.url == url and card.set_content(None, f"Couldn't summarize: {m}"))
-
-    def _finish_preview(self, url, title, summary):
-        self._preview_cache[url] = (title, summary)
-        if self.content.preview_card.url == url:
-            self.content.preview_card.set_content(title, summary)
 
     # --- Import ------------------------------------------------------------------------------
 
@@ -2632,9 +2053,8 @@ class MainWindow(QMainWindow):
         # Everything on disk first: the session, open notes, extensions' storage
         self.store.save()
         for tab in self.store.all_tabs():
-            if isinstance(tab.view, (NoteEditor, EaselView)):
-                tab.view.save()
-        self.extensions._flush_storage()
+            _save_editor(tab.view)
+        self.emit("before_backup")  # (extensions' storage, say)
         try:
             count = backup.create(Path(path))
         except OSError as error:
@@ -2668,51 +2088,6 @@ class MainWindow(QMainWindow):
             return
         QApplication.instance().quit()
 
-    def import_from_arc(self):
-        if not arc_import.arc_installed():
-            self.toast("Couldn't find Arc's data on this Mac")
-            return
-        try:
-            arc = arc_import.read_arc()
-        except (OSError, ValueError, KeyError) as error:
-            QMessageBox.warning(self, "Import from Arc", f"Couldn't read Arc's data:\n{error}")
-            return
-
-        lines = [
-            f"• {len(arc.spaces)} Spaces: " + ", ".join(s.name for s in arc.spaces),
-            f"• {arc.tab_count} tabs, including {len(arc.favorites)} Favorites, in {arc.folder_count} folders",
-            f"• {len(arc.history):,} history entries (for ⌘T suggestions) and site icons",
-        ]
-        note = ("You'll need to sign in to sites again: Arc's logins and cookies are encrypted "
-                "with its own key and can't be copied.")
-        if arc.extensions:
-            note += ("\n\nYour extensions (" + ", ".join(arc.extensions) + ") come separately: Settings → "
-                     "Extensions → Add Extension → Import from Arc. Some may not fully work here.")
-        box = QMessageBox(self)
-        box.setWindowTitle("Import from Arc")
-        box.setText(f"Bring your Arc setup into {brand.NAME}?")
-        box.setInformativeText("\n".join(lines) + "\n\n" + note +
-                               "\n\nImporting again later replaces these Spaces with Arc's current state.")
-        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
-        import_btn = box.button(QMessageBox.StandardButton.Yes)
-        import_btn.setText("Import")
-        box.setDefaultButton(import_btn)
-        box.exec()
-        if box.clickedButton() is not import_btn:
-            return
-
-        before = list(self.store.all_tabs())
-        arc_import.apply(self.store, arc)
-        remaining = set(map(id, self.store.all_tabs()))
-        for tab in before:
-            if id(tab) not in remaining:
-                self._remove_view(tab)
-        if self.current_tab is not None and id(self.current_tab) not in remaining:
-            self.current_tab = None
-        self.apply_theme()
-        self._restore_space_tab()
-        self.toast(f"Imported {len(arc.spaces)} Spaces and {arc.tab_count} tabs from Arc")
-
     # --- Spaces --------------------------------------------------------------------------------
 
     def _set_active_space(self, space):
@@ -2736,7 +2111,9 @@ class MainWindow(QMainWindow):
         def change():
             self._set_active_space(space)
             self._restore_space_tab()
-        self.space_swipe.abandon()  # (a swipe under way gives way to this switch)
+        gestures = self.feature("gestures")
+        if gestures is not None:
+            gestures.space_swipe.abandon()  # (a swipe under way gives way to this switch)
         if (self.sidebar.isVisible() and self.isVisible() and self.store.active_space in spaces
                 and not self.floating_sidebar.active):
             # The sidebar slides over to the new Space, like Arc's
@@ -2895,66 +2272,33 @@ class MainWindow(QMainWindow):
             ("Mute Other Tabs", "ph.speaker-x", self.mute_other_tabs),
             ("Keep This Tab Awake / Let It Sleep", "ph.sun", self.toggle_awake),
             ("Do Not Disturb On / Off (Site Notifications)", "ph.bell-slash", self.toggle_dnd),
-            ("Tidy Today's Tabs", "ph.sparkle", self.tidy_today),
             ("New Little Window", "ph.app-window", self.new_little_window),
             ("New Private Window", "ph.ghost", lambda: self.private.new_window()),
             ("Reopen Closed Tab", "ph.clock-counter-clockwise", self.reopen_closed_tab),
             ("Reader View", "ph.book-open-text", self.toggle_reader),
-            (f"Check for {brand.NAME} Updates", "ph.arrows-clockwise", lambda: self.self_updater.check(manual=True)),
             ("What's New", "ph.gift", self.show_whats_new),
             ("Show Crash Logs", "ph.bug", self.show_crash_logs),
-            ("Translate Page / Show Original", "ph.translate", self.toggle_translate),
             ("Open Developer Tools", "ph.terminal-window", self.open_devtools),
             ("Edit Space (Name, Icon, Colour, Profile)", "ph.pencil-simple", self.edit_space),
             ("Edit Space Theme", "ph.paint-brush", self.edit_space_theme),
             ("Settings", "ph.gear-six", self.open_settings),
             ("Library (History, Archive, Notes)", "ph.books", self.open_library),
             ("Keyboard Shortcuts", "ph.keyboard", lambda: self.open_settings("shortcuts")),
-            ("Import from Arc", "ph.arrow-square-in", self.import_from_arc),
             ("Back Up Everything", "ph.archive-box", self.back_up),
             ("Restore from Backup", "ph.clock-counter-clockwise", self.restore_backup),
-            ("Extensions & Userscripts", "ph.puzzle-piece", lambda: self.open_settings("extensions")),
-            ("Install Extension from Chrome Web Store", "ph.puzzle-piece",
-             lambda: self.installer.extension_from_store()),
-            ("Import Extensions from Arc", "ph.arrow-square-in", self.installer.import_from_arc),
             ("Download Video from This Page", "ph.film-strip", self.download_video),
             ("Show Downloads", "ph.download-simple", self.show_downloads),
             ("Download Settings", "ph.gear-six", self.download_settings),
             ("Turn Ad Blocking On / Off", "ph.shield-check", self.toggle_adblock),
             ("Allow / Block Ads on This Site", "ph.shield-slash", self.allow_ads_here),
             ("New Folder", "ph.folder-plus", self.new_folder),
-            ("New Live Folder (Feed or GitHub)", "ph.rss", self.new_live_folder),
-            ("New Note", "ph.note-pencil", self.new_note),
-            ("New Easel", "ph.chalkboard-simple", self.new_easel),
-            ("Capture Part of This Page to an Easel", "ph.selection-plus", self.capture_to_easel),
             ("Split View with a New Tab", "ph.columns", lambda: self.open_command_bar("split")),
             ("Separate Split View", "ph.square-half", self.separate_split),
-            ("Boost This Site", "ph.rocket-launch", self.boost_site),
-            ("Zap Elements on This Page", "ph.lightning", self.start_zap),
             ("Turn Peek On / Off", "ph.eye", self.toggle_peek),
-            ("Tidy Tab Title", "ph.magic-wand", lambda: self.tidy_title(self.current_tab, force=True)),
-            ("Turn Claude Features On / Off", "ph.sparkle", self.toggle_claude),
         ]
         cmds += [(f"Switch to Space: {s.name}", "ph.dots-three", lambda s=s: self.switch_space(s))
                  for s in self.store.spaces]
-        cmds.append(("Add GitHub Folder (PRs, Issues, Repos)", "ph.github-logo", self.add_github_folder))
-        repo = github_repo(self.current_tab.url) if self.current_tab is not None else None
-        if repo:
-            cmds.append((f"Follow Releases of {repo[0]}/{repo[1]}", "ph.rss", lambda: self.follow_releases(*repo)))
-        # Your own apps: the current page's Send To actions, and homebase
-        cmds += [(label, icon, run) for label, icon, run in self.apps.send_to_actions(self.current_tab)]
-        if self.homebase.url:
-            cmds += [("Homebase Dashboard", "ph.gauge", lambda: self.open_url(self.homebase.url + "/")),
-                     ("Add Live Folders for My Apps", "ph.folders", self.apps.add_live_folders)]
-            # Each app homebase runs, by name: "restart job tracker", "logs gradtrack"
-            for app in (self.homebase.status or {}).get("apps") or []:
-                title, name = app.get("title") or app.get("name"), app.get("name")
-                if app.get("url"):
-                    cmds.append((f"Open {title}", "ph.arrow-square-out", lambda u=app["url"]: self.open_url(u)))
-                if app.get("state") != "external":
-                    cmds.append((f"Restart {title}", "ph.arrows-clockwise", lambda n=name: self.apps._act(n, "restart")))
-                cmds.append((f"Logs: {title}", "ph.file-text", lambda n=name, t=title: self.apps.show_logs(n, t)))
-        return cmds
+        return cmds + self.gather("commands")
 
     def _build_menus(self):
         bar = self.menuBar()
@@ -2973,9 +2317,6 @@ class MainWindow(QMainWindow):
         add(file, "New Private Window", "Ctrl+Shift+P", lambda: self.private.new_window())
         add(file, "Open Location…", "Ctrl+L", lambda: self.open_command_bar("current"))
         add(file, "Reopen Closed Tab", "Ctrl+Shift+T", self.reopen_closed_tab)
-        add(file, "New Note", "Ctrl+Shift+N", self.new_note)
-        add(file, "New Easel", "", self.new_easel)
-        add(file, "Capture to Easel", "Ctrl+Shift+2", self.capture_to_easel)
         file.addSeparator()
         add(file, "Downloads", "Ctrl+Alt+L", self.show_downloads)
         add(file, "Download Video…", "Ctrl+Shift+D", self.download_video)
@@ -2988,7 +2329,6 @@ class MainWindow(QMainWindow):
         add(file, "Save Screenshot of Whole Page", "Ctrl+Alt+Shift+3", self.save_page_screenshot)
         add(file, "Download Settings…", "", self.download_settings)
         file.addSeparator()
-        add(file, "Import from Arc…", "", self.import_from_arc)
         add(file, "Back Up Everything…", "", self.back_up)
         add(file, "Restore from Backup…", "", self.restore_backup)
         prefs = QAction("Settings…", self)
@@ -3031,14 +2371,9 @@ class MainWindow(QMainWindow):
         add(view, "Actual Size", "Ctrl+0", lambda: self.zoom(0))
         view.addSeparator()
         add(view, "Reader View", "Ctrl+Alt+R", self.toggle_reader)
-        add(view, "Translate Page / Show Original", "", self.toggle_translate)
         add(view, "Developer Tools", "Ctrl+Alt+I", self.open_devtools)
         add(view, "Developer Console", "Ctrl+Alt+J", self.toggle_dev_console)
         view.addSeparator()
-        self.claude_action = QAction("Claude Features", self, checkable=True)
-        self.claude_action.setChecked(self.claude.available)
-        self.claude_action.triggered.connect(lambda _=False: self.toggle_claude())
-        view.addAction(self.claude_action)
         self.adblock_action = QAction("Block Ads & Trackers", self, checkable=True)
         self.adblock_action.setChecked(self.adblock.enabled)
         self.adblock_action.triggered.connect(lambda _=False: self.toggle_adblock())
@@ -3062,10 +2397,8 @@ class MainWindow(QMainWindow):
         tabs = bar.addMenu("Tabs")
         add(tabs, "Pin / Unpin Tab", "Ctrl+D", self.toggle_pin)
         add(tabs, "Add / Remove Favorite", "", self.toggle_favorite)
-        add(tabs, "Tidy Tab Title", "", lambda: self.tidy_title(self.current_tab, force=True))
         add(tabs, "Clear Today's Tabs", "Ctrl+Shift+K", self.clear_today)
         add(tabs, "Put Other Tabs to Sleep", "", self.sleep_other_tabs)
-        add(tabs, "Tidy Today's Tabs", "", self.tidy_today)
         add(tabs, "New Folder…", "", self.new_folder)
         tabs.addSeparator()
         add(tabs, "Split View…", f"{CONTROL}+Shift+=", lambda: self.open_command_bar("split"))
@@ -3078,10 +2411,6 @@ class MainWindow(QMainWindow):
         for n in range(1, 10):
             add(tabs, f"Tab {n}" if n < 9 else "Last Tab", f"Ctrl+{n}", lambda n=n: self.select_tab_number(n))
 
-        boosts = bar.addMenu("Boosts")
-        boosts.aboutToShow.connect(lambda: self._fill_boosts_menu(boosts))
-        self._fill_boosts_menu(boosts)
-
         spaces = bar.addMenu("Spaces")
         add(spaces, "New Space…", "", self.new_space)
         add(spaces, "Next Space", "Ctrl+Alt+Right", lambda: self.cycle_space(1))
@@ -3089,7 +2418,9 @@ class MainWindow(QMainWindow):
         spaces.addSeparator()
         for n in range(1, 10):
             add(spaces, f"Space {n}", f"{CONTROL}+{n}", lambda n=n: self.switch_to_space_number(n))
-        self.install_extension_shortcuts()  # after the menus, so they can't steal a browser shortcut
+        # The features' own items (and menus)
+        menus = {"File": file, "Edit": edit, "View": view, "History": history, "Tabs": tabs, "Spaces": spaces}
+        self.emit("menus", add, menus, bar)
 
     # --- Shutdown --------------------------------------------------------------------------
 
@@ -3112,7 +2443,6 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def shutdown(self):
-        self.claude.shutdown()
         if self._downloads is not None:
             self._downloads.shutdown()
             sip.delete(self._downloads)
@@ -3124,19 +2454,14 @@ class MainWindow(QMainWindow):
         self.private.shutdown()
         self.page_index.shutdown()
         self.devmode.shutdown()
-        self.live_folders.shutdown()
-        self.extensions.shutdown()
+        self.emit("shutdown")
         # Pages must be destroyed before their profile, or Qt warns and may leak the profile
-        if self._preview_page is not None:
-            self._preview_page.cancel()
-            _delete(self._preview_page.page)
         if self.peek.view is not None:
             _delete(self.peek.view)
         for window in list(self._extra_windows):
             _delete(window)
         for tab in self.store.all_tabs():
-            if isinstance(tab.view, (NoteEditor, EaselView)):
-                tab.view.save()
+            _save_editor(tab.view)
             if tab.view is not None:
                 _delete(tab.view)
                 tab.view = None

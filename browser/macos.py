@@ -359,3 +359,64 @@ def busy(start: bool):
         _send(info, "endActivity:", _busy["token"], restype=None, argtypes=(ctypes.c_void_p,))
         _send(_busy["token"], "release", restype=None)
         _busy["token"] = None
+
+
+# --- Touch ID, or the Mac's password ---------------------------------------------------------------
+# LocalAuthentication answers through an Objective-C block: built here by hand (a "global" block: a struct
+# whose function ctypes provides), since ctypes has no blocks of its own.
+
+class _BlockDescriptor(ctypes.Structure):
+    _fields_ = [("reserved", ctypes.c_ulong), ("size", ctypes.c_ulong)]
+
+
+_REPLY = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_bool, ctypes.c_void_p)
+
+
+class _Block(ctypes.Structure):
+    _fields_ = [("isa", ctypes.c_void_p), ("flags", ctypes.c_int), ("reserved", ctypes.c_int),
+                ("invoke", _REPLY), ("descriptor", ctypes.POINTER(_BlockDescriptor))]
+
+
+_OWNER_POLICY = 2  # LAPolicyDeviceOwnerAuthentication: Touch ID, a paired Watch, or the Mac's password
+_asked = []  # (each question's context and block, kept alive: macOS answers on a thread of its own, later)
+
+
+def _auth_context():
+    if _objc is None:
+        return None
+    try:
+        ctypes.cdll.LoadLibrary("/System/Library/Frameworks/LocalAuthentication.framework/LocalAuthentication")
+    except OSError:
+        return None
+    cls = _objc.objc_getClass(b"LAContext")
+    return _send(_send(cls, "alloc"), "init") if cls else None
+
+
+def can_verify_owner() -> bool:
+    """Whether this Mac can check it's you (Touch ID or its password): asks nothing of you."""
+    context = _auth_context()
+    if not context:
+        return False
+    able = _send(context, "canEvaluatePolicy:error:", _OWNER_POLICY, None, restype=ctypes.c_bool,
+                 argtypes=(ctypes.c_long, ctypes.c_void_p))
+    _send(context, "release")
+    return bool(able)
+
+
+def verify_owner(reason: str, done, interactive=True) -> bool:
+    """Ask macOS to check it's you: Touch ID, or the Mac's password ("Eclipse is trying to <reason>").
+    done(ok) is called later, on a thread of macOS's: the caller takes it back to Qt's. False if it can't ask.
+    (interactive=False: macOS may not show anything, so it answers no at once: for tests.)"""
+    context = _auth_context()
+    if not context or not reason:  # (an empty reason is an exception in macOS, not an answer)
+        return False
+    if not interactive:
+        _send(context, "setInteractionNotAllowed:", True, restype=None, argtypes=(ctypes.c_bool,))
+    isa = ctypes.addressof(ctypes.c_void_p.in_dll(ctypes.CDLL("/usr/lib/libSystem.B.dylib"), "_NSConcreteGlobalBlock"))
+    reply = _REPLY(lambda _block, ok, _error: done(bool(ok)))
+    descriptor = _BlockDescriptor(0, ctypes.sizeof(_Block))
+    block = _Block(isa, 1 << 28, 0, reply, ctypes.pointer(descriptor))  # (1 << 28: BLOCK_IS_GLOBAL)
+    _asked.append((context, reply, descriptor, block))
+    _send(context, "evaluatePolicy:localizedReason:reply:", _OWNER_POLICY, _cfstr(reason), ctypes.byref(block),
+          restype=None, argtypes=(ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p))
+    return True

@@ -25,13 +25,8 @@ from PyQt6.QtWidgets import (QApplication, QFrame, QGraphicsOpacityEffect, QGrid
 from PyQt6 import sip
 
 from . import macos
-from .browse import is_answer_page
 from .devmode import dev_label, is_dev_url
-from .github_status import summarize as summarize_pr
-from .integrations import config as integration_config, is_job_posting, summarize
-from .now_playing import NowPlayingCard
 from .tab_titles import shown_title
-from .upnext import UpNextCard
 from .models import FAVORITES, PINNED, TODAY, Folder, Tab, display_host, walk_folders, walk_tabs
 from .icons import is_symbol, space_icon, symbol
 from .theme import legible, letter_icon, noise_pixmap, overlay_scrollbar
@@ -71,6 +66,11 @@ def is_away(tab) -> bool:
         q = QUrl(u)
         return q.host().lower().removeprefix("www."), q.path().rstrip("/")
     return place(tab.url) != place(tab.home_url)
+
+
+def is_answer_page(url: str) -> bool:
+    """A Browse for Me answer (a page it wrote in the data folder's browse/): it gets a compass."""
+    return url.startswith("file:") and "/browse/" in url and url.endswith(".html")
 
 
 def tab_icon(tab, theme):
@@ -141,7 +141,62 @@ class SpokenTooltips(QObject):
         return False
 
 
-class IconButton(QToolButton):
+class HoverFade:
+    """Mixin: the hover highlight fades in quickly and out a touch slower, as in Arc, instead of snapping
+    on and off (a stylesheet :hover can only snap). Rows paint it over themselves (they're see-through);
+    buttons (_hover_under) paint it under their icon, so the icon stays crisp."""
+
+    _hover = 0.0
+    _hover_radius = 9
+    _hover_under = False
+
+    def _fade_hover(self, target, ms):
+        from . import motion
+
+        def step(value):
+            self._hover = value
+            self.update()
+        motion.animate(self, self._hover, target, step, ms)
+
+    def enterEvent(self, event):
+        self._fade_hover(1.0, 90)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._fade_hover(0.0, 160)
+        super().leaveEvent(event)
+
+    def paintEvent(self, event):
+        if self._hover_under:
+            self.paint_hover()
+            super().paintEvent(event)
+        else:
+            super().paintEvent(event)  # (its stylesheet: the selected highlight, if it's selected)
+            self.paint_hover()
+
+    def paint_hover(self, painter=None):
+        if self._hover <= 0.001 or self.property("selected") is True or not self.isEnabled():
+            return
+        from .theme import hover_color
+        theme = getattr(getattr(self, "browser", None), "theme", None) or getattr(self.window(), "theme", None)
+        if theme is None:
+            return
+        color = hover_color(theme)
+        color.setAlphaF(color.alphaF() * self._hover)
+        p = painter or QPainter(self)
+        p.save()
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(color)
+        p.drawRoundedRect(QRectF(self.rect()), self._hover_radius, self._hover_radius)
+        p.restore()
+        if painter is None:
+            p.end()
+
+
+class IconButton(HoverFade, QToolButton):
+    _hover_radius, _hover_under = 6, True
+
     def __init__(self, icon_name, tooltip="", size=26, icon_size=16, parent=None):
         super().__init__(parent)
         self.setObjectName("IconButton")
@@ -313,43 +368,6 @@ class DraggableTab:
             self.browser.show_tabs_menu(list(marked), event.globalPos())
         else:
             self.browser.show_tab_menu(self.tab, event.globalPos())
-
-
-class HoverFade:
-    """Mixin for sidebar rows: the hover highlight fades in quickly and out a touch slower, as in
-    Arc, instead of snapping on and off (a stylesheet :hover can only snap)."""
-
-    _hover = 0.0
-
-    def _fade_hover(self, target, ms):
-        from . import motion
-
-        def step(value):
-            self._hover = value
-            self.update()
-        motion.animate(self, self._hover, target, step, ms)
-
-    def enterEvent(self, event):
-        self._fade_hover(1.0, 90)
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):
-        self._fade_hover(0.0, 160)
-        super().leaveEvent(event)
-
-    def paintEvent(self, event):
-        super().paintEvent(event)  # (its stylesheet: the selected highlight, if it's selected)
-        if self._hover <= 0.001 or self.property("selected") is True:
-            return
-        from .theme import hover_color
-        color = hover_color(self.browser.theme)
-        color.setAlphaF(color.alphaF() * self._hover)
-        p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(color)
-        p.drawRoundedRect(QRectF(self.rect()), 9, 9)
-        p.end()
 
 
 class TabRow(HoverFade, DraggableTab, QFrame):
@@ -556,7 +574,9 @@ class FolderRow(HoverFade, QFrame):
         self.browser.show_folder_menu(self.folder, event.globalPos())
 
 
-class FavoriteTile(DraggableTab, QToolButton):
+class FavoriteTile(HoverFade, DraggableTab, QToolButton):
+    _hover_radius = 10
+
     def __init__(self, browser, tab, parent=None):
         super().__init__(parent)
         self._init_drag(browser, tab)
@@ -613,6 +633,7 @@ class FavoriteTile(DraggableTab, QToolButton):
         option.icon = QIcon()
         painter = QPainter(self)
         self.style().drawComplexControl(QStyle.ComplexControl.CC_ToolButton, option, painter, self)
+        self.paint_hover(painter)  # (over the tile, under the icon, fading in and out)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         size = 20 * self.press
         center = QRectF(self.rect()).center()
@@ -1296,23 +1317,11 @@ class Sidebar(QWidget):
         self.dev_btn.hide()
         pill_layout.addWidget(self.dev_btn)
         browser.devmode.changed.connect(self.update_dev)
-        # On a pull request: whether its checks pass, and what review decided (click for each check)
-        self.pr_btn = QToolButton()
-        self.pr_btn.setObjectName("PrChip")
-        self.pr_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.pr_btn.clicked.connect(
-            lambda: browser.show_pr_checks(self.pr_btn.mapToGlobal(QPoint(0, self.pr_btn.height()))))
-        self.pr_btn.hide()
-        pill_layout.addWidget(self.pr_btn)
-        # On a job posting: send it to Job Tracker in one click (My Apps)
-        self.job_btn = QToolButton()
-        self.job_btn.setObjectName("DevChip")
-        self.job_btn.setText("Save Job")
-        self.job_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.job_btn.setToolTip("Save this posting to Job Tracker")
-        self.job_btn.clicked.connect(lambda: browser.save_job_posting())
-        self.job_btn.hide()
-        pill_layout.addWidget(self.job_btn)
+        # The features' chips (a pull request's checks, Save Job on a job posting…)
+        self.feature_chips = browser.gather("pill_buttons")
+        for chip in self.feature_chips:
+            if not chip.property("pill_end"):
+                pill_layout.addWidget(chip)
         # The page's zoom, when it isn't 100% (click to reset)
         self.zoom_btn = QToolButton()
         self.zoom_btn.setObjectName("ShieldButton")
@@ -1322,23 +1331,10 @@ class Sidebar(QWidget):
         self.zoom_btn.hide()
         pill_layout.addWidget(self.zoom_btn)
         pill_layout.addWidget(self.shield_btn)
-        # Extensions (puzzle piece), shown once anything is installed; carries a badge like Chrome's
-        self.ext_btn = QToolButton()
-        self.ext_btn.setObjectName("ExtButton")
-        self.ext_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.ext_btn.setIconSize(QSize(12, 12))
-        self.ext_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.ext_btn.setToolTip("Extensions")
-        self.ext_btn.clicked.connect(
-            lambda: browser.show_extensions_menu(self.ext_btn.mapToGlobal(QPoint(0, self.ext_btn.height()))))
-        # Pinned extensions get their own buttons, just left of the puzzle piece
-        self.pinned_ext_layout = QHBoxLayout()
-        self.pinned_ext_layout.setContentsMargins(0, 0, 0, 0)
-        self.pinned_ext_layout.setSpacing(0)
-        self.pinned_ext_buttons: list[QToolButton] = []
-        pill_layout.insertLayout(pill_layout.indexOf(self.ext_btn), self.pinned_ext_layout)
-        pill_layout.addWidget(self.ext_btn)
-        browser.extensions.badges_changed.connect(self.update_extensions)
+        # The features' chips that go at the end, after the shield (extensions' puzzle piece…)
+        for chip in self.feature_chips:
+            if chip.property("pill_end"):
+                pill_layout.addWidget(chip)
         layout.addWidget(self.url_pill)
         layout.addSpacing(2)
 
@@ -1413,12 +1409,8 @@ class Sidebar(QWidget):
         self.list_fade = ListFade(self, self.scroll)
         layout.addWidget(self.scroll, 1)
 
-        self.up_next = UpNextCard(browser.up_next)
-        browser.up_next.card = self.up_next
-        layout.addWidget(self.up_next)
-        self.now_playing = NowPlayingCard(browser.now_playing)
-        browser.now_playing.card = self.now_playing
-        layout.addWidget(self.now_playing)
+        for card in browser.gather("sidebar_cards"):  # (Up Next, Now Playing…)
+            layout.addWidget(card)
 
         # Bottom: archive, the Space switcher, and "new Space"
         bottom = QHBoxLayout()
@@ -1428,16 +1420,6 @@ class Sidebar(QWidget):
             lambda: browser.show_archive_menu(self.archive_btn.mapToGlobal(QPoint(0, 0))))
         self.downloads_btn = IconButton("ph.download-simple", "Downloads (⌥⌘L)")
         self.downloads_btn.clicked.connect(lambda: browser.show_downloads())
-        # Homebase (your desktop's apps): a server with a dot that says how they're doing
-        self.homebase_btn = QToolButton()
-        self.homebase_btn.setObjectName("IconButton")
-        self.homebase_btn.setFixedSize(26, 26)
-        self.homebase_btn.setIconSize(QSize(18, 18))
-        self.homebase_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.homebase_btn.clicked.connect(
-            lambda: browser.show_homebase_menu(self.homebase_btn.mapToGlobal(QPoint(0, 0))))
-        self.homebase_btn.hide()
-        browser.homebase.changed.connect(self.update_homebase)
         self.new_space_btn = IconButton("ph.plus", "New Space")
         self.new_space_btn.clicked.connect(browser.new_space)
         self.switcher = QHBoxLayout()
@@ -1445,7 +1427,8 @@ class Sidebar(QWidget):
         self.space_buttons: list[QToolButton] = []
         bottom.addWidget(self.archive_btn)
         bottom.addWidget(self.downloads_btn)
-        bottom.addWidget(self.homebase_btn)
+        for button in browser.gather("sidebar_buttons"):  # (Homebase…)
+            bottom.addWidget(button)
         bottom.addStretch(1)
         bottom.addLayout(self.switcher)
         bottom.addStretch(1)
@@ -1526,16 +1509,18 @@ class Sidebar(QWidget):
         self._update_tidy_visibility()
 
     def _update_tidy_visibility(self):
-        from .tidy import MIN_TABS
+        claude = self.browser.feature("claude")  # (Tidy is Claude's: no Claude, no Tidy)
         loose = sum(1 for n in self.browser.store.active_space.today if isinstance(n, Tab))
-        self.tidy_btn.setVisible(self._tidy_state != "idle" or
-                                 (self.browser.claude.available and loose >= MIN_TABS))
+        self.tidy_btn.setVisible(claude is not None and (self._tidy_state != "idle" or claude.can_tidy(loose)))
 
     def _tidy_clicked(self):
+        claude = self.browser.feature("claude")
+        if claude is None:
+            return
         if self._tidy_state == "undo":
-            self.browser.undo_tidy()
+            claude.undo_tidy()
         elif self._tidy_state == "idle":
-            self.browser.tidy_today()
+            claude.tidy_today()
 
     def _rebuild_switcher(self):
         for btn in self.space_buttons:
@@ -1656,7 +1641,8 @@ class Sidebar(QWidget):
             self._set_pill_text("Browse for Me")
             self.url_pill.setToolTip("")
         elif tab and tab.url.startswith("pbext://"):
-            ext = self.browser.extensions.extensions.get(QUrl(tab.url).host())
+            host = getattr(self.browser.feature("extensions"), "host", None)
+            ext = host.extensions.get(QUrl(tab.url).host()) if host is not None else None
             self.url_pill.setIcon(pill_icon("ph.puzzle-piece", color=_with_alpha(theme.text, 0.55)))
             self._set_pill_text(ext.name if ext else "Extension")
             self.url_pill.setToolTip(tab.url)
@@ -1675,39 +1661,10 @@ class Sidebar(QWidget):
             self._set_pill_text("Search or Enter URL…")
             self.url_pill.setToolTip("")
         self.update_shield()
-        self.update_extensions()
         self.update_zoom()
         self.update_dev()
-        self.update_pr()
-        cfg = integration_config(self.browser.store.settings)
-        self.job_btn.setVisible(bool(tab and cfg["jobtracker"] and is_job_posting(tab.url)))
+        self.browser.emit("update_pill", tab)
         self._fit_pill_text()
-
-    def update_homebase(self):
-        hb = self.browser.homebase
-        if not hb.url:
-            self.homebase_btn.hide()
-            return
-        theme = self.browser.theme
-        if hb.status is None:
-            dot, tip = QColor("#8e8e93"), f"Homebase isn't reachable ({hb.error or 'offline'})"
-        else:
-            up, total, _apps = summarize(hb.status)
-            dot = QColor("#30d158") if up == total else QColor("#ff9f0a") if up else QColor("#ff453a")
-            tip = f"Homebase · {hb.status.get('host', '')} · {up} of {total} apps up"
-        pm = QPixmap(52, 52)
-        pm.setDevicePixelRatio(2)
-        pm.fill(Qt.GlobalColor.transparent)
-        p = QPainter(pm)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        qta.icon("ph.hard-drives", color=theme.text).paint(p, 1, 1, 22, 22)
-        p.setPen(QColor(theme.top))  # a ring in the sidebar's colour, so the dot stands off the icon
-        p.setBrush(dot)
-        p.drawEllipse(QRectF(16, 16, 9, 9))
-        p.end()
-        self.homebase_btn.setIcon(QIcon(pm))
-        self.homebase_btn.setToolTip(tip)
-        self.homebase_btn.show()
 
     def update_dev(self):
         tab = self.browser.current_tab
@@ -1722,29 +1679,15 @@ class Sidebar(QWidget):
         self.dev_btn.setVisible(dev)
         self._fit_pill_text()
 
-    def update_pr(self):
-        tab = self.browser.current_tab
-        status = getattr(self.browser, "pr_status", None)  # (not there yet while the window's being built)
-        data = status.lookup(tab.url) if status is not None and tab is not None and tab.url else None
-        if data is None:
-            self.pr_btn.hide()
-        else:
-            text, state, tip = summarize_pr(data)
-            self.pr_btn.setText(text)
-            self.pr_btn.setToolTip(tip)
-            self.pr_btn.setProperty("state", state)
-            self.pr_btn.style().unpolish(self.pr_btn)
-            self.pr_btn.style().polish(self.pr_btn)
-            self.pr_btn.show()
-        if status is not None:
-            status.watch(tab.url if tab is not None else "", data)
-        self._fit_pill_text()
-
     def update_zoom(self):
         view = self.browser._current_view()
         factor = view.zoomFactor() if view is not None else 1.0
         self.zoom_btn.setText(f"{round(factor * 100)}%")
         self.zoom_btn.setVisible(view is not None and abs(factor - 1.0) > 0.01)
+        self._fit_pill_text()
+
+    def fit_pill(self):
+        """A feature's chip came or went: the address makes room."""
         self._fit_pill_text()
 
     def _set_pill_text(self, text):
@@ -1756,8 +1699,8 @@ class Sidebar(QWidget):
         text = getattr(self, "_pill_text", "")
 
         def room():
-            buttons = sum(b.sizeHint().width() + 4 for b in (self.pr_btn, self.job_btn, self.dev_btn, self.zoom_btn, self.shield_btn, self.ext_btn, *self.pinned_ext_buttons)
-                          if b.isVisibleTo(self) or b in self.pinned_ext_buttons)
+            buttons = sum(b.sizeHint().width() + 4 for b in (*self.feature_chips, self.dev_btn, self.zoom_btn, self.shield_btn)
+                          if b.isVisibleTo(self))
             return self.url_pill.width() - self.url_pill.iconSize().width() - 34 - buttons
         if self.dev_btn.isVisibleTo(self):
             # A narrow sidebar: the address you're building says more than the chip's word, which shrinks to
@@ -1790,44 +1733,6 @@ class Sidebar(QWidget):
         for row in self.findChildren(FolderRow):
             if row.folder is folder:
                 row.refresh()
-
-    def update_extensions(self):
-        host = self.browser.extensions
-        for button in self.pinned_ext_buttons:
-            button.hide()
-            button.setParent(None)
-            button.deleteLater()
-        self.pinned_ext_buttons = []
-        if not host.extensions and not host.scripts:
-            self.ext_btn.hide()
-            self._fit_pill_text()
-            return
-        tab = self.browser.current_tab
-        url = tab.url if tab else ""
-        pinned = self.browser.pinned_extensions()
-        for ext in pinned:
-            button = QToolButton()
-            button.setObjectName("ExtButton")
-            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-            button.setIconSize(QSize(14, 14))
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.setIcon(QIcon(str(ext.icon_file)) if ext.icon_file else
-                           letter_icon(ext.name, self.browser.theme.accent))
-            button.setText(host.badge_text(ext, url))
-            button.setToolTip(ext.name)
-            button.setAccessibleName(ext.name)
-            button.clicked.connect(lambda _=False, e=ext, b=button: self.browser.click_extension(e, b))
-            self.pinned_ext_layout.addWidget(button)
-            if self.isVisible():
-                button.show()
-            self.pinned_ext_buttons.append(button)
-        # The puzzle piece shows a badge only for extensions that aren't pinned (those show their own)
-        badge = next((b for b in (host.badge_text(e, url) for e in host.extensions.values()
-                                  if e.enabled and e not in pinned) if b), "")
-        self.ext_btn.setIcon(qta.icon("ph.puzzle-piece", color=_with_alpha(self.browser.theme.text, 0.55)))
-        self.ext_btn.setText(badge)
-        self.ext_btn.show()
-        self._fit_pill_text()
 
     def update_shield(self):
         tab = self.browser.current_tab
@@ -1864,4 +1769,5 @@ class Sidebar(QWidget):
             super().wheelEvent(event)
 
     def _handle_swipe(self, event) -> bool:
-        return self.browser.space_swipe.wheel(event)  # (gestures.SpaceSwipe: the sidebar follows your fingers)
+        gestures = self.browser.feature("gestures")  # (the sidebar follows your fingers to the next Space)
+        return gestures is not None and gestures.space_swipe.wheel(event)

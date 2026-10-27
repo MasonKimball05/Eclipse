@@ -1,16 +1,19 @@
 # My Apps: the browser working with your own apps and sites.
 #
+# Anyone's copy has the general parts: Local AI (questions answered by a model on an Ollama server, instead
+# of Claude, if you choose it in Settings → My Apps), your repos (Repo Radar, Open Repo in your editor) and
+# your GitHub account's Live Folders and search shortcut.
+#
+# The maker's copy also comes set up for the maker's own apps (nobody else has them):
 #   Homebase   the supervisor on the desktop (arkans-pc1:8090): a chip in the sidebar shows how many of
-#              its apps are up; its menu opens, restarts, stops and shows the logs of each one
-#   Local AI   questions answered by the model homebase serves (qwen3-coder), through its Ollama proxy,
-#              instead of Claude, if you choose it in Settings → My Apps
+#              its apps are up; its menu opens, restarts, stops and shows the logs of each one; Local AI
+#              goes through its Ollama proxy
 #   Send to    the current page to Job Tracker (a new job from a posting), to Daybook (as a task), to
 #              Sentinel's checkup (a security grade for the site), or a GitHub repo to Loom
-#   Presets    Live Folders and search shortcuts for Parliament, Job Tracker, gradtrack, homebase's
-#              Away queue, your recently pushed repos and Repo Radar
+#   Presets    Live Folders and search shortcuts for Parliament, Job Tracker, gradtrack and homebase's Away queue
 #
 # Addresses are in Settings → My Apps (the desktop's by its Tailscale name). Nothing here is needed for anything else to work: an app that
-# isn't reachable (Tailscale off, say) just shows as offline.
+# isn't reachable (Tailscale off, say) just shows as offline, and one with no address isn't there at all.
 
 import json
 import os
@@ -24,7 +27,20 @@ SETTING = "my_apps"
 # The desktop by its full Tailscale name: a bare "arkans-pc1" could be answered by whatever the local
 # network's DNS says, if Tailscale is off (and these are plain http)
 DESKTOP = "arkans-pc1.tailc02d63.ts.net"
+# What anyone's copy starts with: the general parts, and none of the maker's own apps
+GENERAL = {
+    "homebase": "", "parliament": "", "jobtracker": "", "gradtrack": "", "checkup": "", "sentinel": "",
+    "portfolio": "", "daybook": "",
+    "github_user": "",
+    "repos_root": "",
+    "editor": "",  # the app Open Repo opens a clone in ("" for none: Show in Finder is always there)
+    "ollama": "http://localhost:11434",  # where Local AI's model is served
+    "local_model": "",
+    "ai": "claude",  # who answers ⌘T questions and Ask on Page: "claude" or "local"
+}
+# What the maker's copy starts with: their own apps
 DEFAULTS = {
+    **GENERAL,
     "homebase": f"http://{DESKTOP}:8090",
     "parliament": "https://am-parliament.org",
     "jobtracker": f"http://{DESKTOP}:5206",
@@ -32,18 +48,33 @@ DEFAULTS = {
     "checkup": "https://checkup-1016486506373.us-central1.run.app",
     "sentinel": f"http://{DESKTOP}:8484",
     "portfolio": "https://masonkimball.dev",
+    "daybook": "yes",  # (an app on the Mac: Add Page to Daybook)
     "github_user": "MasonKimball05",
     "repos_root": "~/projects/GitHub",
+    "editor": "Loom",
+    "ollama": "",  # (through Homebase's Ollama proxy)
     "local_model": "qwen3-coder:30b",
-    "ai": "claude",  # who answers ⌘T questions and Ask on Page: "claude" or "local"
 }
 POLL_MS = 60_000
 STATE_DOTS = {"running": "#30d158", "external": "#30d158", "starting": "#ffd60a", "stopping": "#ffd60a",
               "backoff": "#ff9f0a", "crashed": "#ff453a", "stopped": "#8e8e93"}
 
 
+def defaults() -> dict:
+    """What this copy starts with: the maker's own apps on the maker's copy, the general parts on anyone else's."""
+    from .member_card import is_maker
+    return DEFAULTS if is_maker() else GENERAL
+
+
 def config(settings: dict) -> dict:
-    return {**DEFAULTS, **settings.get(SETTING, {})}
+    return {**defaults(), **settings.get(SETTING, {})}
+
+
+def ollama_url(cfg: dict) -> str:
+    """Where Local AI's model is served: the Ollama address, or else through Homebase's proxy."""
+    if base(cfg.get("ollama")):
+        return base(cfg["ollama"])
+    return base(cfg["homebase"]) + "/ollama" if base(cfg["homebase"]) else ""
 
 
 def base(url: str) -> str:
@@ -310,7 +341,7 @@ class ParliamentBadge(QObject):
 
         def failed(_message):
             self._busy = False
-        self.browser.live_folders.read_in_page(profile, url, "document.body ? document.body.innerText : ''",
+        self.browser.feature("live_folders").folders.read_in_page(profile, url, "document.body ? document.body.innerText : ''",
                                                got, failed, settle_ms=100)
 
     def _show(self, count):
@@ -419,13 +450,14 @@ class LocalAI(QObject):
 
     @property
     def available(self) -> bool:
-        return bool(base(self.cfg["homebase"])) and bool(self.cfg["local_model"])
+        return bool(ollama_url(self.cfg)) and bool(self.cfg["local_model"])
 
     def ask(self, prompt) -> LocalRequest:
         request = LocalRequest(self)
-        url = QUrl(base(self.cfg["homebase"]) + "/ollama/api/chat")
+        url = QUrl(ollama_url(self.cfg) + "/api/chat")
         net_request = QNetworkRequest(url)
-        net_request.setRawHeader(b"X-Homebase", b"1")
+        if not base(self.cfg.get("ollama")):
+            net_request.setRawHeader(b"X-Homebase", b"1")  # (what homebase asks of what comes through it)
         net_request.setHeader(QNetworkRequest.KnownHeaders.ContentTypeHeader, "application/json")
         net_request.setTransferTimeout(180_000)
         body = {"model": self.cfg["local_model"], "stream": True,
@@ -436,7 +468,10 @@ class LocalAI(QObject):
         return request
 
     def models(self, done):
-        reply = self.net.get(QNetworkRequest(QUrl(base(self.cfg["homebase"]) + "/ollama/api/tags")))
+        if not ollama_url(self.cfg):
+            done([])
+            return
+        reply = self.net.get(QNetworkRequest(QUrl(ollama_url(self.cfg) + "/api/tags")))
 
         def finished():
             try:

@@ -10,6 +10,7 @@
 # sign in again) and extensions (Qt 6.11's extension support crashes when enabling one).
 
 import json
+import os
 import shutil
 import sqlite3
 import tempfile
@@ -17,9 +18,11 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from PyQt6.QtCore import QUrl
+from PyQt6.QtCore import QTimer, QUrl
+from PyQt6.QtWidgets import QMessageBox
 
-from . import storage
+from . import brand, storage
+from .features import Feature
 from .models import DEFAULT_FAVORITES, Folder, Space, Tab, walk_tabs
 from .theme import PALETTE
 
@@ -226,3 +229,68 @@ def apply(store, arc: ArcImport):
     if arc.spaces:
         store.active_space_id = arc.spaces[0].id
     store._changed()
+
+
+class ArcImportFeature(Feature):
+    """Bring Spaces, tabs, Favorites, history and icons over from Arc: offered on a first launch with Arc on
+    this Mac, and any time from the File menu or ⌘T."""
+    name = "arc_import"
+
+    def ready(self):
+        if self.window.store.is_new and arc_installed() and not os.environ.get("PYBROWSER_DATA_DIR"):
+            QTimer.singleShot(800, self.import_from_arc)  # (not in a throwaway profile: tests, --fresh)
+
+    def commands(self):
+        return [("Import from Arc", "ph.arrow-square-in", self.import_from_arc)]
+
+    def menus(self, add, menus, bar):
+        add(menus["File"], "Import from Arc…", "", self.import_from_arc)
+
+    def import_from_arc(self):
+        window = self.window
+        if not arc_installed():
+            window.toast("Couldn't find Arc's data on this Mac")
+            return
+        try:
+            arc = read_arc()
+        except (OSError, ValueError, KeyError) as error:
+            QMessageBox.warning(window, "Import from Arc", f"Couldn't read Arc's data:\n{error}")
+            return
+
+        lines = [
+            f"• {len(arc.spaces)} Spaces: " + ", ".join(s.name for s in arc.spaces),
+            f"• {arc.tab_count} tabs, including {len(arc.favorites)} Favorites, in {arc.folder_count} folders",
+            f"• {len(arc.history):,} history entries (for ⌘T suggestions) and site icons",
+        ]
+        note = ("You'll need to sign in to sites again: Arc's logins and cookies are encrypted "
+                "with its own key and can't be copied.")
+        if arc.extensions and window.feature("extensions") is not None:  # (somewhere for them to go)
+            note += ("\n\nYour extensions (" + ", ".join(arc.extensions) + ") come separately: Settings → "
+                     "Extensions → Add Extension → Import from Arc. Some may not fully work here.")
+        box = QMessageBox(window)
+        box.setWindowTitle("Import from Arc")
+        box.setText(f"Bring your Arc setup into {brand.NAME}?")
+        box.setInformativeText("\n".join(lines) + "\n\n" + note +
+                               "\n\nImporting again later replaces these Spaces with Arc's current state.")
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
+        import_btn = box.button(QMessageBox.StandardButton.Yes)
+        import_btn.setText("Import")
+        box.setDefaultButton(import_btn)
+        box.exec()
+        if box.clickedButton() is not import_btn:
+            return
+
+        before = list(window.store.all_tabs())
+        apply(window.store, arc)
+        remaining = set(map(id, window.store.all_tabs()))
+        for tab in before:
+            if id(tab) not in remaining:
+                window._remove_view(tab)
+        if window.current_tab is not None and id(window.current_tab) not in remaining:
+            window.current_tab = None
+        window.apply_theme()
+        window._restore_space_tab()
+        window.toast(f"Imported {len(arc.spaces)} Spaces and {arc.tab_count} tabs from Arc")
+
+
+FEATURE = ArcImportFeature

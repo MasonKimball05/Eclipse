@@ -10,10 +10,9 @@ from PyQt6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDialo
                              QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
                              QPushButton, QScrollArea, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
-from . import brand, clean_links, dark_pages, macos, spelling, tab_titles
+from . import brand, clean_links, dark_pages, macos, passwords, spelling, tab_titles, verified
 from .command_bar import CUSTOM_SETTING, SEARCH_ENGINES, use_custom_sites
 from .downloads import DownloadSettingsForm, find_tool
-from .ext.ui import ExtensionsPage
 from .external_links import all_rules as external_rules, set_allowed as set_external
 from .motion import FadesIn
 from .permissions import set_capture_rule
@@ -23,18 +22,15 @@ from .webview import DEFAULT_PROFILE
 ARCHIVE_CHOICES = [(12, "12 hours"), (24, "1 day"), (24 * 7, "7 days"), (24 * 30, "30 days"), (0, "Never")]
 SLEEP_CHOICES = [(15, "15 minutes"), (30, "30 minutes"), (60, "1 hour"), (240, "4 hours"), (0, "Never")]
 DEFAULT_SLEEP_MINUTES = 60
-CLAUDE_MODELS = [("haiku", "Haiku (fastest)"), ("sonnet", "Sonnet (smarter, slower)")]
 
 PAGES = [
     ("general", "ph.gear-six", "General"),
     ("tabs", "ph.squares-four", "Tabs"),
     ("privacy", "ph.shield-check", "Privacy & Ad Blocking"),
+    ("passwords", "ph.key", "Passwords & Passkeys"),
     ("downloads", "ph.download-simple", "Downloads"),
-    ("claude", "ph.sparkle", "Claude"),
     ("profiles", "ph.user-circle", "Profiles"),
     ("air", "ph.airplane-tilt", "Air Traffic Control"),
-    ("apps", "ph.hard-drives", "My Apps"),
-    ("extensions", "ph.puzzle-piece", "Extensions"),
     ("shortcuts", "ph.keyboard", "Keyboard Shortcuts"),
 ]
 
@@ -44,6 +40,7 @@ EXTRA_SHORTCUTS = [
     ("Command Bar", "↑ ↓  ↩", "Pick a result"),
     ("Pages", "Tap ⇧ on a link", "Preview where the link goes (Claude)"),
     ("Pages", "⌘F, a question, ↩", "Ask Claude about the page"),
+    ("Pages", "⇧⌘A", "Ask About This Page (a conversation beside it)"),
     ("Pages", "Esc", "Close Peek, or finish zapping"),
     ("Tabs", "Hold ⌃, tap Tab", "Go back through recent tabs (let go to switch)"),
     ("Sidebar", "Two-finger swipe", "Switch Space"),
@@ -102,21 +99,27 @@ class SettingsWindow(FadesIn, QWidget):
         self.pages = QStackedWidget()
         layout.addWidget(self.pages, 1)
         self.page_index = {}
-        builders = {"apps": lambda: self.browser.apps.settings_page(self),
-                    "general": self._general, "tabs": self._tabs, "privacy": self._privacy,
-                    "downloads": self._downloads, "claude": self._claude, "profiles": self._profiles, "air": self._air_traffic,
-                    "extensions": self._extensions, "shortcuts": self._shortcuts}
-        for key, icon, title in PAGES:
+        builders = {"general": self._general, "tabs": self._tabs, "privacy": self._privacy,
+                    "passwords": lambda: passwords.settings_page(self),
+                    "downloads": self._downloads, "profiles": self._profiles, "air": self._air_traffic,
+                    "shortcuts": self._shortcuts}
+        # The core's pages, and the features' (each where it asks to be: before one of the core's)
+        self.page_list = [(key, icon, title) for key, icon, title in PAGES]
+        for key, icon, title, build, before in self.browser.gather("settings_pages"):
+            keys = [k for k, _, _ in self.page_list]
+            self.page_list.insert(keys.index(before) if before in keys else len(self.page_list), (key, icon, title))
+            builders[key] = lambda b=build: b(self)
+        for key, icon, title in self.page_list:
             self.nav.addItem(QListWidgetItem(title))
             self.page_index[key] = self.pages.count()
             self.pages.addWidget(self._page(title, builders[key]()))
         self.apply_theme()
-        self.nav.setCurrentRow(0)
+        self.nav.setCurrentRow(self.page_index["general"])
 
     def apply_theme(self):
         theme = self.browser.theme
         self.setStyleSheet(stylesheet(theme))
-        for i, (_, icon, _) in enumerate(PAGES):
+        for i, (_, icon, _) in enumerate(self.page_list):
             self.nav.item(i).setIcon(qta.icon(icon, color=theme.panel_text, color_active=theme.on_accent))
 
     def open(self, page="general"):
@@ -146,7 +149,7 @@ class SettingsWindow(FadesIn, QWidget):
             page = self.pages.widget(i)
             hits = []
             if query:
-                title = PAGES[i][2].lower()
+                title = self.page_list[i][2].lower()
                 for label in page.findChildren(QLabel):
                     if label.objectName() in ("SettingTitle", "") and query in label.text().lower():
                         hits.append(label.parentWidget() if label.objectName() == "SettingTitle" else label)
@@ -323,6 +326,38 @@ class SettingsWindow(FadesIn, QWidget):
 
     # --- Pages ---------------------------------------------------------------------------
 
+    def _verified_row(self):
+        """This copy of Eclipse: Verified (a signed release, unchanged), or why not."""
+        seal = QLabel()
+        word = QLabel()
+        word.setObjectName("SettingTitle")
+        control = QWidget()
+        h = QHBoxLayout(control)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+        h.addWidget(seal)
+        h.addWidget(word)
+        row = self._row(f"This copy of {brand.NAME}", " ", control)
+        line = row.findChildren(QLabel, "Hint")[0]
+        check = verified.this_copy()
+
+        def show():
+            from PyQt6 import sip
+            if sip.isdeleted(word):
+                return
+            state = check.state
+            heading, about = verified.WORDS[state]
+            icon, color = {verified.VERIFIED: ("ph.shield-check-fill", "#30d158"),
+                           verified.CHANGED: ("ph.shield-warning-fill", "#ff9f0a"),
+                           verified.CHECKING: ("ph.hourglass", "#8e8e93")}.get(state, ("ph.shield",
+                                                                                          "#8e8e93"))
+            seal.setPixmap(qta.icon(icon, color=color).pixmap(QSize(20, 20)))
+            word.setText(heading)
+            line.setText(about)
+        check.changed.connect(show)
+        show()
+        return row
+
     def _general(self):
         self.default_status = QLabel()
         self.default_status.setObjectName("Hint")
@@ -362,7 +397,9 @@ class SettingsWindow(FadesIn, QWidget):
         auto.setChecked(self.store.settings.get("app_updates", True))
         auto.toggled.connect(lambda on: self._setting("app_updates", on))
         check = QPushButton("Check Now")
-        check.clicked.connect(lambda: self.browser.self_updater.check(manual=True))
+        updater = self.browser.feature("self_update")
+        if updater is not None:
+            check.clicked.connect(updater.check)
         u.addWidget(auto)
         u.addWidget(check)
 
@@ -392,6 +429,7 @@ class SettingsWindow(FadesIn, QWidget):
         self._fill_search_shortcuts()
 
         return self._stack(
+            self._card([self._verified_row()]),
             self._card([default_row,
                         self._row("Open links from other apps in",
                                   "Like Arc, a Little window is quick to glance at and close. ⌘O keeps it.", links),
@@ -411,11 +449,12 @@ class SettingsWindow(FadesIn, QWidget):
                         self._row("App icon", "Changes in the Dock right away; Finder and Launchpad show it "
                                               "after the next app build.", None),
                         self._icon_choices()]),
-            self._card([self._row("Backup", "Spaces, tabs, settings, notes, Boosts, userscripts and extensions in "
-                                            "one file. Sign-ins and cookies aren't included.", backup_box),
-                        self._row("Updates", f"Once a day, look for a newer {brand.NAME} on GitHub and offer to "
-                                             "restart into it. A checkout with your own changes is never touched.",
-                                  updates)]),
+            self._card([self._row("Backup", "Spaces, tabs, settings, notes, Boosts, userscripts, extensions, "
+                                            "passwords and passkeys (locked with your recovery PIN) in one file. "
+                                            "Cookies aren't included.", backup_box),
+                        *([self._row("Updates", f"Once a day, look for a newer {brand.NAME} on GitHub and offer to "
+                                                "restart into it. A checkout with your own changes is never touched.",
+                                     updates)] if updater is not None else [])]),
         )
 
     def _tabs(self):
@@ -461,8 +500,8 @@ class SettingsWindow(FadesIn, QWidget):
                                      "small floating window.", mini),
             self._row("⌃Tab switches between", "Recent tabs: hold ⌃ and tap Tab to go back through the tabs you "
                                                "used last, then let go.", ctrl_tab),
-            self._row("Swipe to go back", "Swipe right with two fingers on a page to go back, left to go "
-                                          "forward. Pages that scroll sideways keep the swipe.", swipes),
+            *([self._row("Swipe to go back", "Swipe right with two fingers on a page to go back, left to go "
+                                          "forward. Pages that scroll sideways keep the swipe.", swipes)] if self.browser.feature("gestures") else []),
             self._row("Notification banners", "Sites you've allowed to notify you show a banner in the corner "
                                               "of the window. Off is Do Not Disturb: unread badges still update.",
                       banners),
@@ -577,29 +616,9 @@ class SettingsWindow(FadesIn, QWidget):
         tidy_card = self._card([self._row("Tidy Downloads", "When a file finishes downloading, Claude renames it to "
                                           "something readable (\"IMG_3847.pdf\" → \"Acme Invoice March 2026.pdf\"). "
                                           "Needs Claude features on.", tidy)])
+        if self.browser.feature("claude") is None:
+            return self._stack(card, hint)  # (Tidy Downloads is Claude's)
         return self._stack(card, tidy_card, hint)
-
-    def _claude(self):
-        claude = self.browser.claude
-        self.claude_box = QCheckBox()
-        self.claude_box.setChecked(claude.enabled)
-        self.claude_box.toggled.connect(lambda on: on != claude.enabled and self.browser.toggle_claude())
-        model = _combo(CLAUDE_MODELS, self.store.settings.get("claude_model", "haiku"))
-        model.currentIndexChanged.connect(lambda: self.browser.set_claude_model(model.currentData()))
-        self.claude_status = QLabel()
-        self.claude_status.setObjectName("Hint")
-        self.claude_status.setWordWrap(True)
-        about = QLabel("Claude features run through the Claude Code app on this Mac (the claude command), using "
-                       "your Claude subscription. There's no API key, and nothing is sent unless you use a feature: "
-                       "Tidy Tab Titles (when you pin), Ask on Page (⌘F), command bar answers, link previews "
-                       "(tap ⇧) and Browse for Me (⌘↩). Each use counts toward your plan's limits.")
-        about.setObjectName("Hint")
-        about.setWordWrap(True)
-        return self._stack(
-            self._card([self._row("Claude features", "", self.claude_box),
-                        self._row("Model", "Haiku answers in about a second. Sonnet writes better Browse for Me "
-                                           "pages but is slower and uses more of your plan.", model)]),
-            self.claude_status, about)
 
     def _profiles(self):
         self.profile_list = QListWidget()
@@ -679,10 +698,6 @@ class SettingsWindow(FadesIn, QWidget):
                 rules.append({"match": match.text().strip(), "space": space.currentData()})
         self._setting("air_traffic", rules)
 
-    def _extensions(self):
-        self.extensions_page = ExtensionsPage(self)
-        return self.extensions_page
-
     def _shortcuts(self):
         self.shortcut_filter = QLineEdit()
         self.shortcut_filter.setPlaceholderText("Search shortcuts…")
@@ -716,13 +731,7 @@ class SettingsWindow(FadesIn, QWidget):
             widget.setVisible(bool(sites))
         self.allowed_empty.setVisible(not sites)
 
-        claude = self.browser.claude
-        if claude.exe is None:
-            self.claude_status.setText("Claude Code isn't installed, so these features are off. Install it, then run "
-                                       "`claude` once in Terminal to sign in.")
-        else:
-            self.claude_status.setText(f"Using {claude.exe}")
-        self.claude_box.setChecked(claude.enabled)
+        self.browser.emit("settings_shown", self)  # (the features' pages: Claude's status…)
 
         self.profile_list.clear()
         for name in self.browser.profile_names():
@@ -737,7 +746,6 @@ class SettingsWindow(FadesIn, QWidget):
         self.profile_list.setCurrentRow(0)
         rows = [self.profile_list.sizeHintForRow(i) for i in range(min(self.profile_list.count(), 4))]
         self.profile_list.setFixedHeight(sum(rows) + 14)  # (its rows and its padding: no empty space under them)
-        self.extensions_page.refresh()
         self._fill_air_rules()
         self._fill_permissions()
         self._fill_shortcuts()

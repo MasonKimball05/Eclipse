@@ -151,7 +151,7 @@ class Translator(QObject):
             self.translate(view)
 
     def translate(self, view):
-        if not self.browser.claude.available:
+        if not self.browser.feature("claude").claude.available:
             self.browser.toast("Translate uses the Claude Code CLI, which isn't available")
             return
         language = target_language(self.browser.store.settings)
@@ -182,7 +182,7 @@ class Translator(QObject):
         start, items = job.groups[job.next]
         job.next += 1
         job.running += 1
-        request = self.browser.claude.ask(build_prompt(items, job.language))
+        request = self.browser.feature("claude").claude.ask(build_prompt(items, job.language))
         job.requests.append(request)
         request.finished.connect(lambda answer, j=job, s=start, n=len(items): self._answered(j, s, n, answer))
         request.failed.connect(lambda _message, j=job: self._group_done(j, failed=True))

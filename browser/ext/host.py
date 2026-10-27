@@ -495,7 +495,7 @@ class ExtensionHost(QObject):
             page.setWebChannel(channel, world.value)
             page.setProperty("pbx_world", world.value)
         if url.scheme() in ("http", "https", "file") and url.path().endswith(".user.js"):
-            QTimer.singleShot(0, lambda: self.browser.offer_userscript(url.toString()))
+            QTimer.singleShot(0, lambda: self.browser.feature("extensions").installer.userscript_from_url(url.toString()))
             return False
         return True
 

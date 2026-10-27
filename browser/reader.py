@@ -203,7 +203,11 @@ class ReaderView(QFrame):
         self.theme_btn.clicked.connect(self.cycle_theme)
         self.translate_btn = QPushButton("Translate")
         self.translate_btn.setObjectName("ReaderButton")
-        self.translate_btn.clicked.connect(lambda: browser.translator.toggle(self.view, self.tab, reader=True))
+        claude = browser.feature("claude")  # (Translate is Claude's)
+        if claude is not None:
+            self.translate_btn.clicked.connect(lambda: claude.translator.toggle(self.view, self.tab, reader=True))
+        else:
+            self.translate_btn.hide()
         close = self._button("ph.x", "Close Reader (Esc)", self.close_reader)
         for widget in (self.smaller, self.bigger, self.theme_btn, self.translate_btn, close):
             row.addWidget(widget)
@@ -305,7 +309,9 @@ class ReaderView(QFrame):
     def close_reader(self):
         if self.isVisible():
             self.hide()
-            self.browser.translator.forget(self.view)
+            claude = self.browser.feature("claude")
+            if claude is not None:
+                claude.translator.forget(self.view)
             self.tab, self.article = None, None
             if self.browser.current_tab and self.browser.current_tab.view is not None:
                 self.browser.current_tab.view.setFocus()

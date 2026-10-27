@@ -14,6 +14,8 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, QSize, Qt, QTimer, QUrl
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
+from .features import Feature
+
 import qtawesome as qta
 
 FEED = Path.home() / "Library" / "Application Support" / "Daybook" / "hop.json"
@@ -160,3 +162,19 @@ class UpNext(QObject):
     def open_daybook(self):
         from PyQt6.QtGui import QDesktopServices
         QDesktopServices.openUrl(QUrl("daybook://show"))
+
+
+class UpNextFeature(Feature):
+    """Your next event today, from Daybook, at the bottom of the sidebar."""
+    name = "up_next"
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.up_next = UpNext(window)
+
+    def sidebar_cards(self):
+        self.up_next.card = UpNextCard(self.up_next)
+        return [self.up_next.card]
+
+
+FEATURE = UpNextFeature

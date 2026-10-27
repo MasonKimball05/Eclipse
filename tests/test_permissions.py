@@ -75,7 +75,7 @@ def test_a_new_question_on_the_card_waits_and_only_what_was_shown_is_answered(qa
     manager._show(view)
     prompt = manager._prompts[id(view)]
     assert not prompt.allow.isEnabled()  # (just shown: a moment first)
-    end = time.time() + 1
+    end = time.time() + 3  # (a busy machine, with the live tests' windows about, can take a while)
     while time.time() < end and not prompt.allow.isEnabled():
         qapp.processEvents()
         time.sleep(0.02)

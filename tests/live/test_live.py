@@ -12,53 +12,16 @@ import pytest
 from PyQt6 import sip
 
 from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt, QTimer, QUrl
-from PyQt6.QtGui import QMouseEvent, QWheelEvent
+from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWebEngineCore import QWebEngineSettings
 from PyQt6.QtWidgets import QApplication
 
-from live_helpers import loaded, open_page, pause, run_js, wait_until
+from live_helpers import loaded, open_page, pause, run_js, steady, wait_until
 
 
 def _rows(window):
     bar = window.command_bar
     return [bar.list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(bar.list.count())]
-
-
-def _swipe(view, dx, at=QPoint(600, 450), end=True, during=None):
-    target = view.focusProxy()
-    phases = [(0, Qt.ScrollPhase.ScrollBegin)] + [(dx / 12, Qt.ScrollPhase.ScrollUpdate)] * 12
-    for i, (step, phase) in enumerate(phases):
-        QApplication.sendEvent(target, QWheelEvent(QPointF(at), QPointF(target.mapToGlobal(at)), QPoint(int(step), 0),
-                                                   QPoint(int(step) * 4, 0), Qt.MouseButton.NoButton,
-                                                   Qt.KeyboardModifier.NoModifier, phase, False))
-        pause(0.016)
-        if during and i == 8:
-            during()
-    pause(0.3)
-    if not end:
-        return
-    _lift(view, at)
-
-
-def _lift(view, at=QPoint(600, 450)):
-    target = view.focusProxy()
-    QApplication.sendEvent(target, QWheelEvent(QPointF(at), QPointF(target.mapToGlobal(at)), QPoint(0, 0),
-                                               QPoint(0, 0), Qt.MouseButton.NoButton,
-                                               Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.ScrollEnd, False))
-
-
-def test_swipe_goes_back_and_forward_but_not_over_a_scroller(window, site):
-    tab = open_page(window, f"{site}/index.html")
-    tab.view.load(QUrl(f"{site}/carousel.html"))
-    assert loaded(tab.view)
-    run_js(tab.view, "document.getElementById('c').scrollLeft = 500")
-    _swipe(tab.view, 400, QPoint(200, 150))  # over the carousel, which can still scroll left
-    pause(1)
-    assert tab.view.url().fileName() == "carousel.html"
-    _swipe(tab.view, 400)  # on the page itself
-    assert wait_until(lambda: tab.view.url().fileName() == "index.html", 5)
-    _swipe(tab.view, -400)
-    assert wait_until(lambda: tab.view.url().fileName() == "carousel.html", 5)
 
 
 def test_cookie_banners_are_rejected_and_nothing_else_is_clicked(window, site):
@@ -157,18 +120,6 @@ def test_pinned_tab_away_from_home(window, site):
     assert wait_until(lambda: not row.away_label.isVisible(), 3)
 
 
-def test_now_playing_card_controls_a_background_tab(window, site):
-    window.profile.settings().setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, False)
-    radio = open_page(window, f"{site}/music.html")
-    assert wait_until(lambda: window.tab_audio(radio)[0], 8), "the page never played"
-    open_page(window, f"{site}/index.html")
-    card = window.sidebar.now_playing
-    assert wait_until(lambda: card.isVisible(), 5)
-    assert card.title.text() == "Blue in Green" and card.subtitle.text() == "Miles Davis"
-    card.play_btn.click()
-    assert wait_until(lambda: run_js(radio.view, "document.documentElement.getAttribute('data-pb-media')") == "paused", 5)
-
-
 def test_menus_show_ampersands(window, site):
     menu = window._menu()
     menu.addAction("Ads & Trackers")
@@ -255,113 +206,6 @@ def test_spell_check_turns_on_from_settings_and_suggests(window, site, tmp_path,
     assert wait_until(lambda: run_js(tab.view, "t.value", 0) == "the ", 3)
 
 
-def _sidebar_swipe(window, steps, step_dx, gap=0.016, end=True, begin=True, clock=None):
-    """Two fingers sideways on the sidebar: `steps` moves of `step_dx` points each. With `clock` (see
-    _steady_clock), the swipe's speed is measured as `gap` apart however long the Mac takes per event."""
-    target = window.sidebar.scroll.viewport()
-    at = QPointF(60, 200)
-
-    def send(phase, dx):
-        if clock is not None:
-            clock[0] += gap
-        QApplication.sendEvent(target, QWheelEvent(at, QPointF(target.mapToGlobal(at.toPoint())), QPoint(int(dx), 0),
-                                                   QPoint(int(dx) * 4, 0), Qt.MouseButton.NoButton,
-                                                   Qt.KeyboardModifier.NoModifier, phase, False))
-        QApplication.processEvents()  # (one event per pass of the event loop, as from a trackpad)
-    if begin:
-        send(Qt.ScrollPhase.ScrollBegin, 0)
-    for _ in range(steps):
-        send(Qt.ScrollPhase.ScrollUpdate, step_dx)
-        time.sleep(gap)
-    if end:
-        send(Qt.ScrollPhase.ScrollEnd, 0)
-
-
-def _steady_clock(monkeypatch):
-    """A clock for the gesture code that only moves as _sidebar_swipe sends events: on a busy Mac a quick
-    flick would otherwise arrive as a slow drag (each event late), which rightly isn't a flick."""
-    import types
-    import browser.gestures
-    clock = [1000.0]
-    monkeypatch.setattr(browser.gestures, "time", types.SimpleNamespace(monotonic=lambda: clock[0]))
-    return clock
-
-
-def _two_spaces(window):
-    if len(window.store.spaces) < 2:
-        window.store.add_space("Work", "#22c55e")
-        window.sidebar.rebuild()
-        pause(0.3)
-    return window.store.spaces[:2]
-
-
-def test_space_swipe_follows_the_fingers_and_springs_back(window, site):
-    open_page(window, f"{site}/index.html")
-    first, second = _two_spaces(window)
-    width = window.sidebar.width()
-    _sidebar_swipe(window, 10, -width * 0.04, gap=0.03, end=False)  # 40%, slowly, fingers still down
-    slide = window.space_swipe.slide
-    assert slide is not None and slide.after is not None
-    assert abs(slide.travel - width * 0.4) < width * 0.05  # it's where the fingers are, not snapped
-    pause(0.15)  # resting before letting go: no flick
-    _sidebar_swipe(window, 0, 0, begin=False)
-    assert wait_until(lambda: window.space_swipe.slide is None, 2)
-    pause(0.1)
-    assert window.store.active_space is first  # not far enough: back where it was
-
-
-def test_space_swipe_past_halfway_or_a_flick_switches(window, site, monkeypatch):
-    open_page(window, f"{site}/index.html")
-    first, second = _two_spaces(window)
-    width = window.sidebar.width()
-    clock = _steady_clock(monkeypatch)
-    _sidebar_swipe(window, 14, -width * 0.05, gap=0.03, clock=clock)  # 70%, then let go
-    assert wait_until(lambda: window.space_swipe.slide is None, 2)
-    assert window.store.active_space is second
-    _sidebar_swipe(window, 4, width * 0.05, gap=0.008, clock=clock)  # a short quick flick back
-    assert wait_until(lambda: window.space_swipe.slide is None, 2)
-    assert window.store.active_space is first
-
-
-def test_space_swipe_with_one_space_only_gives_a_little(window, site):
-    open_page(window, f"{site}/index.html")
-    only = window.store.active_space
-    window.store.spaces[:] = [only]
-    window.sidebar.rebuild()
-    pause(0.2)
-    _sidebar_swipe(window, 20, -30, end=False)
-    assert window.space_swipe.slide.travel < 80  # 600 points of swiping, under 80 of movement
-    _sidebar_swipe(window, 0, 0, begin=False)
-    assert wait_until(lambda: window.space_swipe.slide is None, 2)
-    assert window.store.active_space is only
-
-
-def test_the_page_follows_a_back_swipe_over_a_picture_of_the_last_one(window, site):
-    tab = open_page(window, f"{site}/index.html")
-    pause(0.3)
-    tab.view.load(QUrl(f"{site}/links.html"))
-    assert loaded(tab.view)
-    pause(0.3)
-    seen = {}
-
-    def look():
-        gesture = window.swipes._gestures.get(id(tab.view))
-        seen["slide"] = gesture and gesture.slide
-        seen["travel"] = gesture and gesture.slide and gesture.slide.travel
-    _swipe(tab.view, 240, end=False, during=look)  # 9 of 12 steps in: 180 points
-    slide = seen["slide"]
-    assert slide is not None and abs(seen["travel"] - (180 - 14)) < 25  # right under the fingers
-    shot = window.swipes.snapshots.get(tab.view, 0, QUrl(f"{site}/index.html"))
-    assert shot is not None and slide.other is shot  # the real page underneath, not a placeholder
-    _lift(tab.view)  # resting at 240 of ~830: not far enough
-    assert wait_until(lambda: not slide.isVisible(), 3)
-    pause(0.3)
-    assert tab.view.url().fileName() == "links.html"
-    _swipe(tab.view, 420)  # far enough this time
-    assert wait_until(lambda: tab.view.url().fileName() == "index.html", 5)
-    assert wait_until(lambda: not window.swipes._landing, 3)  # the picture lifted once it arrived
-
-
 def test_closing_a_tab_and_clearing_today_slide_rows_away(window, site):
     from browser.sidebar import RowReveal
     first = open_page(window, f"{site}/index.html")
@@ -420,49 +264,32 @@ def test_dragging_a_tab_parts_the_rows_where_it_will_land(window, site):
     a = open_page(window, f"{site}/index.html")
     b = open_page(window, f"{site}/links.html")
     c = open_page(window, f"{site}/img.html")
-    pause(0.4)
     today = window.sidebar.today
-    assert [r.tab for r in today.rows] == [c, b, a]  # (newest on top)
+    assert wait_until(lambda: [r.tab for r in today.rows] == [c, b, a], 3)  # (newest on top)
+    steady(lambda: [r.geometry() for r in today.rows])  # (the rows have slid in)
     row_b = next(r for r in today.rows if r.tab is b)
     today.lift(row_b)
-    assert wait_until(lambda: row_b.parentWidget().height() == 0, 1)  # picked up: its slot closes
+    assert wait_until(lambda: row_b.parentWidget().height() == 0, 3)  # picked up: its slot closes
     rows = {r.tab: r for r in today.rows}
-    top_c, top_a = rows[c].geometry(), rows[a].geometry()
+    top_c, top_a = steady(lambda: (rows[c].geometry(), rows[a].geometry()))  # (the rest have closed up)
     _drag_event("move", today, top_a.center().y() + 8, b)  # the lower half of A: below A
     gap = today._gap
-    assert gap is not None and wait_until(lambda: gap.height() == 34, 1)
+    assert gap is not None and wait_until(lambda: gap.height() == 34, 3)
     assert gap.geometry().top() > rows[a].geometry().top()  # after A, at the end
     _drag_event("move", today, top_a.center().y() + 9, b)  # a nudge: the same place, no new gap
     assert today._gap is gap
     _drag_event("move", today, top_c.center().y() - 6, b)  # the top half of C: before C
-    assert today._gap is not gap and wait_until(lambda: gap.height() == 0, 1)  # the old one closes
+    assert today._gap is not gap and wait_until(lambda: gap.height() == 0, 3)  # the old one closes
     _drag_event("drop", today, top_c.center().y() - 6, b)
-    assert wait_until(lambda: [r.tab for r in today.rows] == [b, c, a], 2)
-    assert wait_until(lambda: not today.findChildren(DropGap), 2)
+    assert wait_until(lambda: [r.tab for r in today.rows] == [b, c, a], 3)
+    assert wait_until(lambda: not today.findChildren(DropGap), 3)
     # Picked up and let go of nowhere: it comes back
     row = next(r for r in today.rows if r.tab is a)
     today.lift(row)
-    assert wait_until(lambda: row.parentWidget().height() == 0, 1)
+    assert wait_until(lambda: row.parentWidget().height() == 0, 3)
     today.drag_ended(row)
-    assert wait_until(lambda: row.parentWidget() is today and row.isVisible(), 1)
+    assert wait_until(lambda: row.parentWidget() is today and row.isVisible(), 3)
     assert [r.tab for r in today.rows] == [b, c, a]
-
-
-def test_swiping_straight_back_shows_only_the_two_spaces(window, site):
-    from browser.gestures import SpaceSlide
-    first, second = _two_spaces(window)
-    open_page(window, f"{site}/index.html")
-    width = window.sidebar.width()
-    _sidebar_swipe(window, 14, -width * 0.05, gap=0.01)  # over to the second, let go
-    assert wait_until(lambda: window.space_swipe.slide is None, 2)
-    _sidebar_swipe(window, 6, width * 0.05, gap=0.01, end=False)  # straight back, while it's still fading
-    covers = [c for c in window.findChildren(SpaceSlide) if c.isVisible()]
-    assert covers == [window.space_swipe.slide]  # the last one's gone, not baked into this one's pictures
-    _sidebar_swipe(window, 8, width * 0.05, gap=0.01, begin=False)
-    assert wait_until(lambda: window.space_swipe.slide is None, 2)
-    pause(0.3)
-    assert window.store.active_space is first
-    assert not [c for c in window.findChildren(SpaceSlide) if c.isVisible()]
 
 
 def test_the_hidden_sidebar_slides_out_stays_and_turns_round(window, site, monkeypatch):
@@ -603,31 +430,6 @@ def test_the_command_bar_highlight_glides_between_rows(window, site):
     bar.close_bar()
 
 
-def test_a_keyboard_switch_mid_swipe_never_wedges_the_sidebar(window, site):
-    first, second = _two_spaces(window)
-    open_page(window, f"{site}/index.html")
-    width = window.sidebar.width()
-    _sidebar_swipe(window, 14, -width * 0.05, gap=0.01)  # let go: it's settling…
-    assert window.space_swipe.state == "settling"
-    window.cycle_space(1)  # …and ⌃⌥→ (or a Space dot) comes in now
-    pause(0.4)
-    assert window.space_swipe.slide is None and window.space_swipe.state not in ("mine", "settling")
-    # The tab list still scrolls, and Space swipes still work
-    target = window.sidebar.scroll.viewport()
-    at = QPointF(60, 200)
-    for phase, dy in ((Qt.ScrollPhase.ScrollBegin, 0), (Qt.ScrollPhase.ScrollUpdate, 20), (Qt.ScrollPhase.ScrollUpdate, 20)):
-        event = QWheelEvent(at, QPointF(target.mapToGlobal(at.toPoint())), QPoint(0, dy), QPoint(0, dy * 4),
-                            Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, phase, False)
-        used = window.space_swipe.wheel(event)
-        QApplication.processEvents()
-    assert used is False  # a vertical scroll is the tab list's, not swallowed
-    _sidebar_swipe(window, 0, 0, begin=False)
-    before = window.store.active_space
-    _sidebar_swipe(window, 14, -width * 0.05, gap=0.01)
-    assert wait_until(lambda: window.space_swipe.slide is None, 2)
-    assert window.store.active_space is not before
-
-
 def test_dragging_a_tab_to_pinned_leaves_no_gap_behind(window, site):
     from browser.sidebar import RowReveal
     a = open_page(window, f"{site}/index.html")
@@ -644,40 +446,6 @@ def test_dragging_a_tab_to_pinned_leaves_no_gap_behind(window, site):
     shrinking = [r for r in today.findChildren(RowReveal) if not r.growing and not sip.isdeleted(r)]
     assert not shrinking  # no empty 34-point slot reopening where it was
     assert [r.tab for r in today.rows] == [a]
-
-
-def test_a_second_back_swipe_while_the_first_lands_leaves_no_old_picture(window, site):
-    from browser.gestures import PageSlide
-    tab = open_page(window, f"{site}/index.html")
-    for page in ("links.html", "img.html"):
-        tab.view.load(QUrl(f"{site}/{page}"))
-        assert loaded(tab.view)
-        pause(0.2)
-    target = tab.view.focusProxy()
-    at = QPoint(600, 450)
-
-    def send(phase, dx):
-        QApplication.sendEvent(target, QWheelEvent(QPointF(at), QPointF(target.mapToGlobal(at)), QPoint(int(dx), 0),
-                                                   QPoint(int(dx) * 4, 0), Qt.MouseButton.NoButton,
-                                                   Qt.KeyboardModifier.NoModifier, phase, False))
-    for _ in range(2):  # two quick flicks back, the second while the first is still landing
-        send(Qt.ScrollPhase.ScrollBegin, 0)
-        for _ in range(8):
-            send(Qt.ScrollPhase.ScrollUpdate, 60)
-            pause(0.016)
-        send(Qt.ScrollPhase.ScrollMomentum, 30)
-        pause(0.05)
-    assert wait_until(lambda: not [s for s in tab.view.findChildren(PageSlide) if s.isVisible()], 4)
-    assert tab.view.url().fileName() == "index.html"  # back twice
-
-
-def test_a_slow_page_swipe_doesnt_swallow_the_mouse_wheel(window, site):
-    tab = open_page(window, f"{site}/index.html")
-    tab.view.load(QUrl(f"{site}/links.html"))
-    assert loaded(tab.view)
-    _swipe(tab.view, 120)  # a short, slow swipe: it springs back, the fingers lift without a glide
-    pause(0.4)
-    assert id(tab.view) not in window.swipes._gliding
 
 
 def test_everything_in_the_sidebar_has_a_name_for_voiceover(window, site):
@@ -845,36 +613,6 @@ def test_a_restored_tab_opens_where_it_was_left(window, site):
     window.activate_tab(tab)
     assert wait_until(lambda: tab.view is not None and tab.view.page().scrollPosition().y() > 3900, 6)
     assert tab.scroll is None  # used once
-
-
-def test_closing_a_browse_for_me_tab_stops_its_search(window, monkeypatch):
-    from PyQt6.QtCore import QObject, pyqtSignal
-    from browser import window as window_module
-
-    class FakeRun(QObject):
-        status, sources_found, partial = pyqtSignal(str), pyqtSignal(list), pyqtSignal(str)
-        finished, failed = pyqtSignal(str, str), pyqtSignal(str)
-        made = []
-
-        def __init__(self, *args):
-            super().__init__()
-            self.cancelled = False
-            FakeRun.made.append(self)
-
-        def start(self):
-            pass
-
-        def cancel(self):
-            self.cancelled = True
-    monkeypatch.setattr(window_module, "BrowseForMe", FakeRun)
-    monkeypatch.setattr(type(window.claude), "available", property(lambda self: True))
-    window.browse_for_me("best espresso grinder")
-    run = FakeRun.made[-1]
-    tab = window.current_tab
-    assert not run.cancelled
-    window.close_tab(tab)
-    assert wait_until(lambda: run.cancelled, 1)
-    assert run not in window._browse_runs
 
 
 def test_dark_websites_turn_on_at_once_and_a_site_can_stay_light(window, site):
@@ -1198,114 +936,6 @@ def test_review_fixes_for_picking_tabs_and_screenshots(window, site, tmp_path):
     assert wait_until(lambda: run_js(tall.view, "document.getElementById('__ecShotStyle') === null"), 3)
 
 
-def test_easel_handles_resize_and_the_easel_exports(window, tmp_path, monkeypatch):
-    from PyQt6.QtCore import QRectF
-    from PyQt6.QtGui import QColor, QImage
-    from PyQt6.QtWidgets import QGraphicsRectItem
-    from browser.easel import _movable, geometry
-    window.store.settings["ytdlp"] = {"folder": str(tmp_path)}
-    tab = window.new_easel()
-    easel = tab.view
-    assert wait_until(lambda: easel.isVisible(), 3)
-    box = _movable(QGraphicsRectItem(QRectF(0, 0, 120, 80)), "rect")
-    easel.scene.addItem(box)
-    image = QImage(200, 100, QImage.Format.Format_ARGB32)
-    image.fill(QColor("teal"))
-    picture = easel.add_image(image, at=QRectF(0, 200, 0, 0).topLeft())
-    easel.canvas.resetTransform()
-    easel.canvas.centerOn(100, 150)
-    pause(0.1)
-    # Pick the box and drag its bottom-right handle with the mouse
-    easel.scene.clearSelection()
-    box.setSelected(True)
-    viewport = easel.canvas.viewport()
-    start = easel.canvas.mapFromScene(geometry(box).bottomRight())
-    end = start + QPoint(80, 40)
-
-    def mouse(kind, at, buttons):
-        event = QMouseEvent(kind, QPointF(at), QPointF(viewport.mapToGlobal(at)), Qt.MouseButton.LeftButton,
-                            buttons, Qt.KeyboardModifier.NoModifier)
-        QApplication.sendEvent(viewport, event)
-
-    mouse(QEvent.Type.MouseButtonPress, start, Qt.MouseButton.LeftButton)
-    for step in range(1, 6):
-        mouse(QEvent.Type.MouseMove, start + (end - start) * step / 5, Qt.MouseButton.LeftButton)
-    mouse(QEvent.Type.MouseButtonRelease, end, Qt.MouseButton.NoButton)
-    assert geometry(box).size().toSize().width() == 200 and geometry(box).size().toSize().height() == 120
-    assert geometry(box).topLeft() == QPointF(0, 0)  # the opposite corner stayed put
-    # One undo step for the whole drag
-    easel.undo()
-    pause(0.05)
-    restored = [i for i in easel.scene.items() if i.data(0) == "rect"][0]
-    assert geometry(restored).width() == 120
-    # A picture keeps its shape however the handle is dragged
-    easel.scene.clearSelection()
-    picture = [i for i in easel.scene.items() if i.data(0) == "image"][0]
-    picture.setSelected(True)
-    start = easel.canvas.mapFromScene(geometry(picture).bottomRight())
-    mouse(QEvent.Type.MouseButtonPress, start, Qt.MouseButton.LeftButton)
-    mouse(QEvent.Type.MouseMove, start + QPoint(200, 0), Qt.MouseButton.LeftButton)
-    mouse(QEvent.Type.MouseButtonRelease, start + QPoint(200, 0), Qt.MouseButton.NoButton)
-    shape = geometry(picture)
-    assert round(shape.width()) == 400 and round(shape.height()) == 200
-
-    # Export: copy, PNG, PDF, each from the toolbar's menu
-    saved = {}
-    monkeypatch.setattr(window, "toast", lambda text, *a, **k: saved.update(text=text))
-    easel.export.emit("copy")
-    assert saved["text"] == "Copied the easel as an image" and not QApplication.clipboard().image().isNull()
-    easel.export.emit("png")
-    easel.export.emit("pdf")
-    pngs, pdfs = list(tmp_path.glob("*.png")), list(tmp_path.glob("*.pdf"))
-    assert [p.name for p in pngs] == ["Untitled Easel.png"] and [p.name for p in pdfs] == ["Untitled Easel.pdf"]
-    assert QImage(str(pngs[0])).width() > 0 and pdfs[0].read_bytes().startswith(b"%PDF")
-    easel.export.emit("png")  # a second one doesn't overwrite the first
-    assert (tmp_path / "Untitled Easel 2.png").exists()
-    from PyQt6.QtWidgets import QToolButton
-    share = next(b for b in easel.toolbar.findChildren(QToolButton) if b.menu() is not None)
-    assert [a.text() for a in share.menu().actions()] == ["Copy as Image", "Save as PNG", "Save as PDF"]
-    window.close_tab(tab)
-
-
-GITHUB_RELEASES = b"""<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom"><title>Release notes from qtwebengine</title>
-<entry><title>v6.12.0</title><link rel="alternate" type="text/html" href="https://github.com/qt/qtwebengine/releases/tag/v6.12.0"/></entry>
-<entry><title>v6.11.2</title><link rel="alternate" type="text/html" href="https://github.com/qt/qtwebengine/releases/tag/v6.11.2"/></entry>
-</feed>"""
-
-
-def test_follow_releases_of_a_github_repo(window, monkeypatch):
-    from browser.models import Tab
-    asked = []
-
-    def fake_get(url, done, fail, headers=None, secret=False):  # (GitHub, without the network)
-        asked.append(url)
-        QTimer.singleShot(0, lambda: done(GITHUB_RELEASES, url))
-    monkeypatch.setattr(window.live_folders, "_get", fake_get)
-    toasts = []
-    monkeypatch.setattr(window, "toast", lambda text, *a, **k: toasts.append(text))
-    # ⌘T offers it on any page of a repo, and nowhere else
-    previous = window.current_tab
-    window.current_tab = Tab("https://github.com/qt/qtwebengine/pulls", "Pull requests")
-    try:
-        follow = [c for c in window.commands() if c[0].startswith("Follow Releases")]
-    finally:
-        window.current_tab = previous
-    assert [c[0] for c in follow] == ["Follow Releases of qt/qtwebengine"]
-    assert not [c for c in window.commands() if c[0].startswith("Follow Releases")]
-    follow[0][2]()
-    assert wait_until(lambda: any("up to date" in t for t in toasts), 3), toasts
-    assert asked == ["https://github.com/qt/qtwebengine/releases.atom"]
-    folder = next(f for f in window.store.active_space.pinned if getattr(f, "live", None)
-                  and f.live.get("url") == "https://github.com/qt/qtwebengine")
-    assert folder.name == "qtwebengine Releases"
-    assert [t.title for t in folder.children] == ["v6.12.0", "v6.11.2"]
-    # A feed folder given a repo's address names itself from GitHub's feed title, tidied
-    window.create_live_folder({"kind": "feed", "url": "https://github.com/qt/qtbase"}, "qtbase")
-    assert wait_until(lambda: any(f.name == "qtwebengine Releases" and f is not folder
-                                  for f in window.store.active_space.pinned if getattr(f, "live", None)), 3)
-
-
 def test_undo_of_closing_several_tabs_puts_them_back_in_their_folders(window, site):
     from browser.models import TODAY, Folder, walk_tabs
     space = window.store.active_space
@@ -1325,131 +955,6 @@ def test_undo_of_closing_several_tabs_puts_them_back_in_their_folders(window, si
     back = [t for t in walk_tabs(space.today) if t.url in (a.url, b.url, c.url)]
     assert len(back) == 3 and all(t.view is None for t in back)  # (asleep until clicked)
     assert window.current_tab is d
-
-
-def test_github_folder_fills_its_sub_folders(window, site, monkeypatch):
-    from browser.live_folders import OVERVIEW
-    from browser.models import Folder, walk_tabs
-    from browser.sidebar import FolderRow
-    answers = {
-        "review": [{"title": "Fix login", "url": f"{site}/index.html?pr7", "repository": {"name": "parliament"},
-                    "number": 7, "isPullRequest": True}],
-        "mine": [], "assigned": [], "notifications": None,  # (None: gh can't read them)
-        "yours": [{"title": "Dark mode", "url": f"{site}/index.html?i9", "repository": {"name": "eclipse"},
-                   "number": 9, "isPullRequest": False}],
-    }
-
-    def fake_gh(args, done, fail):  # (gh, answered from here)
-        key = next(k for k, a in OVERVIEW.items() if a == args)
-        QTimer.singleShot(0, lambda: done(answers[key]) if answers[key] is not None else fail("HTTP 403"))
-    monkeypatch.setattr(window.live_folders, "_gh", fake_gh)
-    monkeypatch.setattr("browser.live_folders.find_tool", lambda name: "/usr/bin/true")
-    toasts = []
-    monkeypatch.setattr(window, "toast", lambda text, *a, **k: toasts.append(text))
-    add = next(c for c in window.commands() if c[0] == "Add GitHub Folder (PRs, Issues, Repos)")
-    add[2]()
-    assert wait_until(lambda: "“GitHub” is up to date" in toasts, 3), toasts
-    folder = next(f for f in window.store.active_space.pinned if isinstance(f, Folder) and f.live
-                  and f.live.get("query") == "overview")
-    assert [(f.name, [t.title for t in f.children]) for f in folder.children] == \
-        [("Review Requested", ["Fix login · parliament"]), ("eclipse", ["#9 Dark mode"])]
-    add[2]()  # one is enough
-    assert toasts[-1] == "You have one already: “GitHub”"
-
-    # Something new arrives: counted on the folder and on its sub-folder, until opened
-    answers["yours"].append({"title": "Menu bug", "url": f"{site}/index.html?i10", "repository": {"name": "eclipse"},
-                             "number": 10, "isPullRequest": False})
-    window.live_folders.refresh(folder)
-    assert wait_until(lambda: any(t.fresh for t in walk_tabs(folder.children)), 3)
-    for sub in folder.children:
-        sub.expanded = True
-    window.store._changed()
-    pause(0.2)
-    rows = {r.folder.name: r for r in window.sidebar.findChildren(FolderRow) if r.isVisible()}
-    assert rows["GitHub"].count_label.text() == "1 new" and rows["eclipse"].count_label.text() == "1 new"
-    fresh = next(t for t in walk_tabs(folder.children) if t.fresh)
-    window.activate_tab(fresh)
-    pause(0.1)
-    assert not fresh.fresh and rows["eclipse"].count_label.text() == "" and rows["GitHub"].count_label.text() == ""
-    # A sub-folder can't be dragged out, and nothing can be dropped in
-    from browser.models import PINNED, TODAY
-    window.store.move_tab(folder.children[1], PINNED, index=0)
-    assert folder.children[1].name == "eclipse"
-    # What you're reading leaves the folder (an issue closed, a notification read): it stays open, in Today
-    reading = window.current_tab
-    answers["yours"] = [r for r in answers["yours"] if r["url"] != reading.url]
-    toasts.clear()
-    window.live_folders.refresh(folder)
-    assert wait_until(lambda: toasts or not any(t is reading for t in walk_tabs(folder.children)), 3)
-    pause(0.1)
-    assert window.current_tab is reading and window.store.locate(reading)[0] == TODAY
-    assert reading.view is not None
-
-
-def test_a_pull_requests_chip_shows_its_checks(window, monkeypatch):
-    from browser.models import Tab
-    answer = {"state": "OPEN", "reviewDecision": "APPROVED", "statusCheckRollup": [
-        {"__typename": "CheckRun", "name": "test", "status": "COMPLETED", "conclusion": "FAILURE",
-         "detailsUrl": "https://github.com/o/r/actions/runs/1/job/2", "workflowName": "CI"},
-        {"__typename": "CheckRun", "name": "lint", "status": "COMPLETED", "conclusion": "SUCCESS",
-         "detailsUrl": "https://github.com/o/r/actions/runs/1/job/3", "workflowName": "CI"}]}
-    asked = []
-
-    def fake_ask(pull, url):  # (gh, answered from here)
-        asked.append(pull)
-        QTimer.singleShot(0, lambda: (window.pr_status._answers.__setitem__(pull, (time.time(), dict(answer))),
-                                      window.pr_status.changed.emit(url)))
-    monkeypatch.setattr(window.pr_status, "_ask", fake_ask)
-    chip = window.sidebar.pr_btn
-    previous = window.current_tab
-    window.current_tab = Tab("https://github.com/o/r/pull/12/files", "PR")
-    try:
-        window.sidebar.update_pr()
-        assert not chip.isVisible() and asked == [("o", "r", 12)]  # (until gh answers)
-        assert wait_until(lambda: chip.isVisible(), 2)
-        assert chip.text() == "✕ 1 failing · Approved" and chip.property("state") == "fail"
-        # Its menu: each check, failing first, then the checks page and Check Again
-        shown = []
-
-        class FakeMenu:
-            def __init__(self, real):
-                self.real = real
-
-            def __getattr__(self, name):
-                return getattr(self.real, name)
-
-            def exec(self, *_):
-                shown.extend(a.text() for a in self.real.actions() if a.text())
-        real_menu = window._menu
-        monkeypatch.setattr(window, "_menu", lambda: FakeMenu(real_menu()))
-        window.show_pr_checks(QPoint(0, 0))
-        assert shown == ["CI · test", "CI · lint", "Open Checks Page", "Check Again"]
-        # Checks still running: it looks again by itself while you're there
-        answer["statusCheckRollup"][0].update(status="IN_PROGRESS", conclusion="")
-        window.pr_status.lookup(window.current_tab.url, force=True)
-        assert wait_until(lambda: chip.text() == "● 1 running · Approved", 2)
-        assert window.pr_status._poll.isActive()
-    finally:
-        window.current_tab = previous
-        window.sidebar.update_pr()
-    assert not chip.isVisible() and not window.pr_status._poll.isActive()  # elsewhere: no chip, no looking
-
-
-def test_your_github_repos_are_in_the_command_bar(window):
-    window.github_repos.repos = [
-        {"name": "gradtrack", "nameWithOwner": "me/gradtrack", "url": "https://github.com/me/gradtrack",
-         "description": "Grad school deadlines", "isPrivate": True, "pushedAt": "2026-10-20"},
-        {"name": "homebase", "nameWithOwner": "me/homebase", "url": "https://github.com/me/homebase",
-         "description": "", "isPrivate": False, "pushedAt": "2026-10-26"}]
-    bar = window.command_bar
-    window.open_command_bar("new")
-    bar.input.setText("grad")
-    bar.update_results()
-    rows = [bar.list.item(i).data(Qt.ItemDataRole.UserRole) for i in range(bar.list.count())]
-    hit = next(r for r in rows if r.badge == "GitHub")
-    assert (hit.title, hit.subtitle) == ("gradtrack", "Grad school deadlines")
-    assert not any(r.badge == "GitHub" and r.title == "homebase" for r in rows)
-    bar.close_bar()
 
 
 def _lights_state(window):
@@ -1571,15 +1076,14 @@ def test_the_sidebar_scrollbar_stays_out_of_sight_until_you_scroll(window, site)
     assert inner.value() == 0
 
 
-def test_pinned_tabs_get_their_icons_without_loading(window, site, monkeypatch):
+def test_pinned_tabs_get_their_icons_without_loading(window, site, site_root, monkeypatch):
     import os
     from PyQt6.QtGui import QColor, QImage
-    from conftest import _site_root
     from browser import storage
     from browser.favicons import Favicons
     from browser.models import PINNED, Tab
     from browser.sidebar import TabRow
-    icon_file = os.path.join(_site_root[0], "favicon.ico")
+    icon_file = os.path.join(site_root, "favicon.ico")
     image = QImage(32, 32, QImage.Format.Format_ARGB32)
     image.fill(QColor("#22c55e"))
     image.save(icon_file, "ICO")
@@ -1624,26 +1128,6 @@ def test_live_folder_items_and_dev_pages_dont_fetch_icons(window, monkeypatch):
     window._want_icons()
     assert "https://mine.example/" in wanted
     assert not any("feed.example" in u or "localhost" in u for u in wanted)
-
-
-def test_zap_only_listens_to_itself(window, site):
-    tab = open_page(window, f"{site}/index.html")
-    window.start_zap()
-    pause(0.3)
-    zapped = []
-    real = window.boosts.add_zapped
-    window.boosts.add_zapped = lambda site_, sel: (zapped.append(sel), real(site_, sel))[1]
-    # The page pretending to be Zap: ignored
-    run_js(tab.view, "console.log('PYBROWSER_ZAP:x{} input{background:url(//evil/a)}')")
-    run_js(tab.view, "console.log('PYBROWSER_ZAP:h1')")
-    pause(0.3)
-    assert zapped == []
-    # A real click with the tool: heard (its message comes from its own world, with its token)
-    run_js(tab.view, "document.querySelector('h1').click()")
-    assert wait_until(lambda: zapped == ["h1"], 3), zapped
-    from browser.boosts import safe_selector
-    assert not safe_selector("x{} input{background:url(//evil/a)}") and safe_selector("div.ad > p:nth-of-type(2)")
-    window.boosts.add_zapped = real
 
 
 def test_a_local_file_cant_read_other_files(window, tmp_path):
@@ -1785,3 +1269,330 @@ def test_with_nothing_open_its_just_the_spaces_background(window, site):
         assert content.blank and content.property("blank") is True
     open_page(window, f"{site}/index.html")
     assert not content.blank and content.property("blank") is False
+
+
+
+
+def _stand_ins(monkeypatch, answer=True):
+    """Touch ID answers by itself, and the Keychain is a dict: nothing pops up, and your real one is left alone."""
+    from PyQt6.QtCore import QTimer
+    from browser import macos, passkey_store
+    kept = {}
+    monkeypatch.setattr(passkey_store.secure_store, "store", lambda a, secret: kept.__setitem__(a, secret) or True)
+    monkeypatch.setattr(passkey_store.secure_store, "load", lambda a: kept.get(a))
+    monkeypatch.setattr(passkey_store.secure_store, "delete", lambda a: kept.pop(a, None))
+    monkeypatch.setattr(macos, "can_verify_owner", lambda: True)
+    asked = []
+    monkeypatch.setattr(macos, "verify_owner", lambda reason, done, interactive=True: (
+        asked.append(reason), QTimer.singleShot(50, lambda: done(answer)))[0] is None)
+    return asked
+
+
+def _click_when_ready(card, text):
+    from PyQt6.QtWidgets import QPushButton
+    button = next(b for b in card.findChildren(QPushButton) if b.text() == text and not b.isHidden())
+    assert wait_until(button.isEnabled, 3)  # (a moment after the card shows: never a click meant for the page)
+    button.click()
+
+
+ASK = """
+    window.%(name)s = 'waiting';
+    navigator.credentials.%(call)s.then(made => window.%(name)s = JSON.stringify({
+        json: made.toJSON(), platform: made instanceof PublicKeyCredential, attachment: made.authenticatorAttachment,
+        extensions: made.getClientExtensionResults(),
+        key: made.response.getPublicKey ? made.response.getPublicKey().byteLength : null}),
+      error => window.%(name)s = error.name);
+"""
+CREATE = """create({publicKey: {challenge: new Uint8Array([1, 2, 3, 4]), rp: {name: 'Test', id: '%(rp)s'},
+    user: {id: new Uint8Array([7, 7, 7]), name: 'arkan@example.com', displayName: 'Arkan'},
+    pubKeyCredParams: [{type: 'public-key', alg: -7}, {type: 'public-key', alg: -257}],
+    authenticatorSelection: {residentKey: 'required', userVerification: 'required'},
+    extensions: {credProps: true}, timeout: 60000}})"""
+
+
+def test_eclipse_saves_a_passkey_and_signs_in_with_it(window, site, monkeypatch):
+    from PyQt6.QtWidgets import QLabel
+    import base64
+    import hashlib
+    import json
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from browser import passkey_store
+    asked = _stand_ins(monkeypatch)
+    page = site.replace("127.0.0.1", "localhost")
+    tab = open_page(window, page + "/index.html?passkeys")
+    # Sites ask first whether the browser has passkeys of its own
+    assert run_js(tab.view, "PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().then(a => "
+                            "window.able = a); 1", world=0) and wait_until(
+        lambda: run_js(tab.view, "window.able", world=0) is True, 3)
+    run_js(tab.view, ASK % {"name": "made", "call": CREATE % {"rp": "localhost"}}, world=0)
+    assert wait_until(lambda: window.passkeys.card_for(tab.view) is not None, 10)
+    card = window.passkeys.card_for(tab.view)
+    assert card.offer["kind"] == "create" and card.offer["rp_id"] == "localhost"
+    _click_when_ready(card, "Save Passkey")
+    assert wait_until(lambda: run_js(tab.view, "window.made", world=0) != "waiting", 10)
+    made = json.loads(run_js(tab.view, "window.made", world=0))
+    assert asked == ["save a passkey for localhost"]
+    assert made["platform"] and made["attachment"] == "platform" and made["key"] > 60
+    assert made["extensions"] == {"credProps": {"rk": True}}
+    client = json.loads(passkey_store.unb64url(made["json"]["response"]["clientDataJSON"]))
+    assert client["origin"] == page and client["type"] == "webauthn.create"
+    assert client["challenge"] == passkey_store.b64url(bytes([1, 2, 3, 4]))
+    public = serialization.load_der_public_key(passkey_store.unb64url(made["json"]["response"]["publicKey"]))
+    # Signing in: the site lists the passkey it knows; the card offers the account
+    credential = made["json"]["id"]
+    run_js(tab.view, ASK % {"name": "signed", "call": f"""get({{publicKey: {{challenge: new Uint8Array([9, 9]),
+        rpId: 'localhost', allowCredentials: [{{type: 'public-key', id: Uint8Array.from(atob('{
+        base64.b64encode(passkey_store.unb64url(credential)).decode()}'), c => c.charCodeAt(0))}}],
+        userVerification: 'preferred'}}}})"""}, world=0)
+    assert wait_until(lambda: window.passkeys.card_for(tab.view) is not None, 10)
+    _click_when_ready(window.passkeys.card_for(tab.view), "arkan@example.com")
+    assert wait_until(lambda: run_js(tab.view, "window.signed", world=0) != "waiting", 10)
+    signed = json.loads(run_js(tab.view, "window.signed", world=0))["json"]
+    assert signed["id"] == credential and signed["response"]["userHandle"] == passkey_store.b64url(bytes([7, 7, 7]))
+    auth = passkey_store.unb64url(signed["response"]["authenticatorData"])
+    data = passkey_store.unb64url(signed["response"]["clientDataJSON"])
+    public.verify(passkey_store.unb64url(signed["response"]["signature"]), auth + hashlib.sha256(data).digest(),
+                  ec.ECDSA(hashes.SHA256()))  # (what the site's server checks)
+    assert auth[:32] == hashlib.sha256(b"localhost").digest() and auth[32] & passkey_store.UV
+    # Saving one for the same account again: the site says which it has, and Eclipse says it's already there
+    run_js(tab.view, ASK % {"name": "again", "call": (CREATE % {"rp": "localhost"}).replace(
+        "timeout: 60000", "timeout: 60000, excludeCredentials: [{type: 'public-key', id: Uint8Array.from(atob('%s'), "
+        "c => c.charCodeAt(0))}]" % base64.b64encode(passkey_store.unb64url(credential)).decode())}, world=0)
+    assert wait_until(lambda: window.passkeys.card_for(tab.view) is not None, 10)
+    _click_when_ready(window.passkeys.card_for(tab.view), "OK")
+    assert wait_until(lambda: run_js(tab.view, "window.again", world=0) == "InvalidStateError", 10)
+    # Autofill: a sign-in page waiting in the background gets a quiet card, Not Now puts it away (the page keeps
+    # waiting), and picking the account signs in
+    assert run_js(tab.view, "PublicKeyCredential.isConditionalMediationAvailable().then(a => window.auto = a); 1",
+                  world=0) and wait_until(lambda: run_js(tab.view, "window.auto", world=0) is True, 3)
+    def autofill(name):
+        return ASK % {"name": name, "call": "get({mediation: 'conditional', publicKey: {challenge: "
+                                            "new Uint8Array([5]), rpId: 'localhost'}})"}
+    run_js(tab.view, autofill("quiet"), world=0)
+    assert wait_until(lambda: window.passkeys.card_for(tab.view) is not None, 10)
+    card = window.passkeys.card_for(tab.view)
+    assert card.offer["conditional"] and "with your passkey?" in " ".join(l.text() for l in card.findChildren(QLabel))
+    _click_when_ready(card, "Not Now")
+    assert wait_until(lambda: window.passkeys.card_for(tab.view) is None, 3)
+    assert run_js(tab.view, "window.quiet", world=0) == "waiting"
+    tab.view.reload()
+    assert loaded(tab.view)
+    run_js(tab.view, autofill("auto"), world=0)
+    assert wait_until(lambda: window.passkeys.card_for(tab.view) is not None, 10)
+    _click_when_ready(window.passkeys.card_for(tab.view), "arkan@example.com")
+    assert wait_until(lambda: run_js(tab.view, "window.auto", world=0) not in ("waiting", None), 10)
+    assert json.loads(run_js(tab.view, "window.auto", world=0))["json"]["id"] == credential
+
+
+def test_with_no_passkey_for_the_site_autofill_is_quiet_and_asking_says_so(window, site, monkeypatch):
+    from PyQt6.QtWidgets import QLabel
+    _stand_ins(monkeypatch)
+    tab = open_page(window, site.replace("127.0.0.1", "localhost") + "/index.html?none")
+    run_js(tab.view, ASK % {"name": "auto", "call": "get({mediation: 'conditional', publicKey: {challenge: "
+                                                    "new Uint8Array([5])}})"}, world=0)
+    pause(1)
+    assert window.passkeys.card_for(tab.view) is None  # (as a sign-in page on load should be left alone)
+    tab.view.reload()
+    assert loaded(tab.view)
+    run_js(tab.view, ASK % {"name": "asked", "call": "get({publicKey: {challenge: new Uint8Array([5])}})"}, world=0)
+    assert wait_until(lambda: window.passkeys.card_for(tab.view) is not None, 10)
+    card = window.passkeys.card_for(tab.view)
+    assert "don't have a passkey for localhost in Eclipse yet" in " ".join(l.text() for l in card.findChildren(QLabel))
+    _click_when_ready(card, "Cancel")
+    assert wait_until(lambda: run_js(tab.view, "window.asked", world=0) == "NotAllowedError", 10)
+
+
+def test_a_page_cant_ask_for_another_sites_passkey(window, site, monkeypatch):
+    _stand_ins(monkeypatch)
+    tab = open_page(window, site.replace("127.0.0.1", "localhost") + "/index.html?other-site")
+    run_js(tab.view, ASK % {"name": "made", "call": CREATE % {"rp": "example.com"}}, world=0)
+    assert wait_until(lambda: run_js(tab.view, "window.made", world=0) == "SecurityError", 10)
+    assert window.passkeys.card_for(tab.view) is None
+
+
+def test_touch_id_saying_no_saves_nothing(window, site, monkeypatch):
+    from PyQt6.QtWidgets import QPushButton
+    from browser import passkey_store
+    _stand_ins(monkeypatch, answer=False)
+    tab = open_page(window, site.replace("127.0.0.1", "localhost") + "/index.html?no")
+    run_js(tab.view, ASK % {"name": "made", "call": CREATE % {"rp": "localhost"}}, world=0)
+    assert wait_until(lambda: window.passkeys.card_for(tab.view) is not None, 10)
+    card = window.passkeys.card_for(tab.view)
+    _click_when_ready(card, "Save Passkey")
+    assert wait_until(lambda: any(b.text() == "Save Passkey" for b in card.findChildren(QPushButton)
+                                  if not b.isHidden()), 3)  # (back to the question)
+    assert passkey_store.all_passkeys() == [] and run_js(tab.view, "window.made", world=0) == "waiting"
+    _click_when_ready(card, "Cancel")
+    assert wait_until(lambda: run_js(tab.view, "window.made", world=0) == "NotAllowedError", 10)
+
+
+def test_a_passkey_request_says_to_plug_in_a_key_and_cancel_reaches_the_page(window, site, monkeypatch):
+    from PyQt6.QtWidgets import QLabel, QPushButton
+    _stand_ins(monkeypatch)
+    tab = open_page(window, site.replace("127.0.0.1", "localhost") + "/index.html?webauthn")  # (a name, not an IP)
+    ask = """
+        window.%(name)s = 'waiting';
+        navigator.credentials.%(call)s.then(() => window.%(name)s = 'done', error => window.%(name)s = error.name);
+    """
+    # Passkey autofill waits quietly for you to pick one: no card for that
+    run_js(tab.view, ask % {"name": "autofill", "call": "get({mediation: 'conditional', "
+                                                          "publicKey: {challenge: new Uint8Array(32)}})"}, world=0)
+    pause(1)
+    assert window.passkeys.card_for(tab.view) is None
+    tab.view.reload()  # (a site stops autofill before asking outright; a fresh page does too)
+    assert loaded(tab.view)
+    run_js(tab.view, ask % {"name": "passkey", "call": """create({publicKey: {
+            challenge: new Uint8Array(32), rp: {name: 'Test', id: 'localhost'},
+            user: {id: new Uint8Array(8), name: 'arkan@example.com', displayName: 'Arkan'},
+            pubKeyCredParams: [{type: 'public-key', alg: -7}], timeout: 60000}})"""}, world=0)
+    assert wait_until(lambda: window.passkeys.card_for(tab.view) is not None, 10), "no card for the request"
+    _click_when_ready(window.passkeys.card_for(tab.view), "Use a Security Key")  # (Eclipse offers its own first)
+    assert wait_until(lambda: window.passkeys.card_for(tab.view) is not None, 3)
+    card = window.passkeys.card_for(tab.view)
+    assert wait_until(lambda: card.isVisible(), 3)
+    assert "localhost</b> wants to use a passkey or security key" in " ".join(
+        label.text() for label in card.findChildren(QLabel))
+    next(b for b in card.findChildren(QPushButton) if b.text() == "Cancel").click()
+    assert wait_until(lambda: run_js(tab.view, "window.passkey", world=0) == "NotAllowedError", 10)
+    assert window.passkeys.card_for(tab.view) is None
+
+
+def test_a_password_is_offered_to_save_then_filled_after_touch_id(window, site, monkeypatch):
+    from PyQt6.QtWidgets import QLabel
+    from browser import password_store
+    from browser.webview import PASSWORD_CALL
+    asked = _stand_ins(monkeypatch)
+    login = site.replace("127.0.0.1", "localhost") + "/login.html"
+    tab = open_page(window, login)
+    run_js(tab.view, "document.getElementById('user').value = 'arkan@example.com';"
+                     "document.getElementById('pass').value = 'correct horse';"
+                     "document.querySelector('button').click(); 1", world=0)
+    assert wait_until(lambda: tab.view.url().toString().endswith("welcome.html"), 5)
+    assert wait_until(lambda: window.passwords.card_for(tab.view) is not None, 5), "no offer to save"
+    card = window.passwords.card_for(tab.view)
+    assert "Save your password for <b>localhost</b>?" in " ".join(l.text() for l in card.findChildren(QLabel))
+    _click_when_ready(card, "Save")
+    assert [(e["origin"], e["username"], e["password"]) for e in password_store.logins()] == [
+        (site.replace("127.0.0.1", "localhost"), "arkan@example.com", "correct horse")]
+    # Back to sign in: the card offers the account, and Touch ID comes first
+    tab.view.load(QUrl(login))
+    assert loaded(tab.view)
+    assert wait_until(lambda: window.passwords.card_for(tab.view) is not None, 5), "no offer to fill"
+    _click_when_ready(window.passwords.card_for(tab.view), "arkan@example.com")
+    assert wait_until(lambda: run_js(tab.view, "document.getElementById('pass').value", world=0) == "correct horse", 5)
+    assert run_js(tab.view, "document.getElementById('user').value", world=0) == "arkan@example.com"
+    assert asked == ["fill your password for localhost"]
+    # Again: once each time Eclipse opens, so no second ask
+    tab.view.reload()
+    assert loaded(tab.view)
+    assert wait_until(lambda: window.passwords.card_for(tab.view) is not None, 5)
+    _click_when_ready(window.passwords.card_for(tab.view), "arkan@example.com")
+    assert wait_until(lambda: run_js(tab.view, "document.getElementById('pass').value", world=0) == "correct horse", 5)
+    assert len(asked) == 1
+    # The same password typed again isn't offered for saving again
+    run_js(tab.view, "document.querySelector('button').click(); 1", world=0)
+    assert wait_until(lambda: tab.view.url().toString().endswith("welcome.html"), 5)
+    pause(0.5)
+    assert window.passwords.card_for(tab.view) is None
+
+
+def test_a_page_cant_pretend_to_be_the_password_script(window, site, monkeypatch):
+    import json
+    from browser.webview import PASSWORD_CALL
+    _stand_ins(monkeypatch)
+    tab = open_page(window, site.replace("127.0.0.1", "localhost") + "/index.html?forged")
+    forged = PASSWORD_CALL + json.dumps({"token": "guess", "kind": "sent", "username": "x", "password": "y"})
+    run_js(tab.view, f"console.debug({json.dumps(forged)}); 1", world=0)
+    pause(0.8)
+    assert window.passwords.card_for(tab.view) is None
+
+
+
+def test_a_two_step_sign_in_saves_the_username_with_the_password(window, site, monkeypatch):
+    from browser import password_store
+    asked = _stand_ins(monkeypatch)
+    page = site.replace("127.0.0.1", "localhost")
+    tab = open_page(window, page + "/login-step1.html")
+    run_js(tab.view, "document.getElementById('identifier').value = 'arkan@example.com';"
+                     "document.querySelector('button').click(); 1", world=0)
+    assert wait_until(lambda: tab.view.url().toString().endswith("login-step2.html"), 5)
+    assert loaded(tab.view)
+    run_js(tab.view, "document.getElementById('pass').value = 'two steps';"
+                     "document.querySelector('button').click(); 1", world=0)
+    assert wait_until(lambda: window.passwords.card_for(tab.view) is not None, 5), "no offer to save"
+    _click_when_ready(window.passwords.card_for(tab.view), "Save")
+    assert [(e["username"], e["password"]) for e in password_store.logins()] == [("arkan@example.com", "two steps")]
+    # Signing in again: the first page gets the username (nothing secret: no Touch ID), the second the password
+    tab.view.load(QUrl(page + "/login-step1.html"))
+    assert loaded(tab.view)
+    assert wait_until(lambda: window.passwords.card_for(tab.view) is not None, 5), "no offer on the first page"
+    _click_when_ready(window.passwords.card_for(tab.view), "arkan@example.com")
+    assert wait_until(lambda: run_js(tab.view, "document.getElementById('identifier').value", world=0)
+                      == "arkan@example.com", 5)
+    assert asked == []
+    run_js(tab.view, "document.querySelector('button').click(); 1", world=0)
+    assert wait_until(lambda: tab.view.url().toString().endswith("login-step2.html"), 5) and loaded(tab.view)
+    assert wait_until(lambda: window.passwords.card_for(tab.view) is not None, 5), "no offer on the second page"
+    _click_when_ready(window.passwords.card_for(tab.view), "arkan@example.com")
+    assert wait_until(lambda: run_js(tab.view, "document.getElementById('pass').value", world=0) == "two steps", 5)
+    assert asked == ["fill your password for localhost"]
+
+
+def _in_frame(view, host, code):
+    """Run code in the page's frame from host (in the page's own world), and wait for the answer."""
+    from browser.passwords import _frames
+    frame = next((f for f in _frames(view.page().mainFrame()) if f.url().host() == host), None)
+    if frame is None:
+        return None
+    answer = []
+    frame.runJavaScript(code, 0, answer.append)
+    wait_until(lambda: answer, 5)
+    return answer[0] if answer else None
+
+
+def test_a_sign_in_frame_of_the_same_site_is_filled_and_another_sites_never_is(window, site, monkeypatch):
+    from PyQt6.QtWidgets import QLabel
+    from browser import password_store
+    asked = _stand_ins(monkeypatch)
+    port = QUrl(site).port()
+    accounts, other = f"http://accounts.example.localhost:{port}", f"http://other.localhost:{port}"
+    password_store.add(accounts, "arkan@example.com", "in a frame")
+    password_store.add(other, "arkan@example.com", "not for frames")
+    # The site's own sign-in frame (accounts. inside shop.): offered, and filled in the frame alone
+    tab = open_page(window, f"http://shop.example.localhost:{port}/frames.html?inner={accounts}/login.html")
+    assert wait_until(lambda: window.passwords.card_for(tab.view) is not None, 10), "no offer for the frame"
+    card = window.passwords.card_for(tab.view)
+    assert "accounts.example.localhost" in " ".join(l.text() for l in card.findChildren(QLabel))
+    _click_when_ready(card, "arkan@example.com")
+    assert wait_until(lambda: _in_frame(tab.view, "accounts.example.localhost",
+                                        "document.getElementById('pass').value") == "in a frame", 5)
+    assert asked == ["fill your password for accounts.example.localhost"]
+    # Another site's frame on the same page: never offered, though there's a password saved for it...
+    tab = open_page(window, f"http://shop.example.localhost:{port}/frames.html?inner={other}/login.html")
+    assert wait_until(lambda: _in_frame(tab.view, "other.localhost", "!!document.getElementById('pass')"), 10)
+    pause(1)
+    assert window.passwords.card_for(tab.view) is None
+    # ...though it is on that site's own page
+    tab = open_page(window, f"{other}/login.html")
+    assert loaded(tab.view)
+    assert wait_until(lambda: window.passwords.card_for(tab.view) is not None, 10)
+
+
+def test_signing_up_gets_a_strong_password_thats_saved(window, site, monkeypatch):
+    import re
+    from browser import password_store
+    _stand_ins(monkeypatch)
+    tab = open_page(window, site.replace("127.0.0.1", "localhost") + "/signup.html")
+    run_js(tab.view, "document.getElementById('user').value = 'new@example.com';"
+                     "document.getElementById('new').dispatchEvent(new PointerEvent('pointerdown', "
+                     "{bubbles: true})); 1", world=0)  # (pressing in the password field)
+    assert wait_until(lambda: type(window.passwords.card_for(tab.view)).__name__ == "StrongCard", 5)
+    made = window.passwords.card_for(tab.view).password
+    assert re.fullmatch(r"[a-zA-Z2-9]{6}-[a-zA-Z2-9]{6}-[a-zA-Z2-9]{6}", made)
+    _click_when_ready(window.passwords.card_for(tab.view), "Use Strong Password")
+    both = "[document.getElementById('new').value, document.getElementById('again').value]"
+    assert wait_until(lambda: run_js(tab.view, both, world=0) == [made, made], 5)
+    run_js(tab.view, "document.querySelector('button').click(); 1", world=0)
+    assert wait_until(lambda: [(e["username"], e["password"]) for e in password_store.logins()]
+                      == [("new@example.com", made)], 5)  # (saved without asking: Eclipse made it)

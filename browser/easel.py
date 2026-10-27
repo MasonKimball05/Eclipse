@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (QApplication, QButtonGroup, QFrame, QGraphicsEllips
                              QHBoxLayout, QLineEdit, QMenu, QToolButton, QVBoxLayout, QWidget)
 
 from . import storage
+from .features import Feature
 from .models import new_id
 
 EASEL_SCHEME = "easel:"
@@ -1102,3 +1103,84 @@ class CaptureOverlay(QWidget):
         if event.key() == Qt.Key.Key_Escape:
             self.close()
             self.deleteLater()
+
+
+class EaselsFeature(Feature):
+    """Easels (easel:<id>): new ones, Capture (⇧⌘2) onto the one you used last, and copying or saving them."""
+    name = "easels"
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.last = None  # where Capture puts things
+
+    def view_for(self, tab):
+        if not is_easel(tab.url):
+            return None
+        view = EaselView(tab.url)
+        view.open_link.connect(lambda url: self.window.open_url(url))
+        view.export.connect(lambda kind: self.export(view, kind))
+        return view
+
+    def tab_shown(self, tab):
+        if tab is not None and is_easel(tab.url):
+            self.last = tab
+
+    def new_easel(self, activate=True):
+        from .models import TODAY, Tab
+        window = self.window
+        tab = Tab(new_easel_url(), "Untitled Easel")
+        window.store.add_tab(tab, TODAY, window.store.active_space, 0)
+        if activate:
+            window.activate_tab(tab)
+        else:
+            window._ensure_view(tab)
+        return tab
+
+    def export(self, easel, kind):
+        """An easel's toolbar: copy it as a picture, or save it as a PNG or PDF in your downloads folder."""
+        from .downloads import reveal_in_finder
+        from .page_actions import safe_filename
+        window = self.window
+        if easel.is_empty():
+            window.toast("This easel is empty")
+            return
+        if kind == "copy":
+            QApplication.clipboard().setImage(easel.render_image())
+            window.toast("Copied the easel as an image")
+            return
+        path = window._new_file(safe_filename(easel.title, "Easel"), kind)
+        ok = easel.render_pdf(str(path)) if kind == "pdf" else easel.render_image().save(str(path), "PNG")
+        if not ok:
+            window.toast("Couldn't save the easel")
+            return
+        window.toast(f"Saved {path.name}", lambda: reveal_in_finder(str(path)), "Show")
+
+    def capture(self):
+        """Arc's Capture (⇧⌘2): drag a box over the page; that part goes onto your easel."""
+        window = self.window
+        view, tab = window._current_view(), window.current_tab
+        if view is None:
+            window.toast("Capture works on web pages")
+            return
+        overlay = CaptureOverlay(view)
+        overlay.captured.connect(lambda image, ratio: self._add_capture(image, ratio, tab.url, tab.label))
+
+    def _add_capture(self, image, ratio, url, title):
+        window = self.window
+        # The easel you used last, if it's still around; otherwise a new one
+        easel = self.last if self.last is not None and window.store.locate(self.last) else None
+        if easel is None:
+            easel = self.last = self.new_easel(activate=False)
+        window._ensure_view(easel).add_image(image, source=url, caption=title, pixel_ratio=ratio)
+        window.toast(f"Captured to “{easel.label}”")
+
+    def commands(self):
+        return [("New Easel", "ph.chalkboard-simple", self.new_easel),
+                ("Capture Part of This Page to an Easel", "ph.selection-plus", self.capture)]
+
+    def menus(self, add, menus, bar):
+        add(menus["File"], "New Easel", "", self.new_easel)
+        add(menus["File"], "Capture to Easel", "Ctrl+Shift+2", self.capture)
+
+
+FEATURE = EaselsFeature

@@ -1,0 +1,13 @@
+<!doctype html>
+<html><head><title>Make an account</title></head>
+<body>
+<form id="f" action="welcome.html">
+  <label>Email <input id="user" type="email" autocomplete="username"></label>
+  <label>Password <input id="new" type="password" autocomplete="new-password"></label>
+  <label>Again <input id="again" type="password" autocomplete="new-password"></label>
+  <button type="submit">Make Account</button>
+</form>
+<script>
+  document.getElementById('f').addEventListener('submit', e => { e.preventDefault(); location = 'welcome.html'; });
+</script>
+</body></html>
