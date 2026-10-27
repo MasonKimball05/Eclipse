@@ -120,7 +120,8 @@ def window(data_dir, qapp):
     _keep_out_of_the_way(w)
     w.toasts = []
     w.real_toast = w.toast
-    w.toast = lambda text, action=None, label="Undo": (w.toasts.append(text), setattr(w, "toast_action", action))
+    w.toast = lambda text, action=None, label="Undo", seconds=None: (w.toasts.append(text),
+                                                                     setattr(w, "toast_action", action))
     wait_until(lambda: False, 0.3)
     yield w
     w.shutdown()
