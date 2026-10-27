@@ -28,7 +28,13 @@ from . import brand, release_update, storage, verified
 from .features import Feature
 
 REPO = Path(__file__).resolve().parents[1]
-VENV = Path.home() / "Library" / "Application Support" / "Eclipse Build" / "venv"  # same as run.sh
+# The virtualenv run.sh (or run.ps1 on Windows) makes
+VENV = (Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Eclipse Build" / "venv" if sys.platform == "win32"
+        else Path.home() / "Library" / "Application Support" / "Eclipse Build" / "venv")
+
+
+def venv_python() -> Path:
+    return VENV / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
 CHECK_EVERY_SECONDS = 6 * 3600  # (and once soon after it opens, if the last look was longer ago than that)
 FIRST_CHECK_MS = 20_000
 GIT_TIMEOUT = 60
@@ -87,7 +93,7 @@ def apply_update() -> tuple[bool, str]:
         return False, out
     code, changed = _git("diff", "--name-only", before, "HEAD")
     if "requirements.txt" in changed.splitlines():
-        python = VENV / "bin" / "python"
+        python = venv_python()
         if not python.exists():
             return True, "Updated. New requirements: run ./run.sh once to install them."
         done = subprocess.run([str(python), "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "-r",

@@ -14,7 +14,7 @@ SERVICE = "PythonBrowser"  # (the old items' service: the internal name, so rena
 
 
 def available() -> bool:
-    return sys.platform == "darwin"
+    return secure_store.available()  # (macOS's Keychain, or Windows Credential Manager)
 
 
 def store(account: str, secret: str) -> bool:
@@ -46,6 +46,8 @@ def delete(account: str):
 
 def _old(account: str) -> str | None:
     """An item made by an older version, with the `security` command."""
+    if sys.platform != "darwin":
+        return None
     try:
         done = subprocess.run(["security", "find-generic-password", "-s", SERVICE, "-a", account, "-w"],
                               capture_output=True, text=True, timeout=10)
@@ -55,6 +57,8 @@ def _old(account: str) -> str | None:
 
 
 def _remove_old(account: str):
+    if sys.platform != "darwin":
+        return
     try:
         subprocess.run(["security", "delete-generic-password", "-s", SERVICE, "-a", account],
                        capture_output=True, timeout=10)

@@ -1,3 +1,4 @@
+import pytest
 import json
 import stat
 import sys
@@ -6,6 +7,8 @@ from pathlib import Path
 from PyQt6.QtCore import QEventLoop, QTimer
 
 from browser.ext import native
+
+pytestmark = pytest.mark.mac  # (a /bin/sh helper, and macOS's native messaging folders)
 
 ECHO = Path(__file__).parent / "fixtures" / "native_echo.py"
 

@@ -9,12 +9,14 @@
 #
 # (While Eclipse runs from source, "Eclipse" is the Python that runs it; a rebuilt app is a new app to the
 # Keychain, so the first read after a rebuild asks once. A signed release is recognised across updates.)
+#
+# On Windows the same calls keep them in Windows Credential Manager instead (windows_vault.py).
 
 import ctypes
 import ctypes.util
 import sys
 
-from . import brand
+from . import brand, windows_vault
 
 SERVICE = f"{brand.NAME} Vault"
 OLD_SERVICE = f"{brand.OLD_INTERNAL_NAME} Vault"  # (before the rename: an item found here is moved over when read)
@@ -45,7 +47,11 @@ if sys.platform == "darwin":
 
 
 def available() -> bool:
-    return _sec is not None
+    return _sec is not None or windows_vault.available()
+
+
+def _windows_target(account, service=None):
+    return f"{service or SERVICE}/{account}"
 
 
 def _const(lib, name):
@@ -104,6 +110,8 @@ def open_keychain(path: str):
 
 
 def store(account: str, secret: bytes, keychain=None) -> bool:
+    if windows_vault.available():
+        return windows_vault.store(_windows_target(account), secret, f"{brand.NAME}: {account}")
     if not available() or not secret:
         return False
     with _Refs() as refs:
@@ -118,6 +126,8 @@ def store(account: str, secret: bytes, keychain=None) -> bool:
 
 
 def load(account: str, keychain=None) -> bytes | None:
+    if windows_vault.available():
+        return windows_vault.load(_windows_target(account))
     if not available():
         return None
     found = _read(account, keychain, SERVICE)
@@ -144,6 +154,8 @@ def delete(account: str, keychain=None) -> bool:
 
 
 def _delete(account, keychain, service) -> bool:
+    if windows_vault.available():
+        return windows_vault.delete(_windows_target(account, service))
     if not available():
         return False
     with _Refs() as refs:

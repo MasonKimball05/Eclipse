@@ -74,6 +74,20 @@ cd Eclipse
 A copy built from source works fully; Settings just says "Built from source" instead of "Verified". How it all
 fits together is in [claude_docs.md](claude_docs.md).
 
+## On Windows (early)
+
+Eclipse runs on Windows 10 and 11 from source, with the basics working: tabs, Spaces, the command bar, ad blocking,
+passwords and passkeys (their keys kept in Windows Credential Manager), Notes, Easels and the rest. There's no
+installer yet, and the Mac-only touches aren't there: Touch ID before filling a password, importing from other
+browsers, and updating itself.
+
+1. Install [Python 3.14](https://www.python.org/downloads/windows/) (tick **Add python.exe to PATH**).
+2. Download this repository (Code → Download ZIP, or `git clone`), and double-click **run.bat** in it. The first
+   time it sets itself up, which takes a few minutes.
+
+Every push is checked on a Windows machine on GitHub (the **Windows** workflow): Eclipse starts, opens its window,
+loads a page and keeps a secret in Credential Manager.
+
 ## License
 
 [MIT](LICENSE)

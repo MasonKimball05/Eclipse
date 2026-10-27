@@ -1,3 +1,4 @@
+import pytest
 from browser.github_status import check_state, checks, github_pull, summarize
 
 
@@ -65,6 +66,7 @@ def test_repos_are_kept_in_the_data_folder(data_dir):
     assert repos.repos[0]["name"] == "x" and repos.fetched == 5
 
 
+@pytest.mark.mac
 def test_a_failing_gh_isnt_asked_again_at_once_and_polling_stops(qapp, monkeypatch):
     import browser.github_status as gs
     status = gs.PullStatus()
@@ -108,6 +110,7 @@ def _wait(qapp, condition, seconds=5):
     return condition()
 
 
+@pytest.mark.mac
 def test_pull_status_through_a_real_process(qapp, tmp_path, monkeypatch):
     import json
     from browser.github_status import PullStatus
@@ -120,6 +123,7 @@ def test_pull_status_through_a_real_process(qapp, tmp_path, monkeypatch):
     assert _wait(qapp, lambda: got) and status.lookup(url) == {"state": "MERGED"}
 
 
+@pytest.mark.mac
 def test_pull_status_failing_and_stuck(qapp, tmp_path, monkeypatch):
     import browser.github_status as gs
     _fake_gh(tmp_path, monkeypatch, "not signed in", code=1)
@@ -135,6 +139,7 @@ def test_pull_status_failing_and_stuck(qapp, tmp_path, monkeypatch):
     assert _wait(qapp, lambda: not status._asking, 5)
 
 
+@pytest.mark.mac
 def test_repo_list_through_a_real_process(qapp, tmp_path, monkeypatch, data_dir):
     import json
     from browser.github_status import GitHubRepos

@@ -77,6 +77,7 @@ def test_requirement_names_the_team(tmp_path):
     assert any("F4P3T9JYP2" in part for part in commands[0]) and "--strict" in commands[0]
 
 
+@pytest.mark.mac
 def test_an_ad_hoc_signed_app_is_refused(tmp_path):
     app = _app(tmp_path, 5)
     (app / "Contents" / "MacOS").mkdir()
@@ -87,6 +88,7 @@ def test_an_ad_hoc_signed_app_is_refused(tmp_path):
     assert "signature" in release_update.problem(app, 4)  # signed, but not by Eclipse's maker
 
 
+@pytest.mark.mac
 def test_swap_puts_the_new_copy_in_place(tmp_path, monkeypatch):
     monkeypatch.setattr(release_update, "work_dir", lambda: tmp_path / "work")
     (tmp_path / "work").mkdir()

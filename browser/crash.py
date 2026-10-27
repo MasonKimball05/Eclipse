@@ -10,6 +10,7 @@
 import datetime
 import faulthandler
 import os
+import sys
 import traceback
 from pathlib import Path
 
@@ -33,6 +34,8 @@ def logs_dir() -> Path:
 
 
 def _alive(pid: int) -> bool:
+    if sys.platform == "win32":  # (os.kill(pid, 0) there sends a Ctrl+C, not a check: ask Windows instead)
+        return _alive_on_windows(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -40,6 +43,20 @@ def _alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def _alive_on_windows(pid: int) -> bool:
+    import ctypes
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.restype = ctypes.c_void_p
+    handle = kernel.OpenProcess(0x1000, False, pid)  # (PROCESS_QUERY_LIMITED_INFORMATION)
+    if not handle:
+        return ctypes.get_last_error() == 5  # (access denied: it's there, just not ours to look at)
+    code = ctypes.c_ulong()
+    try:
+        return bool(kernel.GetExitCodeProcess(ctypes.c_void_p(handle), ctypes.byref(code))) and code.value == 259
+    finally:  # (259: STILL_ACTIVE)
+        kernel.CloseHandle(ctypes.c_void_p(handle))
 
 
 def start() -> dict | None:

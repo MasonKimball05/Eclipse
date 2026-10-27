@@ -101,6 +101,7 @@ def test_new_requirements_are_mentioned(checkout):
     assert ok and "run.sh" in message
 
 
+@pytest.mark.mac
 def test_relaunch_from_an_app_bundle(monkeypatch, tmp_path):
     exe = tmp_path / "PythonBrowser.app" / "Contents" / "MacOS" / "PythonBrowser"
     exe.parent.mkdir(parents=True)

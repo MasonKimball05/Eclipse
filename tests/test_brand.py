@@ -58,6 +58,7 @@ def _fake_app(path: Path, bundle_id):
     (path / "Contents" / "Info.plist").write_bytes(plistlib.dumps({"CFBundleIdentifier": bundle_id}))
 
 
+@pytest.mark.mac
 def test_the_old_app_goes_to_the_trash_only_if_its_ours(tmp_path, monkeypatch):
     build_app = _build_app_module()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -75,6 +76,7 @@ def test_the_old_app_goes_to_the_trash_only_if_its_ours(tmp_path, monkeypatch):
     assert (tmp_path / ".Trash" / "PythonBrowser 2.app").exists()  # an earlier one in the Trash is kept
 
 
+@pytest.mark.mac
 def test_copies_in_the_trash_are_forgotten_by_launch_services(tmp_path, monkeypatch):
     build_app = _build_app_module()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)

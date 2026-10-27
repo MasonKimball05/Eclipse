@@ -6,6 +6,8 @@ import pytest
 
 from browser import secure_store
 
+pytestmark = pytest.mark.mac  # (macOS's Keychain, on a throwaway keychain file)
+
 
 @pytest.fixture
 def keychain(tmp_path):

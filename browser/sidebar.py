@@ -1278,8 +1278,10 @@ class Sidebar(QWidget):
         # Top row: room for the macOS traffic lights, then the navigation buttons.
         # align_with_traffic_lights() fine-tunes this once the window exists.
         top = QHBoxLayout()
-        top.setSpacing(LIGHTS_ROW_SPACING)
-        self._lights_gap = QSpacerItem(66 if sys.platform == "darwin" else 0, 0)
+        top.setSpacing(0)
+        # The room after the traffic lights never shrinks (squeezed, it put the first button over them); the
+        # gaps between back, forward and reload give way instead when the sidebar is narrow
+        self._lights_gap = QSpacerItem(66 if sys.platform == "darwin" else 0, 0, QSizePolicy.Policy.Fixed)
         top.addItem(self._lights_gap)
         self.toggle_btn = IconButton("msc.layout-sidebar-left", "Toggle Sidebar (⌘S)")
         self.back_btn = IconButton("ph.arrow-left", "Back (⌘[)")
@@ -1291,7 +1293,9 @@ class Sidebar(QWidget):
         self.reload_btn.clicked.connect(browser.reload)
         top.addWidget(self.toggle_btn)
         top.addStretch(1)
-        for btn in (self.back_btn, self.forward_btn, self.reload_btn):
+        for i, btn in enumerate((self.back_btn, self.forward_btn, self.reload_btn)):
+            if i:
+                top.addItem(QSpacerItem(LIGHTS_ROW_SPACING, 0, QSizePolicy.Policy.Preferred))  # (can give way)
             top.addWidget(btn)
         layout.addLayout(top)
         layout.addSpacing(6)
@@ -1462,7 +1466,7 @@ class Sidebar(QWidget):
         # A little more room after the lights than between them (~9pt), minus the button's padding (on the
         # right too: they move over into the sidebar), so the row doesn't feel crammed
         gap = max(round(right + LIGHTS_GAP - offset.x() - margins.left() - 4), 0)
-        self._lights_gap.changeSize(gap, 0)
+        self._lights_gap.changeSize(gap, 0, QSizePolicy.Policy.Fixed)
         layout.invalidate()
 
     def rebuild(self):

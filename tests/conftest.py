@@ -65,7 +65,16 @@ def pytest_addoption(parser):
     parser.addoption("--live", action="store_true", help="also run the live tests in tests/live")
 
 
+def pytest_configure(config):
+    config.addinivalue_line("markers", "mac: needs macOS (its Keychain, codesign, /bin/sh…): skipped elsewhere")
+
+
 def pytest_collection_modifyitems(config, items):
+    if sys.platform != "darwin":  # (Windows, in GitHub Actions: the tests that need a Mac's own tools)
+        not_here = pytest.mark.skip(reason="needs macOS")
+        for item in items:
+            if item.get_closest_marker("mac"):
+                item.add_marker(not_here)
     if config.getoption("--live"):
         return
     skip = pytest.mark.skip(reason="live test: run with --live")

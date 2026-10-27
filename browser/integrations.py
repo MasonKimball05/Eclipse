@@ -18,6 +18,7 @@
 import json
 import os
 import re
+import sys
 
 from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices
@@ -577,6 +578,10 @@ def local_clone(page_url: str, root: str) -> str | None:
 
 def open_in_app(app_name: str, path: str | None = None) -> bool:
     from PyQt6.QtCore import QProcess
+    if sys.platform != "darwin":  # (Mac apps by name: elsewhere the folder opens in the file manager)
+        from PyQt6.QtCore import QUrl
+        from PyQt6.QtGui import QDesktopServices
+        return bool(path) and QDesktopServices.openUrl(QUrl.fromLocalFile(path))
     return QProcess.startDetached("/usr/bin/open", ["-a", app_name] + ([path] if path else []))[0]
 
 

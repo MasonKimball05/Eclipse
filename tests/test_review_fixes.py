@@ -1,3 +1,4 @@
+import pytest
 import subprocess
 from pathlib import Path
 
@@ -7,6 +8,7 @@ from browser import keychain
 from browser.devmode import DevMode, project_files
 
 
+@pytest.mark.mac
 def test_keychain_tokens_go_only_where_eclipse_can_read_them(monkeypatch, no_real_keychain):
     calls = []
 
@@ -24,6 +26,7 @@ def test_keychain_tokens_go_only_where_eclipse_can_read_them(monkeypatch, no_rea
     assert "acct" not in no_real_keychain
 
 
+@pytest.mark.mac
 def test_an_old_token_moves_over_when_its_read(monkeypatch, no_real_keychain):
     calls = []
 
@@ -41,6 +44,7 @@ def test_an_old_token_moves_over_when_its_read(monkeypatch, no_real_keychain):
     assert keychain.load("gh") == "old-token" and calls == []  # (from Eclipse's own item now)
 
 
+@pytest.mark.mac
 def test_keychain_timeout_doesnt_raise(monkeypatch, no_real_keychain):
     def slow(args, **kwargs):
         raise subprocess.TimeoutExpired(args, 30)

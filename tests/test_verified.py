@@ -10,6 +10,8 @@ import pytest
 
 from browser import verified
 
+pytestmark = pytest.mark.mac  # (codesign and spctl)
+
 
 def _check(bundle, team=""):
     from PyQt6.QtCore import QCoreApplication

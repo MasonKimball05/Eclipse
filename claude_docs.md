@@ -54,6 +54,14 @@ This builds `dist/Eclipse.app` (and `dist/Eclipse.zip` to send). Unlike `--build
 - **Checked before signing:** the build runs the finished app's own Qt and Eclipse offscreen (no windows): every module imports, Qt WebEngine loads a page, and Python has macOS's trusted certificates for HTTPS (without them, python.org's Python can't verify any site, so updates couldn't connect: `net.py`). A build that wouldn't run stops there.
 - How it's put together: `tools/release.py`. Python's own libraries from Homebrew (OpenSSL, SQLite, zstd, xz, mpdecimal) are copied into `Contents/Frameworks` with their paths rewritten to point there. Of Qt, only what Eclipse uses goes in: the Python modules it imports (`QT_MODULES`), the plugins they load (`QT_PLUGINS`), and the Qt libraries those link to, worked out from the links themselves. That leaves out Qt Quick 3D, Designer, multimedia and its FFmpeg, QML and the database drivers, about a quarter of the app.
 
+### On Windows (early)
+
+`run.bat` (double-click) or `.\run.ps1` does what `run.sh` does: a virtualenv in `%LOCALAPPDATA%\Eclipse Build\venv`, the requirements installed when they change, then Eclipse (`-Fresh`, `-Reset`, `-Tests` as on the Mac). Needs Python 3.14 from python.org. What's different there:
+- **Secrets** (the keys for passwords, passkeys, the recovery PIN, My Apps tokens) go into **Windows Credential Manager** (`windows_vault.py`, used by `secure_store.py`), encrypted with your Windows sign-in. Windows doesn't ask before another of your programs reads them, as macOS's Keychain does.
+- **Not there yet:** Touch ID's equivalent before filling a password (no prompt: Windows Hello would be the next step), importing from other browsers (their files are kept differently on Windows), the release app and updating itself (Windows copies update with `git pull`, through self_update.py's checkout updates), the traffic-light layout (Windows has its own title bar), and macOS's share sheet and Dock badge.
+- **The crash check** asks Windows whether the last Eclipse is still running (`os.kill(pid, 0)` there would send it a Ctrl+C).
+- **Checked on every push** by the `Windows` GitHub Actions workflow (`.github/workflows/windows.yml`): `tools/smoke.py` starts Eclipse offscreen, opens the window, loads a page and keeps a secret in Credential Manager; then the unit tests run (tests marked `mac`, needing macOS's own tools, are skipped).
+
 ### From the terminal
 
 ```bash
@@ -464,6 +472,7 @@ They run headless and use a throwaway data folder.
 | `keychain.py` | Tokens for your apps, in the Keychain where only Eclipse can read them (moving older ones over). |
 | `whats_new.py` | The What's New window, shown once after an update with something new (⌘T → What's New). |
 | `macos.py` | Native macOS tweaks via the Objective-C runtime (hides the title text, sets the Dock badge). |
+| `windows_vault.py` | secure_store's Windows side: Windows Credential Manager. |
 | `secure_store.py` | Secrets only Eclipse can read: Keychain items made through the Security framework, so other programs get macOS's prompt. |
 | `recovery.py` | The recovery PIN shared by passwords and passkeys: scrypt, sealing copies, bringing them back. |
 | `password_store.py` | Saved passwords: encrypted on disk with a key in the Keychain; matching pages; importing CSVs and Arc's. |

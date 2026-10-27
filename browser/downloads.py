@@ -136,6 +136,8 @@ def _duration(seconds) -> str:
 def reveal_in_finder(path):
     if sys.platform == "darwin":
         QProcess.startDetached("open", ["-R", path])
+    elif sys.platform == "win32":
+        QProcess.startDetached("explorer", [f"/select,{Path(path)}"])  # (File Explorer, the file picked)
     else:
         QProcess.startDetached("xdg-open", [str(Path(path).parent)])
 

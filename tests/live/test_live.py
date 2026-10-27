@@ -994,6 +994,22 @@ def _lights_state(window):
             round(frame.x), round(frame.y))
 
 
+def test_the_top_row_never_runs_into_the_traffic_lights(window, site):
+    from browser import macos
+    if not macos._cocoa():
+        pytest.skip("macOS's own window buttons")
+    open_page(window, f"{site}/index.html")
+    for width in (190, 215, 250, 320):  # (the narrowest sidebar squeezed the first button over them)
+        window._set_sidebar_size(width)
+        pause(0.3)
+        lights_end, _ = macos.traffic_lights(window)
+        bar = window.sidebar
+        toggle = bar.toggle_btn.mapTo(window, QPoint(0, 0)).x()
+        reload_end = bar.reload_btn.mapTo(window, QPoint(bar.reload_btn.width(), 0)).x()
+        assert toggle >= lights_end + 8, (width, toggle, lights_end)
+        assert reload_end <= bar.mapTo(window, QPoint(bar.width(), 0)).x(), width  # (and nothing falls off the end)
+
+
 def test_traffic_lights_go_with_the_sidebar(window, site, monkeypatch):
     from browser import floating_sidebar, macos, traffic_lights
     if not macos._cocoa():
