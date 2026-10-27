@@ -92,7 +92,7 @@ def bad_https(site, tmp_path_factory):
     folder = tmp_path_factory.mktemp("cert")
     key, cert = folder / "key.pem", folder / "cert.pem"
     subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj",
-                    "/CN=pythonbrowser-test", "-keyout", str(key), "-out", str(cert)], check=True, capture_output=True)
+                    "/CN=eclipse-test", "-keyout", str(key), "-out", str(cert)], check=True, capture_output=True)
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(_Quiet, directory=_site_root[0]))
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(str(cert), str(key))

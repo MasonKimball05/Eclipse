@@ -18,7 +18,7 @@ SCHEME = "eclipse-linktest"
 LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/"
               "Support/lsregister")
 # (somewhere macOS will take a link handler from: not a temporary folder)
-HELPERS = Path.home() / "Library" / "Application Support" / "PythonBrowser" / "test-helpers"
+HELPERS = Path.home() / "Library" / "Application Support" / "Eclipse Build" / "test-helpers"
 
 
 @pytest.fixture()

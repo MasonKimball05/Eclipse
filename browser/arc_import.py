@@ -10,7 +10,6 @@
 # sign in again) and extensions (Qt 6.11's extension support crashes when enabling one).
 
 import json
-import os
 import shutil
 import sqlite3
 import tempfile
@@ -237,7 +236,7 @@ class ArcImportFeature(Feature):
     name = "arc_import"
 
     def ready(self):
-        if self.window.store.is_new and arc_installed() and not os.environ.get("PYBROWSER_DATA_DIR"):
+        if self.window.store.is_new and arc_installed() and not storage.throwaway():
             QTimer.singleShot(800, self.import_from_arc)  # (not in a throwaway profile: tests, --fresh)
 
     def commands(self):

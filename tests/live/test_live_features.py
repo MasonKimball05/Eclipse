@@ -495,8 +495,8 @@ def test_zap_only_listens_to_itself(window, site):
     real = window.feature("boosts").boosts.add_zapped
     window.feature("boosts").boosts.add_zapped = lambda site_, sel: (zapped.append(sel), real(site_, sel))[1]
     # The page pretending to be Zap: ignored
-    run_js(tab.view, "console.log('PYBROWSER_ZAP:x{} input{background:url(//evil/a)}')")
-    run_js(tab.view, "console.log('PYBROWSER_ZAP:h1')")
+    run_js(tab.view, "console.log('ECLIPSE_ZAP:x{} input{background:url(//evil/a)}')")
+    run_js(tab.view, "console.log('ECLIPSE_ZAP:h1')")
     pause(0.3)
     assert zapped == []
     # A real click with the tool: heard (its message comes from its own world, with its token)
@@ -600,3 +600,29 @@ def test_the_ask_panel_resizes_and_pops_out_into_its_own_window(window, site):
     window.feature("page_chat").toggle()
     window.close_tab(other)
 
+
+
+def test_settings_shows_the_version_and_an_updates_progress(window):
+    from PyQt6.QtWidgets import QLabel, QProgressBar, QPushButton
+    updater = window.feature("self_update").updater
+    window.open_settings("general")
+    settings = window._settings
+    title = next(l for l in settings.findChildren(QLabel, "SettingTitle") if l.text() == "Updates")
+    row = title.parentWidget()
+    line = row.findChildren(QLabel, "Hint")[0]
+    install = next(b for b in row.findChildren(QPushButton) if b.text() == "Update && Restart")
+    bar = row.findChildren(QProgressBar)[0]
+    assert line.text().startswith("From source, commit") and install.isHidden() and bar.isHidden()
+    updater._set_status({"state": "checking"})
+    assert line.text().endswith("Checking…")
+    found = {"state": "available", "build": 202611011200, "version": "Eclipse 2026.11.1",
+             "subjects": ["Better tabs", "Faster"]}
+    updater._set_status(found)
+    assert "Eclipse 2026.11.1 is ready: Better tabs; Faster." in line.text() and not install.isHidden()
+    updater._set_status({**found, "state": "downloading", "percent": 40})
+    assert line.text().endswith("Downloading Eclipse 2026.11.1… 40%") and not bar.isHidden() and bar.value() == 40
+    assert install.isHidden()
+    updater._set_status({"state": "current", "behind": 0})
+    assert line.text().endswith("Up to date.") and bar.isHidden()
+    updater._set_status({"state": "idle"})
+    settings.close()

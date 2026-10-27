@@ -19,7 +19,8 @@ from pathlib import Path
 
 from . import brand, storage
 
-FORMAT = "pythonbrowser-backup"
+FORMAT = "eclipse-backup"
+OLD_FORMATS = ("pythonbrowser-backup",)  # (made before the rename: restored the same)
 INCLUDED = ["session.json", "notes", "easels", "browse", "userscripts", "extension_storage", "extensions",
             "NativeMessagingHosts", "passkeys", "passwords", "recovery.json"]
 PENDING = "restore-pending"
@@ -49,7 +50,7 @@ def describe(path: Path) -> dict:
             session = json.loads(archive.read("session.json")) if "session.json" in archive.namelist() else {}
     except (KeyError, ValueError, zipfile.BadZipFile) as error:
         raise ValueError(f"That isn't a {brand.NAME} backup.") from error
-    if info.get("format") != FORMAT:
+    if info.get("format") not in (FORMAT, *OLD_FORMATS):
         raise ValueError(f"That isn't a {brand.NAME} backup.")
     spaces = session.get("spaces", [])
     return {"created": info.get("created", 0), "files": info.get("files", 0),

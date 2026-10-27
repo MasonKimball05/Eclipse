@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 # Spell-check dictionaries: somewhere throwaway, set before Qt WebEngine starts (see browser/spelling.py)
-os.environ["QTWEBENGINE_DICTIONARIES_PATH"] = tempfile.mkdtemp(prefix="pythonbrowser-dictionaries-")
+os.environ["QTWEBENGINE_DICTIONARIES_PATH"] = tempfile.mkdtemp(prefix="eclipse-dictionaries-")
 # Headless: no windows pop up while testing. Not for the live tests: Qt Quick's software renderer
 # (what "offscreen" uses) crashes when a web view is destroyed, which the real app never sees
 if "--live" not in sys.argv:
@@ -29,7 +29,7 @@ def qapp():
 @pytest.fixture(autouse=True)
 def data_dir(tmp_path, monkeypatch):
     # Every test gets its own empty data folder, never your real session
-    monkeypatch.setenv("PYBROWSER_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("ECLIPSE_DATA_DIR", str(tmp_path / "data"))
     from browser import storage
     storage._icons.clear()
     return tmp_path / "data"

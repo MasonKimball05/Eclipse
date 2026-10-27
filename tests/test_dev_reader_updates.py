@@ -56,7 +56,7 @@ def test_reader_document_escapes_what_it_adds():
 
 @pytest.fixture
 def data(tmp_path, monkeypatch):
-    monkeypatch.setenv("PYBROWSER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("ECLIPSE_DATA_DIR", str(tmp_path))
     return tmp_path
 
 

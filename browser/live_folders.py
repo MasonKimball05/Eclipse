@@ -27,7 +27,7 @@ from html.parser import HTMLParser
 from urllib.parse import urljoin
 
 from PyQt6 import sip
-from PyQt6.QtCore import QObject, QProcess, QThread, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, QProcess, QThread, QTimer, QUrl, QUrlQuery, pyqtSignal
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineScript
@@ -225,6 +225,45 @@ def github_feed(url: str) -> str | None:
     return f"https://github.com/{owner}/{repo}/releases.atom"
 
 
+def known_feed(url: str) -> str | None:
+    """The feed a well-known site keeps for a page, often without linking it from the page: GitHub's (above), a
+    Bluesky or Mastodon account, a subreddit or Reddit user, a YouTube channel or playlist, a GitLab project's
+    releases, a PyPI package's releases, a Stack Overflow (or Stack Exchange) tag, Hacker News. None otherwise."""
+    if found := github_feed(url):
+        return found
+    q = QUrl(url if "://" in url else "https://" + url)
+    host = q.host().lower().removeprefix("www.").removeprefix("old.")
+    parts = [p for p in q.path().split("/") if p]
+    query = QUrlQuery(q)
+    if host == "bsky.app" and len(parts) >= 2 and parts[0] == "profile":
+        return f"https://bsky.app/profile/{parts[1]}/rss"
+    if host == "medium.com" and parts[:1] and parts[0].startswith("@"):
+        return f"https://medium.com/feed/{parts[0]}"
+    if len(parts) == 1 and parts[0].startswith("@") and len(parts[0]) > 1 and host not in (
+            "youtube.com", "m.youtube.com", "tiktok.com", "threads.net", "x.com", "twitter.com"):
+        return f"https://{q.host()}/{parts[0]}.rss"  # (Mastodon, and the fediverse servers that work like it)
+    if host == "reddit.com" and len(parts) >= 2 and parts[0] in ("r", "user", "u"):
+        return f"https://www.reddit.com/{'r' if parts[0] == 'r' else 'user'}/{parts[1]}/.rss"
+    if host in ("youtube.com", "m.youtube.com"):
+        if len(parts) >= 2 and parts[0] == "channel":
+            return f"https://www.youtube.com/feeds/videos.xml?channel_id={parts[1]}"
+        if parts[:1] == ["playlist"] and query.queryItemValue("list"):
+            return f"https://www.youtube.com/feeds/videos.xml?playlist_id={query.queryItemValue('list')}"
+        return None  # (a @handle's page links its feed: found by looking)
+    if host == "gitlab.com" and len(parts) >= 2 and parts[0] not in ("explore", "dashboard", "users", "help"):
+        project = parts[:parts.index("-")] if "-" in parts else parts
+        if len(project) >= 2:
+            return f"https://gitlab.com/{'/'.join(project)}/-/releases.atom"
+    if host == "pypi.org" and len(parts) >= 2 and parts[0] == "project":
+        return f"https://pypi.org/rss/project/{parts[1].lower()}/releases.xml"
+    if (host == "stackoverflow.com" or host.endswith(".stackexchange.com")) and parts[:2] == ["questions", "tagged"] \
+            and len(parts) >= 3:
+        return f"https://{host}/feeds/tag/{parts[2]}"
+    if host == "news.ycombinator.com" and q.path() in ("", "/", "/news"):
+        return "https://news.ycombinator.com/rss"
+    return None
+
+
 def item_key(tab: Tab) -> str:
     """A Live Folder tab is its feed item's address, even after you've clicked around in it."""
     return tab.home_url or tab.url
@@ -381,8 +420,14 @@ class LiveFolders(QObject):
             reply.deleteLater()
         reply.finished.connect(finished)
 
-    def _feed(self, url, done, discovered=False):
-        url = github_feed(url) or url
+    def _feed(self, url, done, discovered=False, guessed=False):
+        known = None if discovered or guessed else known_feed(url)
+
+        def not_there(message):
+            if known:  # (the site's usual feed wasn't one this time: look at the page itself)
+                self._feed(url, done, guessed=True)
+            else:
+                done([], error=message)
 
         def got(data, final_url):
             try:
@@ -391,12 +436,13 @@ class LiveFolders(QObject):
                     title = title.removeprefix("Release notes from ") + " Releases"
                 done(items, title)
             except ValueError:
-                feed = None if discovered else find_feed_link(data.decode("utf-8", errors="replace"), final_url)
+                feed = None if discovered or known else find_feed_link(data.decode("utf-8", errors="replace"),
+                                                                        final_url)
                 if feed:
                     self._feed(feed, done, discovered=True)
                 else:
-                    done([], error="No feed found at that address.")
-        self._get(url, got, lambda message: done([], error=message))
+                    not_there("No feed found at that address.")
+        self._get(known or url, got, not_there)
 
     # Your own apps --------------------------------------------------------------------------------
 

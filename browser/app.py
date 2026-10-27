@@ -22,7 +22,7 @@ OPENABLE_FILES = {".html", ".htm", ".xhtml", ".pdf", ".svg", ".png", ".jpg", ".j
 
 def _server_name() -> str:
     # One running browser per data folder (a throwaway --fresh profile gets its own)
-    return "pythonbrowser-" + hashlib.sha1(str(storage.data_dir()).encode()).hexdigest()[:12]
+    return "eclipse-" + hashlib.sha1(str(storage.data_dir()).encode()).hexdigest()[:12]
 
 
 def _links(args) -> list[str]:
@@ -82,7 +82,7 @@ def run() -> int:
     # PyQt aborts the whole app when an exception escapes a Qt callback and no hook is set; one
     # bad callback (a closed popup, an odd web page) shouldn't take every tab down with it
     sys.excepthook = crash.log_exception
-    QApplication.setApplicationName(brand.INTERNAL_NAME)  # where your data lives: never renamed
+    QApplication.setApplicationName(brand.INTERNAL_NAME)  # (where your data lives)
     QApplication.setApplicationDisplayName(brand.NAME)
     QApplication.setOrganizationName(brand.ORGANIZATION)
     features.before_app()  # (pbext://, for extension files, has to be known before the app starts)

@@ -23,9 +23,9 @@ from .features import Feature
 from .models import new_id
 from .theme import stylesheet
 
-SCRIPT_PREFIX = "pybrowser-boost-"
-ZAP_MESSAGE = "PYBROWSER_ZAP:"
-ZAP_DONE = "PYBROWSER_ZAP_DONE"
+SCRIPT_PREFIX = "eclipse-boost-"
+ZAP_MESSAGE = "ECLIPSE_ZAP:"
+ZAP_DONE = "ECLIPSE_ZAP_DONE"
 
 
 _SELECTOR = re.compile(r"[\w\s#.>:()\[\]=\"'^$*~+,\\-]{1,400}")
@@ -99,7 +99,7 @@ ZAP_SCRIPT = r"""
     e.preventDefault(); e.stopPropagation();
     const sel = selector(e.target);
     e.target.style.setProperty('display', 'none', 'important');
-    console.log('PYBROWSER_ZAP:' + '__TOKEN__' + sel);
+    console.log('ECLIPSE_ZAP:' + '__TOKEN__' + sel);
   };
   const stop = (e) => {
     if (e.key !== 'Escape') return;
@@ -107,7 +107,7 @@ ZAP_SCRIPT = r"""
     document.removeEventListener('click', click, true);
     document.removeEventListener('keydown', stop, true);
     box.remove(); banner.remove(); window.__pbZap = false;
-    console.log('PYBROWSER_ZAP_DONE' + '__TOKEN__');
+    console.log('ECLIPSE_ZAP_DONE' + '__TOKEN__');
   };
   document.addEventListener('mousemove', move, true);
   document.addEventListener('click', click, true);

@@ -15,9 +15,24 @@ def test_the_icon_draws_at_every_size(qapp):
         assert middle.alpha() == 255 and corner.alpha() == 0  # a tile with macOS's margin round it
 
 
-def test_renaming_keeps_your_data_and_tokens_where_they_were():
-    assert brand.NAME == "Eclipse"
-    assert brand.INTERNAL_NAME == keychain.SERVICE == "PythonBrowser"
+def test_the_old_name_is_only_where_things_are_moved_from():
+    assert brand.NAME == brand.INTERNAL_NAME == "Eclipse"
+    assert brand.OLD_INTERNAL_NAME == keychain.SERVICE == "PythonBrowser"  # (the oldest tokens, moved when read)
+
+
+def test_the_data_folder_moves_to_its_new_name(tmp_path):
+    from browser import storage
+    old, new = tmp_path / "MasonKimball05" / "PythonBrowser", tmp_path / "MasonKimball05" / "Eclipse"
+    (old / "profile").mkdir(parents=True)
+    (old / "session.json").write_text("{}")
+    caches = tmp_path / "Caches" / "MasonKimball05" / "Eclipse"
+    (caches.with_name("PythonBrowser") / "cache").mkdir(parents=True)
+    storage._move_old_folder(new, caches)
+    assert (new / "session.json").read_text() == "{}" and (new / "profile").is_dir() and not old.exists()
+    assert not caches.with_name("PythonBrowser").exists()
+    (old / "late").mkdir(parents=True)
+    storage._move_old_folder(new, caches)  # (a new folder's never replaced by an old one)
+    assert old.exists() and not (new / "late").exists()
 
 
 def _build_app_module():

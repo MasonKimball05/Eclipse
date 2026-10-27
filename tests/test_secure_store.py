@@ -42,3 +42,13 @@ def test_only_eclipse_is_trusted_with_it_not_the_security_command(keychain):
     assert any(app.startswith("/usr/bin/security") for app in _trusted(dump, "made-by-security"))
     ours = _trusted(dump, secure_store.SERVICE)
     assert ours and not any("/usr/bin/security" in app for app in ours)  # (anything else gets macOS's prompt)
+
+
+def test_an_item_under_the_old_name_moves_to_the_new_one(keychain, monkeypatch):
+    ref, path = keychain
+    monkeypatch.setattr(secure_store, "SERVICE", secure_store.OLD_SERVICE)
+    assert secure_store.store("key", b"from before", ref)  # (made as the app did before the rename)
+    monkeypatch.undo()
+    assert secure_store.load("key", ref) == b"from before"
+    dump = subprocess.run(["security", "dump-keychain", path], capture_output=True, text=True).stdout
+    assert '"Eclipse Vault"' in dump and "PythonBrowser Vault" not in dump

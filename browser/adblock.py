@@ -203,7 +203,7 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
         """(Re)install the page scripts, with the current on/off state and allowed sites baked in."""
         cookies.install(profile, self.reject_cookies, self.allowed_sites)  # banners: on even if ads are allowed
         scripts = profile.scripts()
-        for old in scripts.find("pybrowser-adblock"):
+        for old in scripts.find("eclipse-adblock"):
             scripts.remove(old)
         if not self.enabled:
             return
@@ -221,7 +221,7 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
         }})();
         """
         script = QWebEngineScript()
-        script.setName("pybrowser-adblock")
+        script.setName("eclipse-adblock")
         script.setSourceCode(source)
         script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
         script.setWorldId(QWebEngineScript.ScriptWorldId.ApplicationWorld)  # isolated from page scripts

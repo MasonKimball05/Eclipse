@@ -1,3 +1,5 @@
+import pytest
+
 from browser.models import Folder, Tab, node_from_dict, walk_tabs
 from browser.live_folders import apply_items, find_feed_link, mark_seen, parse_feed
 
@@ -248,3 +250,53 @@ def test_notifications_that_cant_be_read_are_kept():
     assert notification_rows(kept) == kept
     assert dict(github_sections({"notifications": kept}))["Notifications"][0][1] == "https://github.com/me/x/issues/1"
 
+
+
+@pytest.mark.parametrize("page, feed", [
+    ("https://bsky.app/profile/jay.bsky.team", "https://bsky.app/profile/jay.bsky.team/rss"),
+    ("https://mastodon.social/@Gargron", "https://mastodon.social/@Gargron.rss"),
+    ("https://medium.com/@someone", "https://medium.com/feed/@someone"),
+    ("https://www.reddit.com/r/python/top/", "https://www.reddit.com/r/python/.rss"),
+    ("old.reddit.com/u/spez", "https://www.reddit.com/user/spez/.rss"),
+    ("https://www.youtube.com/channel/UC_x5XG1OV2P6uZZ5FSM9Ttw",
+     "https://www.youtube.com/feeds/videos.xml?channel_id=UC_x5XG1OV2P6uZZ5FSM9Ttw"),
+    ("https://www.youtube.com/playlist?list=PL123", "https://www.youtube.com/feeds/videos.xml?playlist_id=PL123"),
+    ("https://gitlab.com/gitlab-org/gitlab-runner/-/tree/main", "https://gitlab.com/gitlab-org/gitlab-runner/-/releases.atom"),
+    ("https://gitlab.com/group/sub/project", "https://gitlab.com/group/sub/project/-/releases.atom"),
+    ("https://pypi.org/project/PyQt6/", "https://pypi.org/rss/project/pyqt6/releases.xml"),
+    ("https://stackoverflow.com/questions/tagged/pyqt6", "https://stackoverflow.com/feeds/tag/pyqt6"),
+    ("https://unix.stackexchange.com/questions/tagged/zsh", "https://unix.stackexchange.com/feeds/tag/zsh"),
+    ("https://news.ycombinator.com/", "https://news.ycombinator.com/rss"),
+    ("https://github.com/qt/qtwebengine", "https://github.com/qt/qtwebengine/releases.atom"),
+])
+def test_well_known_pages_have_their_sites_feed(page, feed):
+    from browser.live_folders import known_feed
+    assert known_feed(page) == feed
+
+
+@pytest.mark.parametrize("page", ["https://www.youtube.com/@mkbhd", "https://x.com/@someone", "https://example.com/blog",
+                                  "https://gitlab.com/explore/projects", "https://news.ycombinator.com/item?id=1"])
+def test_other_pages_are_looked_at_for_their_feed(page):
+    from browser.live_folders import known_feed
+    assert known_feed(page) is None
+
+
+def test_a_guessed_feed_that_isnt_one_falls_back_to_the_page():
+    from browser.live_folders import LiveFolders
+    pages = {"https://blog.example/@writer.rss": b"<html>not found</html>",
+             "https://blog.example/@writer": b'<html><head><link rel="alternate" type="application/rss+xml" '
+                                              b'href="/feeds/writer.xml"></head></html>',
+             "https://blog.example/feeds/writer.xml": b"<rss><channel><title>Writer</title><item><title>Hi</title>"
+                                                      b"<link>https://blog.example/hi</link></item></channel></rss>"}
+    asked, results = [], []
+
+    class Fake:
+        _feed = LiveFolders._feed
+
+        def _get(self, url, got, fail):
+            asked.append(url)
+            got(pages[url], url) if url in pages else fail("404")
+    Fake()._feed("https://blog.example/@writer", lambda items, title="", error="": results.append((items, title)))
+    assert asked == ["https://blog.example/@writer.rss", "https://blog.example/@writer",
+                     "https://blog.example/feeds/writer.xml"]
+    assert results == [([("Hi", "https://blog.example/hi")], "Writer")]

@@ -14,7 +14,7 @@ import json
 
 from PyQt6.QtWebEngineCore import QWebEngineScript
 
-SCRIPT_NAME = "pybrowser-cookie-banners"
+SCRIPT_NAME = "eclipse-cookie-banners"
 SETTING = "reject_cookie_banners"
 
 # Each consent tool's own "reject" button

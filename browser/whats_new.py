@@ -8,12 +8,23 @@ from . import brand
 from .motion import FadesIn
 from .theme import quiet_scrollbars, stylesheet
 
-EDITION = 12
+EDITION = 13
 SETTING = "whats_new_seen"
 
 NOTES = """
 ## Lately
 
+- **Verification codes**: Eclipse can keep a login's two-factor setup key and fill in the 6-digit code after
+  Touch ID. Exported from Apple's Passwords, they come along when you import.
+- **Import from Chrome, Brave or Edge** (Settings → Passwords & Passkeys → Import), and **Export** your passwords
+  to a file Apple's Passwords and Chrome can import.
+- **Updates in Settings**: General shows the version you're on, what's new when there's an update, and the
+  download as it comes.
+- **More Live Folders**: paste a Bluesky, Mastodon or Medium account, a subreddit, a YouTube channel, a GitLab
+  project, a PyPI package or a Stack Overflow tag, and it follows it.
+- **Runs on older Macs**: the downloadable Eclipse now works on macOS 13 and later.
+- **Eclipse all the way down**: the app's internal name is Eclipse now too. Your data moves over by itself; set
+  Eclipse as your default browser again, and sites will ask again for the camera and microphone.
 - **Updates for the app you download**: the signed Eclipse checks for a new release once a day and offers it.
   Before anything changes, macOS checks the download is signed by Eclipse's maker and notarized by Apple.
 - **Sign-in boxes inside a page** (in a frame) get your saved passwords too, when they're the same site as the

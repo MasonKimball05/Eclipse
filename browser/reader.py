@@ -283,7 +283,7 @@ class ReaderView(QFrame):
         else:
             # setHtml can't take more than 2 MB (it becomes a data: address): a long article goes
             # through a file instead (its links are already absolute; JavaScript is still off)
-            path = Path(tempfile.gettempdir()) / "pythonbrowser-ui" / "reader.html"
+            path = Path(tempfile.gettempdir()) / "eclipse-ui" / "reader.html"
             path.parent.mkdir(exist_ok=True)
             path.write_text(document, encoding="utf-8")
             self.view.load(QUrl.fromLocalFile(str(path)))

@@ -9,7 +9,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-os.environ["PYBROWSER_DATA_DIR"] = tempfile.mkdtemp()
+os.environ["ECLIPSE_DATA_DIR"] = tempfile.mkdtemp()
 
 from browser.features import FEATURE_MODULES  # noqa: E402
 

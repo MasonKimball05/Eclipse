@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         Demo Userscript
-// @namespace    pythonbrowser.tests
+// @namespace    eclipse.tests
 // @version      1.2
 // @description  Marks pages and counts runs with GM storage
 // @match        *://*/*

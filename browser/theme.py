@@ -448,7 +448,7 @@ def switch_images(accent: QColor, dark: bool) -> tuple[str, str]:
     folder with @2x copies for Retina. Paths use forward slashes, as stylesheets want."""
     import tempfile
     from pathlib import Path
-    folder = Path(tempfile.gettempdir()) / "pythonbrowser-ui"
+    folder = Path(tempfile.gettempdir()) / "eclipse-ui"
     folder.mkdir(exist_ok=True)
     names = []
     for on in (False, True):
@@ -482,7 +482,7 @@ def _ui_image(name: str, w: int, h: int, draw) -> str:
     draw(painter, scale) paints it."""
     import tempfile
     from pathlib import Path
-    folder = Path(tempfile.gettempdir()) / "pythonbrowser-ui"
+    folder = Path(tempfile.gettempdir()) / "eclipse-ui"
     folder.mkdir(exist_ok=True)
     for scale, suffix in ((1, ""), (2, "@2x")):
         path = folder / f"{name}{suffix}.png"

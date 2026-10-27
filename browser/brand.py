@@ -1,9 +1,8 @@
 # The browser's name and icon.
 #
-# NAME is what you see: the Dock, the menu bar, window titles, messages. The app's internal name
-# ("PythonBrowser") stays as it was underneath — the data folder, the Keychain entries and the bundle
-# ID — so a rename never strands your tabs, sign-ins, saved tokens, or macOS's memory of it as your
-# default browser and its camera/microphone permissions.
+# NAME is what you see: the Dock, the menu bar, window titles, messages. INTERNAL_NAME names the data folder
+# (and the app to Qt). It was "PythonBrowser" until 27 Oct 2026; what had the old name (the data folder, the
+# Keychain items, the bundle ID) is moved over the first time it's used, by storage.py and secure_store.py.
 
 import math
 
@@ -11,7 +10,8 @@ from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QColor, QConicalGradient, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QRadialGradient
 
 NAME = "Eclipse"
-INTERNAL_NAME = "PythonBrowser"  # data folder, Keychain service, bundle; don't change
+INTERNAL_NAME = "Eclipse"  # the data folder's name
+OLD_INTERNAL_NAME = "PythonBrowser"  # (before the rename: moved over when found)
 ORGANIZATION = "MasonKimball05"  # (part of the data folder's path too)
 SETTING = "app_icon"  # which look you picked in Settings → General
 

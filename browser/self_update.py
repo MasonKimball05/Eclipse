@@ -13,6 +13,7 @@
 
 import hashlib
 import os
+import plistlib
 import subprocess
 import sys
 import threading
@@ -22,11 +23,11 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, QProcess, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
-from . import brand, release_update, verified
+from . import brand, release_update, storage, verified
 from .features import Feature
 
 REPO = Path(__file__).resolve().parents[1]
-VENV = Path.home() / "Library" / "Application Support" / brand.INTERNAL_NAME / "venv"  # same as run.sh
+VENV = Path.home() / "Library" / "Application Support" / "Eclipse Build" / "venv"  # same as run.sh
 CHECK_EVERY_SECONDS = 24 * 3600
 FIRST_CHECK_MS = 120_000
 GIT_TIMEOUT = 60
@@ -85,10 +86,10 @@ def apply_update() -> tuple[bool, str]:
         return False, out
     code, changed = _git("diff", "--name-only", before, "HEAD")
     if "requirements.txt" in changed.splitlines():
-        pip = VENV / "bin" / "pip"
-        if not pip.exists():
+        python = VENV / "bin" / "python"
+        if not python.exists():
             return True, "Updated. New requirements: run ./run.sh once to install them."
-        done = subprocess.run([str(pip), "install", "--quiet", "--disable-pip-version-check", "-r",
+        done = subprocess.run([str(python), "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "-r",
                                str(REPO / "requirements.txt")], capture_output=True, text=True)
         if done.returncode != 0:
             return True, "Updated, but installing new requirements failed: run ./run.sh to retry."
@@ -111,6 +112,18 @@ def precompile():
         pass
 
 
+def this_version() -> str:
+    """What's running, for Settings: a release's version and build, or the commit a checkout is on."""
+    if (bundle := release_bundle()) is not None:
+        try:
+            info = plistlib.loads((bundle / "Contents" / "Info.plist").read_bytes())
+        except (OSError, plistlib.InvalidFileException):
+            info = {}
+        return f"{brand.NAME} {info.get('CFBundleShortVersionString', '?')} (build {info.get('CFBundleVersion', '?')})"
+    code, out = _git("log", "-1", "--format=%h (%cd)", "--date=format:%b %-d", timeout=5)
+    return f"From source, commit {out}" if code == 0 and out else "From source"
+
+
 def relaunch_command() -> list[str]:
     """How to start this app again: the .app bundle if we're in one, else main.py."""
     exe = Path(sys.executable).resolve()
@@ -124,6 +137,7 @@ class SelfUpdater(QObject):
     checked = pyqtSignal(dict)
     applied = pyqtSignal(bool, str)
     progressed = pyqtSignal(int)  # (a release's download, in percent)
+    status_changed = pyqtSignal()  # (status: for Settings' Updates row)
 
     def __init__(self, browser):
         super().__init__(browser)
@@ -134,7 +148,9 @@ class SelfUpdater(QObject):
         self._staged = None  # (a release: the checked new copy, swapped in after quitting)
         self.checked.connect(self._checked)
         self.applied.connect(self._applied)
-        self.progressed.connect(lambda percent: self.browser.toast(f"Downloading the update… {percent}%"))
+        self.status = {"state": "idle"}  # (idle, checking, then what inspect found; downloading; failed)
+        self.progressed.connect(lambda percent: self._set_status({**self._found, "state": "downloading",
+                                                                  "percent": percent}))
         self._timer = QTimer(self, interval=3600 * 1000, timeout=self._maybe_check)
         self._timer.start()
         QTimer.singleShot(FIRST_CHECK_MS, self._maybe_check)
@@ -144,15 +160,20 @@ class SelfUpdater(QObject):
         return self.browser.store.settings
 
     def _maybe_check(self):
-        if not self.settings.get("app_updates", True) or os.environ.get("PYBROWSER_DATA_DIR"):
+        if not self.settings.get("app_updates", True) or storage.throwaway():
             return  # a throwaway profile (tests, --fresh) never updates the checkout
         if time.time() - self.settings.get("app_update_checked_at", 0) >= CHECK_EVERY_SECONDS:
             self.check()
+
+    def _set_status(self, status):
+        self.status = status
+        self.status_changed.emit()
 
     def check(self, manual=False):
         if self._busy:
             return
         self._busy, self._manual = True, manual
+        self._set_status({"state": "checking"})
         self.settings["app_update_checked_at"] = time.time()
         self.browser.store.schedule_save()
         if manual:
@@ -161,6 +182,8 @@ class SelfUpdater(QObject):
 
     def _checked(self, result):
         self._busy = False
+        self._found = result if result.get("state") in ("available", "blocked") else {}
+        self._set_status(result)
         state = result.get("state")
         if state == "available":
             self._offer(result)
@@ -217,6 +240,7 @@ class SelfUpdater(QObject):
 
     def _applied(self, ok, message):
         if not ok:
+            self._set_status({"state": "failed", "reason": message})
             QMessageBox.warning(self.browser, "Couldn't Update", message)
             return
         if message != "Updated":
@@ -241,7 +265,7 @@ class UpdatesFeature(Feature):
     def __init__(self, window):
         super().__init__(window)
         self.updater = SelfUpdater(window)
-        if release_bundle() is not None and not os.environ.get("PYBROWSER_DATA_DIR"):
+        if release_bundle() is not None and not storage.throwaway():
             threading.Thread(target=release_update.tidy, daemon=True).start()  # (what the last update left)
 
     def check(self):

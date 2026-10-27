@@ -6,6 +6,9 @@ Run it with:   ./run.sh --release                     (dist/Eclipse.app and dist
                ./run.sh --release --notarize PROFILE --publish
                                                       (…and put on GitHub as a release, which every
                                                       release copy offers to update to: release_update.py)
+               ./run.sh --release --publish-built     (put the release already in dist/ on GitHub, without
+                                                      building or notarizing again, once its code is committed
+                                                      and pushed exactly as it was built)
 
 Unlike ./run.sh --build-app (a launcher that runs this checkout), the release carries its own Python, Qt
 and Eclipse, so it runs on any Mac and doesn't change when the checkout does. That's what lets macOS check
@@ -14,7 +17,7 @@ Settings → General can say "Verified" (browser/verified.py).
 
 Inside it:
     Contents/MacOS/Eclipse                  the launcher: finds the rest relative to itself
-    Contents/Frameworks/                    libpython, and the libraries it needs from Homebrew (OpenSSL…),
+    Contents/Frameworks/                    libpython (and, built with Homebrew's Python, its OpenSSL…),
                                             their paths rewritten to point here
     Contents/Resources/python/lib/python3.x the standard library (compiled ahead: nothing's ever written here)
     Contents/Resources/lib/python           PyQt6 (with Qt and Qt WebEngine), qtawesome, cryptography…
@@ -123,6 +126,19 @@ def copy_python(contents: Path):
     lib = contents / "Resources" / "python" / "lib"
     lib.mkdir(parents=True)
     shutil.copytree(base / "lib" / PY, lib / PY, ignore=_ignore(LEAVE_OUT_STDLIB), symlinks=True)
+    # python.org's Python brings its own OpenSSL (and zstd…) beside the standard library, where its modules look
+    # for them (tools/release_python.py points them there); Homebrew's has none here
+    for library in (base / "lib").glob("*.dylib"):
+        if not library.is_symlink() and library.name != LIBPYTHON and not library.name.startswith(
+                ("libncurses", "libform", "libmenu", "libpanel")):  # (curses: never used by a browser)
+            shutil.copy2(library, lib / library.name)
+
+
+def thin(contents: Path):
+    """Apple-silicon code only: python.org's Python is built for Intel Macs too, which Qt here isn't."""
+    for path in [p for p in contents.rglob("*") if is_macho(p)]:
+        if run("lipo", "-archs", path).split() not in (["arm64"], []):
+            run("lipo", path, "-thin", "arm64", "-output", path)
 
 
 def copy_packages(contents: Path):
@@ -239,7 +255,8 @@ def compile_launcher(contents: Path):
     with tempfile.TemporaryDirectory() as tmp:
         source = Path(tmp) / "launcher.c"
         source.write_text(LAUNCHER)
-        run("clang", "-O2", "-o", contents / "MacOS" / NAME, source, f"-I{sysconfig.get_paths()['include']}",
+        # (for the oldest macOS Qt runs on: clang would otherwise build it for this Mac's)
+        run("clang", "-O2", "-arch", "arm64", "-mmacosx-version-min=13.0", "-o", contents / "MacOS" / NAME, source, f"-I{sysconfig.get_paths()['include']}",
             f"-L{contents / 'Frameworks'}", f"-l{PY}", "-Wl,-rpath,@executable_path/../Frameworks")
 
 
@@ -270,14 +287,14 @@ def check_runs(contents: Path):
         done = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", CHECK, contents / "Resources" / "lib" / "python",
                                contents / "Resources" / "app"], capture_output=True, text=True, timeout=300,
                               env={"HOME": str(Path.home()), "PATH": "/usr/bin:/bin", "QT_QPA_PLATFORM": "offscreen",
-                                   "PYBROWSER_DATA_DIR": data})
+                                   "ECLIPSE_DATA_DIR": data})
     if done.returncode != 0 or done.stdout.strip() != "loaded":
         raise SystemExit(f"The app doesn't run as built:\n{(done.stderr or done.stdout)[-2000:]}")
 
 
 def minimum_macos(contents: Path) -> str:
-    """The newest macOS any of its code was built for: the oldest it can run on (Homebrew builds for the macOS
-    it's on, so this follows the Mac the release is built on)."""
+    """The newest macOS any of its code was built for: the oldest it can run on. Built with python.org's Python
+    (tools/release_python.py) that's Qt's macOS 13; with Homebrew's, the macOS of the Mac it was built on."""
     newest = (13, 0)
     for path in contents.rglob("*"):
         if is_macho(path):
@@ -376,6 +393,31 @@ def publish(archive: Path, build: str, version: str):
     print(f"Published: every release copy of {NAME} will offer it within a day")
 
 
+def differences(built: Path, source: Path) -> list[str]:
+    """Eclipse's code files that differ between an app's copy and a checkout (or are only in one)."""
+    def code(root):
+        return {str(p.relative_to(root)): p for p in [root / "main.py", *(root / "browser").rglob("*.py")] if p.exists()}
+    ours, theirs = code(built), code(source)
+    return sorted(name for name in ours.keys() | theirs.keys()
+                  if name not in ours or name not in theirs or ours[name].read_bytes() != theirs[name].read_bytes())
+
+
+def publish_built():
+    """The notarized release in dist/, published as it is: only when the commit has exactly its code."""
+    app, archive = DIST / f"{NAME}.app", DIST / f"{NAME}.zip"
+    if not app.exists() or not archive.exists():
+        raise SystemExit("There's no release in dist/ yet: ./run.sh --release --notarize PROFILE")
+    if subprocess.run(["xcrun", "stapler", "validate", str(app)], capture_output=True).returncode != 0:
+        raise SystemExit("The release in dist/ isn't notarized: build it with --notarize PROFILE")
+    if why := publishable():
+        raise SystemExit(f"Can't publish: {why}")
+    if different := differences(app / "Contents" / "Resources" / "app", ROOT):
+        raise SystemExit("The release in dist/ was built from different code than this commit (" +
+                         ", ".join(different[:5]) + "): build it again with --notarize PROFILE --publish")
+    info = plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
+    publish(archive, info["CFBundleVersion"], info["CFBundleShortVersionString"])
+
+
 def release(identity: str, notary_profile: str | None, install: bool, publishing=False) -> Path:
     if identity.startswith(("-", "Apple Development")) or not identity:
         raise SystemExit("A release needs the Developer ID Application certificate (none of the team's is here)")
@@ -398,6 +440,7 @@ def release(identity: str, notary_profile: str | None, install: bool, publishing
     for link in [p for p in app.rglob("*") if p.is_symlink() and not p.exists()]:
         link.unlink()  # (a link to something left out: the signature can't seal what isn't there)
     print("Bringing in the libraries they need…")
+    thin(contents)
     bring_in_libraries(contents)
     compile_launcher(contents)
     build_app.make_icon(contents / "Resources" / "AppIcon.icns")
@@ -429,7 +472,7 @@ def release(identity: str, notary_profile: str | None, install: bool, publishing
     if install:
         if APP.exists():
             existing = plistlib.loads((APP / "Contents" / "Info.plist").read_bytes()).get("CFBundleIdentifier")
-            if existing != build_app.BUNDLE_ID:
+            if existing not in build_app.OURS:
                 raise SystemExit(f"{APP} isn't {NAME}; not touching it")
             shutil.rmtree(APP)
         run("ditto", app, APP)
@@ -448,7 +491,12 @@ def main():
     parser.add_argument("--notarize", metavar="PROFILE", help="notarytool keychain profile")
     parser.add_argument("--install", action="store_true", help="put it in /Applications too")
     parser.add_argument("--publish", action="store_true", help="put it on GitHub as a release (needs --notarize)")
+    parser.add_argument("--publish-built", action="store_true",
+                        help="put the notarized release already in dist/ on GitHub, without building it again")
     args = parser.parse_args()
+    if args.publish_built:
+        publish_built()
+        return
     if args.publish and not args.notarize:
         parser.error("--publish needs --notarize: a release has to open on other Macs")
     identity = args.sign

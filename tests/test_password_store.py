@@ -91,6 +91,36 @@ def test_importing_adds_changes_and_skips_the_same():
     assert next(e for e in pw.logins() if e["username"] == "arkan")["password"] == "newer-pass"
 
 
+RFC_KEY = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"  # ("12345678901234567890", RFC 6238's test key, in base32)
+
+
+@pytest.mark.parametrize("at, code", [(59, "94287082"), (1111111109, "07081804"), (1234567890, "89005924"),
+                                      (2000000000, "69279037")])
+def test_codes_match_the_rfcs_examples(at, code):
+    assert pw.otp_code(f"otpauth://totp/x?secret={RFC_KEY}&digits=8", at) == (code, 30 - at % 30)
+
+
+def test_codes_from_a_bare_key_or_a_link():
+    assert pw.otp_link("gezd gnbv gy3t qojq") == "otpauth://totp/?secret=GEZDGNBVGY3TQOJQ"
+    assert pw.otp_code(pw.otp_link(RFC_KEY), 59)[0] == "287082"  # (6 digits unless the link says otherwise)
+    link = "otpauth://totp/GitHub:arkan?secret=" + RFC_KEY + "&issuer=GitHub&algorithm=SHA256&period=60"
+    assert pw.otp_link(link) == link and pw.otp_code(link, 59) == ("875740", 1)  # (counter 0, worked out with hmac directly)
+    for wrong in ("", "not a key!", "otpauth://hotp/x?secret=" + RFC_KEY, "otpauth://totp/x?issuer=nokey"):
+        assert pw.otp_link(wrong) is None
+
+
+def test_an_export_brings_its_codes_and_importing_again_adds_them():
+    without = APPLE
+    with_codes = APPLE.replace("GitHub,https://github.com/,arkan,gh-pass,,",
+                               f"GitHub,https://github.com/,arkan,gh-pass,,otpauth://totp/GitHub:arkan?secret={RFC_KEY}")
+    assert pw.import_rows(pw.parse_csv(without), "Passwords") == (2, 0, 0)
+    assert not any(e.get("otp") for e in pw.logins())
+    assert pw.import_rows(pw.parse_csv(with_codes), "Passwords") == (0, 1, 1)  # (the same password, now with codes)
+    assert [e["username"] for e in pw.codes_for_page("https://github.com/sessions/two-factor")] == ["arkan"]
+    assert pw.import_rows(pw.parse_csv(without), "Passwords") == (0, 0, 2)  # (a file without codes keeps them)
+    assert pw.codes_for_page("https://github.com/")
+
+
 def _arc_encrypt(text, secret):
     key = hashlib.pbkdf2_hmac("sha1", secret, b"saltysalt", 1003, 16)
     padder = padding.PKCS7(128).padder()
@@ -112,10 +142,10 @@ def test_reading_a_fake_arc_profile(tmp_path):
                        "blacklisted_by_user INTEGER)")
             db.executemany("INSERT INTO logins VALUES (?, ?, ?, ?)",
                            [(url, user, _arc_encrypt(password, secret), never) for url, user, password, never in rows])
-    found = pw.read_arc(secret, tmp_path)
+    found = pw.read_browser("Arc", secret, tmp_path)
     assert [(r["url"], r["username"], r["password"]) for r in found] == [
         ("https://github.com/login", "arkan", "arc-pass"), ("https://work.example/", "me@work", "work-pass")]
-    assert pw.read_arc(b"the wrong key", tmp_path) == []
+    assert pw.read_browser("Arc", b"the wrong key", tmp_path) == []
     assert pw.chromium_decrypt(b"v11whatever", secret) is None
 
 
@@ -145,3 +175,29 @@ def test_reused_and_weak_passwords_are_pointed_out():
     assert pw.weak("short1") and pw.weak("12345678901") and pw.weak("Football!") and not pw.weak("Tr0ub4dour&3x")
     pw.update(d["id"], url="https://renamed.example/login", password="new-one-entirely-7")
     assert next(x for x in pw.logins() if x["id"] == d["id"])["origin"] == "https://renamed.example"
+
+
+def test_browsers_with_saved_passwords_are_found(tmp_path, monkeypatch):
+    for name in ("Chrome", "Brave", "Edge"):
+        (tmp_path / name / "Profile 1").mkdir(parents=True)
+    (tmp_path / "Chrome" / "Profile 1" / "Login Data").write_bytes(b"")
+    (tmp_path / "Edge" / "Profile 1" / "Login Data").write_bytes(b"")
+    monkeypatch.setattr(pw, "CHROMIUM_BROWSERS", {name: (tmp_path / name, f"{name} Safe Storage")
+                                                  for name in ("Arc", "Chrome", "Brave", "Edge")})
+    assert pw.browsers_installed() == ["Chrome", "Edge"]  # (Brave's here, but has nothing saved; Arc isn't here)
+
+
+def test_an_export_reads_back_the_same_and_only_you_can_open_it(tmp_path):
+    import stat
+    pw.import_rows(pw.parse_csv(APPLE), "Passwords")
+    first = pw.logins()[0]
+    pw.update(first["id"], otp=pw.otp_link(RFC_KEY), note='quotes " and, commas')
+    path = tmp_path / "export.csv"
+    path.write_text("old")
+    path.chmod(0o644)
+    pw.write_export(str(path), pw.logins())
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    back = pw.parse_csv(path.read_text())
+    key = lambda e: (pw._origin(e.get("url") or e["origin"]), e["username"])  # noqa: E731
+    assert sorted((key(r), r["password"], r["note"], r["otp"] or "") for r in back) == sorted(
+        (key(e), e["password"], e.get("note", ""), e.get("otp", "")) for e in pw.logins())

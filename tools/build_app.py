@@ -44,7 +44,9 @@ APP = Path("/Applications") / f"{NAME}.app"
 # Applications folder doesn't show)
 OLD_APPS = [folder / f"{old}.app" for folder in (Path("/Applications"), Path.home() / "Applications")
             for old in ("PythonBrowser", "Halo", NAME) if folder / f"{old}.app" != APP]
-BUNDLE_ID = "com.masonkimball.pythonbrowser"  # must match browser/macos.py
+BUNDLE_ID = "com.masonkimball.eclipse"  # must match browser/macos.py
+OLD_BUNDLE_IDS = ("com.masonkimball.pythonbrowser",)  # (before the rename: still ours, to replace or retire)
+OURS = (BUNDLE_ID, *OLD_BUNDLE_IDS)
 LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework"
               "/Support/lsregister")
 
@@ -179,7 +181,7 @@ def retire_old_app(old: Path):
         existing = plistlib.loads((old / "Contents" / "Info.plist").read_bytes()).get("CFBundleIdentifier")
     except (OSError, plistlib.InvalidFileException):
         return
-    if existing != BUNDLE_ID:
+    if existing not in OURS:
         return
     subprocess.run([LSREGISTER, "-u", str(old)], check=False)  # (or macOS remembers it where it was)
     trash = Path.home() / ".Trash" / old.name
@@ -200,7 +202,7 @@ def forget_trashed():
             existing = plistlib.loads((bundle / "Contents" / "Info.plist").read_bytes()).get("CFBundleIdentifier")
         except (OSError, plistlib.InvalidFileException):
             continue
-        if existing == BUNDLE_ID:
+        if existing in OURS:
             subprocess.run([LSREGISTER, "-u", str(bundle)], check=False)
 
 
@@ -269,7 +271,7 @@ def team_identity() -> tuple[str, str] | None:
 
 def main():
     parser = argparse.ArgumentParser(description=f"Build {NAME}.app")
-    parser.add_argument("--sign", default=os.environ.get("PYBROWSER_SIGN_IDENTITY"), metavar="IDENTITY",
+    parser.add_argument("--sign", default=os.environ.get("ECLIPSE_SIGN_IDENTITY"), metavar="IDENTITY",
                         help='a codesigning identity (e.g. "Developer ID Application: …"), or - for ad hoc; '
                              "default: the best one of the maker's team on this Mac, else ad hoc")
     parser.add_argument("--notarize", metavar="PROFILE", help="notarytool keychain profile (needs --sign)")
@@ -304,7 +306,7 @@ def _ours_or_free(app: Path) -> bool:
     if not app.exists():
         return True
     try:
-        return plistlib.loads((app / "Contents" / "Info.plist").read_bytes()).get("CFBundleIdentifier") == BUNDLE_ID
+        return plistlib.loads((app / "Contents" / "Info.plist").read_bytes()).get("CFBundleIdentifier") in OURS
     except (OSError, plistlib.InvalidFileException):
         return False
 
@@ -313,7 +315,7 @@ def build(app: Path, identity="-", notary_profile=None):
     if app.exists():
         # Only ever replace our own app
         existing = plistlib.loads((app / "Contents" / "Info.plist").read_bytes()).get("CFBundleIdentifier")
-        if existing != BUNDLE_ID:
+        if existing not in OURS:
             sys.exit(f"{app} exists and isn't {NAME} ({existing}); not touching it.")
         shutil.rmtree(app)
 

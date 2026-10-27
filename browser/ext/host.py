@@ -255,7 +255,7 @@ EXTERNAL_SHIM = """(() => {
 # The Chrome Web Store only offers "Add to Chrome" in Chrome, so extension pages there get our own
 # button. It lives in an isolated world (the store's scripts can't touch it) and asks the browser
 # through a console message; installing always shows a confirmation first.
-STORE_MESSAGE = "PYBROWSER_ADD_EXTENSION:"
+STORE_MESSAGE = "ECLIPSE_ADD_EXTENSION:"
 STORE_BUTTON = """(() => {
   if (location.hostname !== 'chromewebstore.google.com') return;
   const button = document.createElement('button');

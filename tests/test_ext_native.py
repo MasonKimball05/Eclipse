@@ -10,7 +10,7 @@ from browser.ext import native
 ECHO = Path(__file__).parent / "fixtures" / "native_echo.py"
 
 
-def register(data_dir, name="pythonbrowser.echo", origins=("chrome-extension://demo/",)):
+def register(data_dir, name="eclipse.echo", origins=("chrome-extension://demo/",)):
     """Register the echo helper in our own NativeMessagingHosts folder (the throwaway data dir)."""
     folder = data_dir / "NativeMessagingHosts"
     folder.mkdir(parents=True, exist_ok=True)
@@ -32,17 +32,17 @@ def test_wire_format():
 
 def test_finding_and_allowing(data_dir):
     launcher = register(data_dir)
-    manifest = native.find_host("pythonbrowser.echo")
+    manifest = native.find_host("eclipse.echo")
     assert manifest["path"] == str(launcher)  # relative paths resolve next to the manifest
-    assert native.check_access("pythonbrowser.echo", "demo")[1] is None
-    assert native.check_access("pythonbrowser.echo", "someone-else") == (None, native.FORBIDDEN)
+    assert native.check_access("eclipse.echo", "demo")[1] is None
+    assert native.check_access("eclipse.echo", "someone-else") == (None, native.FORBIDDEN)
     assert native.check_access("no.such.host", "demo") == (None, native.NOT_FOUND)
     assert native.find_host("../../etc/passwd") is None  # names can't be paths
 
 
 def test_round_trip_with_a_real_helper(data_dir):
     register(data_dir)
-    port = native.NativePort(native.find_host("pythonbrowser.echo"), "demo")
+    port = native.NativePort(native.find_host("eclipse.echo"), "demo")
     got, closed = [], []
     loop = QEventLoop()
     port.message.connect(lambda m: (got.append(m), port.send("quit")))

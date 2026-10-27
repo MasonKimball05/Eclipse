@@ -16,7 +16,8 @@ import sys
 
 from . import brand
 
-SERVICE = f"{brand.INTERNAL_NAME} Vault"  # (the internal name: renaming the app mustn't lose these)
+SERVICE = f"{brand.NAME} Vault"
+OLD_SERVICE = f"{brand.OLD_INTERNAL_NAME} Vault"  # (before the rename: an item found here is moved over when read)
 NOT_FOUND, DUPLICATE = -25300, -25299
 
 _sec = _cf = None
@@ -74,10 +75,10 @@ class _Refs:
                                                _const(_cf, "kCFTypeDictionaryKeyCallBacks"),
                                                _const(_cf, "kCFTypeDictionaryValueCallBacks")))
 
-    def item(self, account, keychain=None, searching=True, **extra):
+    def item(self, account, keychain=None, searching=True, service=None, **extra):
         """The pairs that pick out this item (in a keychain file instead of the login one, for tests)."""
         pairs = [("kSecClass", _const(_sec, "kSecClassGenericPassword")),
-                 ("kSecAttrService", self.string(SERVICE)), ("kSecAttrAccount", self.string(account))]
+                 ("kSecAttrService", self.string(service or SERVICE)), ("kSecAttrAccount", self.string(account))]
         if keychain is not None:
             if searching:
                 listed = (ctypes.c_void_p * 1)(keychain)
@@ -119,9 +120,18 @@ def store(account: str, secret: bytes, keychain=None) -> bool:
 def load(account: str, keychain=None) -> bytes | None:
     if not available():
         return None
+    found = _read(account, keychain, SERVICE)
+    if found is None:
+        found = _read(account, keychain, OLD_SERVICE)
+        if found is not None and store(account, found, keychain):
+            _delete(account, keychain, OLD_SERVICE)  # (moved: one item, under the new name)
+    return found
+
+
+def _read(account, keychain, service) -> bytes | None:
     with _Refs() as refs:
         result = ctypes.c_void_p()
-        query = refs.item(account, keychain, kSecReturnData=_const(_cf, "kCFBooleanTrue"),
+        query = refs.item(account, keychain, service=service, kSecReturnData=_const(_cf, "kCFBooleanTrue"),
                           kSecMatchLimit=_const(_sec, "kSecMatchLimitOne"))
         if _sec.SecItemCopyMatching(query, ctypes.byref(result)) != 0 or not result.value:
             return None
@@ -130,7 +140,11 @@ def load(account: str, keychain=None) -> bytes | None:
 
 
 def delete(account: str, keychain=None) -> bool:
+    return _delete(account, keychain, SERVICE)
+
+
+def _delete(account, keychain, service) -> bool:
     if not available():
         return False
     with _Refs() as refs:
-        return _sec.SecItemDelete(refs.item(account, keychain)) in (0, NOT_FOUND)
+        return _sec.SecItemDelete(refs.item(account, keychain, service=service)) in (0, NOT_FOUND)

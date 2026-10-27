@@ -6,7 +6,7 @@ import ctypes.util
 import sys
 
 NS_WINDOW_TITLE_HIDDEN = 1
-APP_BUNDLE_ID = "com.masonkimball.pythonbrowser"  # must match tools/build_app.py
+APP_BUNDLE_ID = "com.masonkimball.eclipse"  # must match tools/build_app.py
 
 _objc = None
 if sys.platform == "darwin":

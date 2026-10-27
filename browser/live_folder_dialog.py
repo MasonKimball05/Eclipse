@@ -11,7 +11,9 @@ from .models import walk_tabs
 from .theme import FittedLabel, stylesheet
 
 KINDS = [
-    ("feed", "A feed", "RSS or Atom, or any site that has one. A GitHub repo: its releases."),
+    ("feed", "A feed", "RSS or Atom, or any site that has one. Or a page from a site that keeps one: a GitHub or "
+                       "GitLab repo (its releases), a subreddit, a YouTube channel, a Bluesky, Mastodon or Medium "
+                       "account, a PyPI package, a Stack Overflow tag."),
     ("github", "GitHub", "Pull requests and issues, with the GitHub CLI you're signed in to."),
     ("json", "An app's API", "Any JSON list: your own apps, a dashboard's API."),
     ("page", "Links on a page", "The links on a page that match a CSS selector, read with your logins."),

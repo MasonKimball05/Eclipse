@@ -4,6 +4,7 @@
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 
 from PyQt6.QtCore import QStandardPaths, QUrl
@@ -11,14 +12,31 @@ from PyQt6.QtGui import QIcon, QPixmap
 
 
 def data_dir() -> Path:
-    # PYBROWSER_DATA_DIR lets you run a throwaway profile without touching your real one
-    override = os.environ.get("PYBROWSER_DATA_DIR")
+    # ECLIPSE_DATA_DIR lets you run a throwaway profile without touching your real one
+    override = os.environ.get("ECLIPSE_DATA_DIR")
     if override:
         path = Path(override)
     else:
         path = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation))
+        _move_old_folder(path)
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _move_old_folder(path: Path, caches: Path | None = None):
+    """The data folder from before the rename (…/MasonKimball05/PythonBrowser), moved to its new name the first
+    time: your tabs, passwords and settings come along. Its cache, which is only a cache, is dropped."""
+    from . import brand
+    old = path.with_name(brand.OLD_INTERNAL_NAME)
+    if path.name != brand.OLD_INTERNAL_NAME and old.is_dir() and not path.exists():
+        old.rename(path)
+        caches = caches or Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation))
+        shutil.rmtree(caches.with_name(brand.OLD_INTERNAL_NAME), ignore_errors=True)
+
+
+def throwaway() -> bool:
+    """A throwaway profile (tests, ./run.sh --fresh): nothing that reaches outside it, like updating the app."""
+    return bool(os.environ.get("ECLIPSE_DATA_DIR"))
 
 
 def session_path() -> Path:

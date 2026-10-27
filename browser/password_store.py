@@ -12,8 +12,10 @@
 # Importing: a CSV exported from Apple's Passwords app (File → Export All Passwords), Chrome, Arc, Firefox or
 # Bitwarden, or straight from Arc's own saved passwords (macOS asks you first: Arc's key is Arc's).
 
+import base64
 import csv
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -22,6 +24,7 @@ import sqlite3
 import subprocess
 import tempfile
 import time
+import urllib.parse
 from pathlib import Path
 
 from cryptography.hazmat.primitives import padding
@@ -33,7 +36,17 @@ from .passkey_store import PUBLIC_SUFFIXES
 
 KEY_ACCOUNT = "passwords-key"
 SEAL, KEY_SEAL = b"eclipse-passwords-v1", b"eclipse-passwords-key"
-ARC_PROFILES = Path.home() / "Library" / "Application Support" / "Arc" / "User Data"
+_SUPPORT = Path.home() / "Library" / "Application Support"
+# Browsers built on Chromium keep passwords the same way on a Mac: a "Login Data" database in each profile,
+# encrypted with a key in the Keychain under "<name> Safe Storage". (name → its profiles folder, that key)
+CHROMIUM_BROWSERS = {
+    "Arc": (_SUPPORT / "Arc" / "User Data", "Arc Safe Storage"),
+    "Chrome": (_SUPPORT / "Google" / "Chrome", "Chrome Safe Storage"),
+    "Brave": (_SUPPORT / "BraveSoftware" / "Brave-Browser", "Brave Safe Storage"),
+    "Edge": (_SUPPORT / "Microsoft Edge", "Microsoft Edge Safe Storage"),
+    "Vivaldi": (_SUPPORT / "Vivaldi", "Vivaldi Safe Storage"),
+    "Chromium": (_SUPPORT / "Chromium", "Chromium Safe Storage"),
+}
 
 
 class Locked(Exception):
@@ -114,11 +127,60 @@ def update(login_id: str, **changes):
     entries = logins()
     for entry in entries:
         if entry["id"] == login_id:
-            entry.update({k: v for k, v in changes.items() if k in ("username", "password", "note", "last_used")})
+            entry.update({k: v for k, v in changes.items() if k in ("username", "password", "note", "last_used",
+                                                                       "otp")})
             if changes.get("url"):
                 entry["origin"] = _origin(changes["url"])
             entry["changed"] = time.time()
     _save(entries)
+
+
+# --- Two-factor codes ----------------------------------------------------------------------------------------
+# A login can keep its two-factor setup key (the secret behind a site's QR code), as an otpauth:// link, so
+# Eclipse makes the 6-digit codes an authenticator app would (RFC 6238), kept encrypted with the password.
+
+def otp_link(text: str) -> str | None:
+    """A setup key as an otpauth:// link: given one, or the bare key a site shows under its QR code. None when it
+    isn't one."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    if not text.lower().startswith("otpauth://"):
+        text = "otpauth://totp/?secret=" + text.replace(" ", "").replace("-", "").upper()
+    q = urllib.parse.urlparse(text)
+    params = {k.lower(): v for k, v in urllib.parse.parse_qsl(q.query)}
+    if q.netloc.lower() != "totp" or _otp_key(params.get("secret", "")) is None:
+        return None  # (hotp, counter-based, is rare enough to leave out)
+    return text
+
+
+def _otp_key(secret: str) -> bytes | None:
+    secret = secret.replace(" ", "").upper()
+    try:
+        key = base64.b32decode(secret + "=" * (-len(secret) % 8))
+    except ValueError:  # (binascii.Error is one)
+        return None
+    return key or None
+
+
+def otp_code(link: str, at: float | None = None) -> tuple[str, int]:
+    """The code for now (or `at`), and the seconds it has left."""
+    params = {k.lower(): v for k, v in urllib.parse.parse_qsl(urllib.parse.urlparse(link).query)}
+    key = _otp_key(params.get("secret", ""))
+    period = int(params.get("period") or 30)
+    digits = int(params.get("digits") or 6)
+    algorithm = {"SHA256": hashlib.sha256, "SHA512": hashlib.sha512}.get(params.get("algorithm", "").upper(),
+                                                                        hashlib.sha1)
+    now = time.time() if at is None else at
+    digest = hmac.new(key, int(now // period).to_bytes(8, "big"), algorithm).digest()
+    offset = digest[-1] & 0x0F
+    number = int.from_bytes(digest[offset:offset + 4], "big") & 0x7FFFFFFF
+    return str(number % 10 ** digits).zfill(digits), period - int(now % period)
+
+
+def codes_for_page(url: str) -> list[dict]:
+    """The logins for a page that have a two-factor setup key."""
+    return [e for e in for_page(url) if e.get("otp")]
 
 
 COMMON = {"password", "password1", "123456", "12345678", "123456789", "1234567890", "qwerty", "qwerty123",
@@ -235,7 +297,27 @@ COLUMNS = {  # (each app's names for the same things, lowercased)
     "username": ("username", "login_username", "user name", "login", "email"),
     "password": ("password", "login_password"),
     "note": ("notes", "note", "comments"),
+    "otp": ("otpauth", "login_totp", "totp", "otp", "otp url"),
 }
+
+
+def export_csv(entries: list[dict]) -> str:
+    """Logins as a CSV in the layout Apple's Passwords exports (which it, Chrome, and Eclipse all import)."""
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\n")
+    writer.writerow(["Title", "URL", "Username", "Password", "Notes", "OTPAuth"])
+    for entry in sorted(entries, key=lambda e: (site_of(e["origin"]), e["username"])):
+        writer.writerow([site_of(entry["origin"]), entry["origin"] + "/", entry["username"], entry["password"],
+                         entry.get("note", ""), entry.get("otp", "")])
+    return out.getvalue()
+
+
+def write_export(path: str, entries: list[dict]):
+    """The export, readable by this account only (it's every password, in plain text)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        os.fchmod(f.fileno(), 0o600)  # (a file that was already there keeps its mode otherwise)
+        f.write(export_csv(entries))
 
 
 def parse_csv(text: str) -> list[dict]:
@@ -257,7 +339,8 @@ def parse_csv(text: str) -> list[dict]:
         if not url.startswith(("https://", "http://")):
             url = "https://" + url  # (a bare "example.com")
         rows.append({"url": url, "username": (row.get(pick["username"]) or "").strip() if pick["username"] else "",
-                     "password": password, "note": (row.get(pick["note"]) or "").strip() if pick["note"] else ""})
+                     "password": password, "note": (row.get(pick["note"]) or "").strip() if pick["note"] else "",
+                     "otp": otp_link(row.get(pick["otp"]) or "") if pick["otp"] else None})
     return rows
 
 
@@ -277,10 +360,14 @@ def import_rows(rows: list[dict], source: str) -> tuple[int, int, int]:
                 "id": os.urandom(8).hex(), "origin": origin, "username": row["username"], "created": now,
                 "last_used": None, "password": row["password"], "note": row.get("note", ""), "changed": now,
                 "source": source}
+            if row.get("otp"):
+                found["otp"] = row["otp"]
             entries.append(found)
             added += 1
-        elif found["password"] != row["password"]:
+        elif found["password"] != row["password"] or (row.get("otp") and found.get("otp") != row["otp"]):
             found.update(password=row["password"], changed=now, source=source)
+            if row.get("otp"):
+                found["otp"] = row["otp"]  # (a file exported again brings the codes along: one never goes away)
             changed += 1
         else:
             same += 1
@@ -288,17 +375,22 @@ def import_rows(rows: list[dict], source: str) -> tuple[int, int, int]:
     return added, changed, same
 
 
-def arc_installed() -> bool:
-    try:
-        return any((p / "Login Data").exists() for p in ARC_PROFILES.iterdir())
-    except OSError:
-        return False
+def browsers_installed() -> list[str]:
+    """The browsers here with saved passwords to import (in CHROMIUM_BROWSERS' order)."""
+    found = []
+    for name, (folder, _service) in CHROMIUM_BROWSERS.items():
+        try:
+            if any((p / "Login Data").exists() for p in folder.iterdir()):
+                found.append(name)
+        except OSError:
+            pass
+    return found
 
 
-def arc_secret() -> bytes | None:
-    """Arc's key for its saved passwords, from the Keychain: macOS asks you first (it's Arc's)."""
+def browser_secret(name: str) -> bytes | None:
+    """A browser's key for its saved passwords, from the Keychain: macOS asks you first (it's that browser's)."""
     try:
-        done = subprocess.run(["security", "find-generic-password", "-s", "Arc Safe Storage", "-w"],
+        done = subprocess.run(["security", "find-generic-password", "-s", CHROMIUM_BROWSERS[name][1], "-w"],
                               capture_output=True, timeout=120)
     except (OSError, subprocess.SubprocessError):
         return None
@@ -319,9 +411,9 @@ def chromium_decrypt(value: bytes, secret: bytes) -> str | None:
         return None
 
 
-def read_arc(secret: bytes, folder: Path | None = None) -> list[dict]:
-    """Every login Arc saved, in every profile (read from a copy: Arc may have them open)."""
-    folder = folder or ARC_PROFILES
+def read_browser(name: str, secret: bytes, folder: Path | None = None) -> list[dict]:
+    """Every login a browser saved, in every profile (read from a copy: it may have them open)."""
+    folder = folder or CHROMIUM_BROWSERS[name][0]
     rows, seen = [], set()
     with tempfile.TemporaryDirectory() as scratch:
         for profile in sorted(p for p in folder.iterdir() if p.is_dir()):

@@ -157,7 +157,8 @@ def test_a_bad_certificate_can_be_visited_anyway(window, bad_https):
 def _real_dictionary():
     """Chrome's en-US dictionary, if this Mac has one (Settings downloads it the first time spell check is on)."""
     for path in (os.environ.get("PB_TEST_DICTIONARY", ""),
-                 os.path.expanduser("~/Library/Application Support/MasonKimball05/PythonBrowser/dictionaries/en-US.bdic")):
+                 *(os.path.expanduser(f"~/Library/Application Support/MasonKimball05/{name}/dictionaries/en-US.bdic")
+                   for name in ("Eclipse", "PythonBrowser"))):  # (the folder's old name, until Eclipse moves it)
         if path and os.path.isfile(path):
             return path
     pytest.skip("no en-US dictionary here yet: turn spell check on once, or set PB_TEST_DICTIONARY")
@@ -1577,6 +1578,23 @@ def test_a_sign_in_frame_of_the_same_site_is_filled_and_another_sites_never_is(w
     tab = open_page(window, f"{other}/login.html")
     assert loaded(tab.view)
     assert wait_until(lambda: window.passwords.card_for(tab.view) is not None, 10)
+
+
+def test_a_verification_code_is_filled_after_touch_id(window, site, monkeypatch):
+    from browser import password_store
+    asked = _stand_ins(monkeypatch)
+    page = site.replace("127.0.0.1", "localhost")
+    saved = password_store.add(page, "arkan@example.com", "with codes")
+    password_store.update(saved["id"], otp=password_store.otp_link("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"))
+    now = lambda: {password_store.otp_code(saved_otp, time.time() + d)[0] for d in (-30, 0)}  # noqa: E731
+    saved_otp = password_store.logins()[0]["otp"]
+    for page_name, read in (("verify.html", "document.getElementById('code').value"),
+                            ("verify-boxes.html", "[...document.querySelectorAll('input')].map(i => i.value).join('')")):
+        tab = open_page(window, f"{page}/{page_name}")
+        assert wait_until(lambda: type(window.passwords.card_for(tab.view)).__name__ == "CodeCard", 5), page_name
+        _click_when_ready(window.passwords.card_for(tab.view), "arkan@example.com")
+        assert wait_until(lambda: run_js(tab.view, read, world=0) in now(), 5), page_name
+    assert asked == ["fill your verification code for localhost"]  # (once each time Eclipse opens)
 
 
 def test_signing_up_gets_a_strong_password_thats_saved(window, site, monkeypatch):

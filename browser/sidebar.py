@@ -31,8 +31,8 @@ from .models import FAVORITES, PINNED, TODAY, Folder, Tab, display_host, walk_fo
 from .icons import is_symbol, space_icon, symbol
 from .theme import legible, letter_icon, noise_pixmap, overlay_scrollbar
 
-TAB_MIME = "application/x-pybrowser-tab"
-TABS_MIME = "application/x-pybrowser-tabs"  # several picked tabs dragged together: their ids, in order
+TAB_MIME = "application/x-eclipse-tab"
+TABS_MIME = "application/x-eclipse-tabs"  # several picked tabs dragged together: their ids, in order
 PILL_ICON = 13
 PILL_ICON_DROP = 1.5  # the URL pill's icon sits this much lower than centre, level with the lowercase text
 

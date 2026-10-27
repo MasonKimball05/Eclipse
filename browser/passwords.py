@@ -17,8 +17,10 @@
 
 import json
 import secrets
+import sqlite3
 import threading
 import time
+from pathlib import Path
 
 from PyQt6.QtCore import QObject, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtWebEngineCore import QWebEngineScript
@@ -64,10 +66,28 @@ SOURCE = r"""
     /(^|\s)username(\s|$)/.test(input.getAttribute('autocomplete') || '') ||
     (input.getAttribute('type') || '').toLowerCase() === 'email' ||
     /(user|email|login|identifier)/i.test((input.name || '') + ' ' + (input.id || ''))));
+  // A two-factor code's field: marked so, or named like one; or a row of one-character boxes, one per digit
+  const CODE = /(one.?time|otp|totp|2fa|mfa|verification|auth.?code|security.?code|^code$|passcode)/i;
+  const named = input => [input.name, input.id, input.getAttribute('aria-label'), input.placeholder]
+    .some(text => text && CODE.test(text));
+  const codeFields = () => {
+    const inputs = [...document.querySelectorAll('input')].filter(input => shown(input) &&
+      ['text', 'tel', 'number', ''].includes((input.getAttribute('type') || '').toLowerCase()));
+    const marked = inputs.filter(i => /one-time-code/.test(i.getAttribute('autocomplete') || '') || named(i));
+    const boxes = inputs.filter(i => i.maxLength === 1);
+    if (boxes.length >= 4 && boxes.length <= 8 && (marked.length === 0 || marked.every(m => boxes.includes(m))))
+      return boxes;
+    return marked.slice(0, 1);
+  };
   let announced = false;
   const look = () => {
     const fields = passwords();
     if (fields.length && announced !== 'password') { announced = 'password'; tell({kind: 'form'}); }
+    if (!fields.length && announced !== 'code' && codeFields().length) {
+      announced = 'code';
+      tell({kind: 'form', step: 'code'});
+      return;
+    }
     if (!fields.length && !announced) {
       const user = loneUser();
       if (user) {
@@ -127,6 +147,13 @@ SOURCE = r"""
     set(pass, password);
     return true;
   }});
+  Object.defineProperty(window, '__eclipseCode', {value: (token, code) => {
+    if (token !== TOKEN) return false;
+    const fields = codeFields();
+    if (fields.length > 1) fields.forEach((field, i) => set(field, code[i] || ''));
+    else if (fields.length) set(fields[0], code);
+    return fields.length > 0;
+  }});
   Object.defineProperty(window, '__eclipseNewPassword', {value: (token, password) => {
     if (token !== TOKEN) return false;
     const fields = newPasswords();
@@ -166,6 +193,25 @@ class FillCard(PageCard):
             button = QPushButton(label)
             button.setObjectName("PermissionAllow")
             button.clicked.connect(lambda _=False, entry=login: manager.fill(self, entry))
+            self.body.addWidget(button)
+        self._buttons(("Not Now", lambda: manager.close(self), False))
+        self.arm()
+        self.place()
+
+
+class CodeCard(PageCard):
+    """A two-factor code's page: the code for one of your accounts there, filled in."""
+
+    def __init__(self, manager, view, host, logins, frame=None):
+        super().__init__(manager, view, host)
+        self.frame = frame
+        site = password_store.site_of(frame or view.url().toString())
+        self._set_icon("ph.shield-check")
+        self._text(f"Fill in your verification code for <b>{_escape(site)}</b>?")
+        for login in logins[:6]:
+            button = QPushButton(login["username"] or "Your account")
+            button.setObjectName("PermissionAllow")
+            button.clicked.connect(lambda _=False, entry=login: manager.fill_code(self, entry))
             self.body.addWidget(button)
         self._buttons(("Not Now", lambda: manager.close(self), False))
         self.arm()
@@ -265,7 +311,12 @@ class Passwords(QObject):
             if not password_store.same_site(QUrl(frame).host(), QUrl(url).host()):
                 return
             url = frame
-        if said.get("kind") == "form":
+        if said.get("kind") == "form" and said.get("step") == "code":
+            if self.settings.get(FILL_SETTING, True) and id(view) not in self._cards:
+                found = password_store.codes_for_page(url)
+                if found:
+                    self._show(view, CodeCard(self, view, self._host(view), found, frame))
+        elif said.get("kind") == "form":
             if self.settings.get(FILL_SETTING, True) and id(view) not in self._cards:
                 found = password_store.for_page(url)
                 if found:
@@ -339,6 +390,19 @@ class Passwords(QObject):
             self.close(card)
             return
         password_store.update(login["id"], last_used=time.time())
+        self.close(card)
+
+    def fill_code(self, card, login):
+        site = password_store.site_of(card.frame or card.view.url().toString())
+        self._unlock(f"fill your verification code for {site}", lambda: self._fill_code(card, login))
+
+    def _fill_code(self, card, login):
+        if _gone(card):
+            return
+        code, _left = password_store.otp_code(login["otp"])  # (made now: after Touch ID, not when the card came)
+        call = (f"window.__eclipseCode && window.__eclipseCode({json.dumps(self.token)}, {json.dumps(code)})")
+        if not _run_in(card.view, card.frame, call):
+            self.browser.toast("That form isn't on the page any more")
         self.close(card)
 
     def _unlock(self, reason, then):
@@ -530,7 +594,9 @@ def _login_dialog(parent, login=None):
     username = QLineEdit(login["username"] if login else "")
     password = QLineEdit(login["password"] if login else "")
     password.setEchoMode(QLineEdit.EchoMode.Password)
-    for field in (url, username, password):
+    code = QLineEdit(login.get("otp", "") if login else "")
+    code.setPlaceholderText("Optional: the setup key under the site's QR code")
+    for field in (url, username, password, code):
         field.setMinimumWidth(320)
     show = QCheckBox("Show password")
     show.toggled.connect(lambda on: password.setEchoMode(QLineEdit.EchoMode.Normal if on
@@ -542,6 +608,7 @@ def _login_dialog(parent, login=None):
     form.addRow("Password", password)
     form.addRow("", show)
     form.addRow("", suggest)
+    form.addRow("Verification codes", code)
     v.addLayout(form)
     problem = _wrapped("", hint=True)
     problem.hide()
@@ -554,7 +621,9 @@ def _login_dialog(parent, login=None):
         if address and "://" not in address:
             address = "https://" + address
         wrong = ("Enter the website's address." if not QUrl(address).host() else
-                 "Enter the password." if not password.text() else "")
+                 "Enter the password." if not password.text() else
+                 "That isn't a setup key (it's letters A–Z and digits 2–7, or an otpauth:// link)."
+                 if code.text().strip() and not password_store.otp_link(code.text()) else "")
         if wrong:
             problem.setText(wrong)
             problem.show()
@@ -565,7 +634,8 @@ def _login_dialog(parent, login=None):
     buttons.rejected.connect(dialog.reject)
     if not dialog.exec():
         return None
-    return {"url": url.text(), "username": username.text().strip(), "password": password.text()}
+    return {"url": url.text(), "username": username.text().strip(), "password": password.text(),
+            "otp": password_store.otp_link(code.text()) or ""}
 
 
 def settings_page(settings):
@@ -622,26 +692,27 @@ def settings_page(settings):
         fill()
         return True
 
-    def from_arc():
-        if QMessageBox.question(settings, "Import from Arc",
-                                "macOS will ask whether Eclipse may use Arc's key for its saved passwords. Click "
-                                "Allow (not Always Allow) to bring them over.") != QMessageBox.StandardButton.Yes:
+    def from_browser(name):
+        title = f"Import from {name}"
+        if QMessageBox.question(settings, title,
+                                f"macOS will ask whether Eclipse may use {name}'s key for its saved passwords. Click "
+                                f"Allow (not Always Allow) to bring them over.") != QMessageBox.StandardButton.Yes:
             return
         finished = _Done(page)
 
         def got(secret):
             if secret is None:
-                QMessageBox.warning(settings, "Import from Arc", "Arc's passwords couldn't be opened (macOS wasn't "
-                                                                 "allowed to share Arc's key).")
+                QMessageBox.warning(settings, title, f"{name}'s passwords couldn't be opened (macOS wasn't allowed "
+                                                     f"to share {name}'s key).")
                 return
             try:
-                rows = busy(lambda: password_store.read_arc(secret))
-            except OSError as error:
-                QMessageBox.warning(settings, "Import from Arc", f"Couldn't read Arc's passwords: {error}")
+                rows = busy(lambda: password_store.read_browser(name, secret))
+            except (OSError, sqlite3.Error) as error:
+                QMessageBox.warning(settings, title, f"Couldn't read {name}'s passwords: {error}")
                 return
-            imported(rows, "Arc")
+            imported(rows, name)
         finished.done.connect(got)
-        threading.Thread(target=lambda: finished.done.emit(password_store.arc_secret()), daemon=True).start()
+        threading.Thread(target=lambda: finished.done.emit(password_store.browser_secret(name)), daemon=True).start()
 
     def from_file():
         path, _ = QFileDialog.getOpenFileName(settings, "Import Passwords", "", "Passwords export (*.csv)")
@@ -657,6 +728,33 @@ def settings_page(settings):
                 settings, "Import Passwords", "That file holds every password in it as plain text. Move it to the "
                                               "Trash?") == QMessageBox.StandardButton.Yes:
             QFile.moveToTrash(path)
+
+    def export():
+        def chosen():
+            if QMessageBox.warning(
+                    settings, "Export Passwords", "The file will hold every saved password as plain text: anyone who "
+                    "gets it can read them. Delete it once you've imported it where you're taking them.",
+                    QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Save,
+                    QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Save:
+                return
+            path, _ = QFileDialog.getSaveFileName(settings, "Export Passwords",
+                                                  str(Path.home() / "Documents" / "Eclipse Passwords.csv"),
+                                                  "Passwords export (*.csv)")
+            if not path:
+                return
+            try:
+                entries = password_store.logins()
+                password_store.write_export(path, entries)
+            except (password_store.Locked, OSError) as error:
+                QMessageBox.warning(settings, "Export Passwords", str(error) or "Your saved passwords are locked.")
+                return
+            browser.toast(f"Exported {len(entries)} password{'' if len(entries) == 1 else 's'}")
+        answer = page._checking = _Answer(page)
+        answer.answered.connect(lambda ok: ok and chosen())
+        if not macos.can_verify_owner():
+            chosen()
+        elif not macos.verify_owner("export your saved passwords", answer.answered.emit):
+            browser.toast("This Mac couldn't check it's you")
 
     def show_passwords():
         if state["shown"]:
@@ -681,11 +779,20 @@ def settings_page(settings):
         browser.toast(f"Copied the password for {password_store.site_of(login['origin'])}: it's cleared in a minute")
         QTimer.singleShot(60_000, lambda: clipboard.text() == login["password"] and clipboard.clear())
 
+    def copy_code(login):
+        code, left = password_store.otp_code(login["otp"])
+        clipboard = QApplication.clipboard()
+        clipboard.setText(code)
+        browser.toast(f"Copied the code for {password_store.site_of(login['origin'])}: good for {left} more seconds")
+        QTimer.singleShot(60_000, lambda: clipboard.text() == code and clipboard.clear())
+
     def add_login():
         made = _login_dialog(settings)
         if made is not None:
             try:
-                password_store.add(made["url"], made["username"], made["password"], source="Eclipse")
+                saved = password_store.add(made["url"], made["username"], made["password"], source="Eclipse")
+                if made["otp"]:
+                    password_store.update(saved["id"], otp=made["otp"])
             except (password_store.Locked, OSError) as error:
                 QMessageBox.warning(settings, "Add Password", "Your saved passwords need your recovery PIN first."
                                     if isinstance(error, password_store.Locked) else str(error))
@@ -745,10 +852,13 @@ def settings_page(settings):
             logins, locked = [], True
         import_button = QPushButton("Import ▾")
         menu = QMenu(import_button)
-        if password_store.arc_installed():
-            menu.addAction("From Arc…", from_arc)
+        for name in password_store.browsers_installed():
+            menu.addAction(f"From {name}…", lambda _=False, n=name: from_browser(n))
         menu.addAction("From a File (Passwords, Chrome, Firefox…)…", from_file)
         import_button.setMenu(menu)
+        export_button = QPushButton("Export…")
+        export_button.clicked.connect(export)
+        export_button.setEnabled(bool(logins))
         show_button = QPushButton("Hide" if state["shown"] else "Show…")
         show_button.clicked.connect(show_passwords)
         show_button.setEnabled(bool(logins))
@@ -759,6 +869,7 @@ def settings_page(settings):
         add_button.clicked.connect(add_login)
         add_button.setEnabled(not locked)
         h.addWidget(import_button)
+        h.addWidget(export_button)
         h.addWidget(add_button)
         h.addWidget(show_button)
         count = len(logins)
@@ -805,6 +916,7 @@ def settings_page(settings):
                 a = QHBoxLayout(actions)
                 a.setContentsMargins(0, 0, 0, 0)
                 for label, act in (("Copy", lambda _=False, e=login: copy(e)),
+                                   *([("Code", lambda _=False, e=login: copy_code(e))] if login.get("otp") else []),
                                    ("Edit", lambda _=False, e=login: edit_login(e)),
                                    ("Remove", lambda _=False, e=login: remove_login(e))):
                     button = QPushButton(label)
@@ -812,16 +924,17 @@ def settings_page(settings):
                     a.addWidget(button)
                 flags = {"reused": "⚠︎ reused", "weak": "⚠︎ easy to guess"}
                 note = "".join(f" · {flags[i]}" for i in issues.get(login["id"], []))
+                note += " · verification codes" if login.get("otp") else ""
                 listed.append(settings._row(site, (login["username"] or "No username") + note, actions))
             cards.append(settings._card(listed))
         # iCloud Keychain
         icloud = QCheckBox()
         icloud.setEnabled(False)
-        icloud.setToolTip("Needs a signed release of Eclipse")
+        icloud.setToolTip("Waiting for Apple's approval")
         cards.append(settings._card([settings._row(
-            "Use iCloud Keychain", "Coming once Eclipse is a signed release: macOS lets only signed browsers use "
-                                   "iCloud Keychain. Passwords and passkeys saved here can then move over with "
-                                   "macOS's import.", icloud)]))
+            "Use iCloud Keychain", "Coming once Apple approves Eclipse as a browser for it (macOS lets only approved "
+                                   "browsers use iCloud Keychain). Passwords and passkeys saved here can then move "
+                                   "over with macOS's import.", icloud)]))
         # Passkeys
         passkeys = sorted(passkey_store.all_passkeys(), key=lambda p: (p["rp_id"], p.get("user_name", "")))
         listed = []

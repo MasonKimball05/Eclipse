@@ -326,6 +326,67 @@ class SettingsWindow(FadesIn, QWidget):
 
     # --- Pages ---------------------------------------------------------------------------
 
+    def _updates_row(self, feature):
+        """Updates: the version that's running, what the last look found, and (while it comes) the download."""
+        from PyQt6 import sip
+        from PyQt6.QtWidgets import QProgressBar
+        from .self_update import this_version
+        updater = feature.updater
+        control = QWidget()
+        h = QHBoxLayout(control)
+        h.setContentsMargins(0, 0, 0, 0)
+        auto = QCheckBox("Automatically")
+        auto.setChecked(self.store.settings.get("app_updates", True))
+        auto.toggled.connect(lambda on: self._setting("app_updates", on))
+        check = QPushButton("Check Now")
+        check.clicked.connect(feature.check)
+        h.addWidget(auto)
+        h.addWidget(check)
+        row = self._row("Updates", " ", control)
+        line = row.findChildren(QLabel, "Hint")[0]
+        # (under the words, while there's an update: its button, then the download's progress)
+        bar = QProgressBar()
+        bar.setFixedSize(220, 6)
+        bar.setTextVisible(False)
+        install = QPushButton("Update && Restart")
+        install.setObjectName("PermissionAllow")
+        install.clicked.connect(updater.update_and_restart)
+        below = QWidget()
+        b = QHBoxLayout(below)
+        b.setContentsMargins(0, 6, 0, 0)
+        b.addWidget(install)
+        b.addWidget(bar)
+        b.addStretch(1)
+        row.layout().itemAt(0).layout().addWidget(below)
+        version = this_version()
+
+        def show():
+            if sip.isdeleted(line):
+                return
+            status = updater.status
+            state = status.get("state")
+            found = (f"{status.get('version') or 'A new version'} is ready" if "build" in status else
+                     f"{status.get('behind', 0)} new change{'s' if status.get('behind') != 1 else ''} on GitHub")
+            words = {
+                "idle": f"Once a day, {brand.NAME} looks for a newer version and offers it.",
+                "checking": "Checking…",
+                "current": "Up to date.",
+                "available": found + (": " + "; ".join(status["subjects"][:3]) if status.get("subjects") else "") + ".",
+                "blocked": f"{found}, but it can't update itself: {status.get('reason', '')}",
+                "unavailable": status.get("reason", "Couldn't check."),
+                "downloading": f"Downloading {status.get('version', 'the update')}… {status.get('percent', 0)}%",
+                "failed": status.get("reason", "The update didn't work."),
+            }
+            line.setText(f"{version}\n{words.get(state, '')}")
+            bar.setVisible(state == "downloading")
+            bar.setValue(status.get("percent", 0))
+            install.setVisible(state == "available")
+            below.setVisible(state in ("available", "downloading"))
+            check.setEnabled(state not in ("checking", "downloading"))
+        updater.status_changed.connect(show)
+        show()
+        return row
+
     def _verified_row(self):
         """This copy of Eclipse: Verified (a signed release, unchanged), or why not."""
         seal = QLabel()
@@ -390,18 +451,7 @@ class SettingsWindow(FadesIn, QWidget):
             button.clicked.connect(slot)
             b.addWidget(button)
 
-        updates = QWidget()
-        u = QHBoxLayout(updates)
-        u.setContentsMargins(0, 0, 0, 0)
-        auto = QCheckBox("Automatically")
-        auto.setChecked(self.store.settings.get("app_updates", True))
-        auto.toggled.connect(lambda on: self._setting("app_updates", on))
-        check = QPushButton("Check Now")
         updater = self.browser.feature("self_update")
-        if updater is not None:
-            check.clicked.connect(updater.check)
-        u.addWidget(auto)
-        u.addWidget(check)
 
         self.spell_box = QCheckBox()
         self.spell_box.setChecked(self.store.settings.get(spelling.SETTING, False))
@@ -452,9 +502,7 @@ class SettingsWindow(FadesIn, QWidget):
             self._card([self._row("Backup", "Spaces, tabs, settings, notes, Boosts, userscripts, extensions, "
                                             "passwords and passkeys (locked with your recovery PIN) in one file. "
                                             "Cookies aren't included.", backup_box),
-                        *([self._row("Updates", f"Once a day, look for a newer {brand.NAME} on GitHub and offer to "
-                                                "restart into it. A checkout with your own changes is never touched.",
-                                     updates)] if updater is not None else [])]),
+                        *([self._updates_row(updater)] if updater is not None else [])]),
         )
 
     def _tabs(self):
