@@ -1120,8 +1120,8 @@ class MainWindow(QMainWindow):
             host = QUrl(self.current_tab.url).host()
             self._allow_site(host, not self.adblock.is_allowed(host))
 
-    def toast(self, text, action=None, label="Undo"):
-        self.content.show_toast(text, action, label)
+    def toast(self, text, action=None, label="Undo", seconds=None):
+        self.content.show_toast(text, action, label, seconds)
 
     # --- Tabs ------------------------------------------------------------------------------
 
