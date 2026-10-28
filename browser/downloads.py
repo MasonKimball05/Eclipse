@@ -211,7 +211,13 @@ class DownloadItem(QObject):
         self.state = "running"              # running, done, failed, cancelled
         self.path: str | None = None
 
+    can_pause = False  # (a page's download can; yt-dlp's can't)
+    paused = False
+
     def cancel(self):
+        pass
+
+    def toggle_pause(self):
         pass
 
 
@@ -304,11 +310,22 @@ class BrowserDownload(DownloadItem):
         request.receivedBytesChanged.connect(self._update)
         request.totalBytesChanged.connect(self._update)
         request.isFinishedChanged.connect(self._update)
+        request.isPausedChanged.connect(self._update)
         self._update()
+
+    can_pause = True
+
+    @property
+    def paused(self):
+        return self.state == "running" and self.request.isPaused()
 
     def cancel(self):
         if self.state == "running":
             self.request.cancel()
+
+    def toggle_pause(self):
+        if self.state == "running":
+            self.request.resume() if self.request.isPaused() else self.request.pause()
 
     def _update(self):
         r = self.request
@@ -323,7 +340,8 @@ class BrowserDownload(DownloadItem):
             total = r.totalBytes()
             self.fraction = r.receivedBytes() / total if total > 0 else None
             mb = r.receivedBytes() / 1_000_000
-            self.status = f"{mb:.1f} MB" + (f" of {total / 1_000_000:.1f} MB" if total > 0 else "")
+            self.status = ("Paused · " if r.isPaused() else "") + f"{mb:.1f} MB" + (
+                f" of {total / 1_000_000:.1f} MB" if total > 0 else "")
         self.changed.emit()
 
 
@@ -354,6 +372,11 @@ class DownloadRow(QFrame):
         middle.addWidget(self.bar)
         middle.addWidget(self.status)
         layout.addLayout(middle, 1)
+        self.pause = QToolButton()  # (pause and resume, beside Cancel, while a page's download comes)
+        self.pause.setObjectName("IconButton")
+        self.pause.setIconSize(QSize(16, 16))
+        self.pause.clicked.connect(item.toggle_pause)
+        layout.addWidget(self.pause, 0, Qt.AlignmentFlag.AlignTop)
         self.action = QToolButton()
         self.action.setObjectName("IconButton")
         self.action.setIconSize(QSize(16, 16))
@@ -411,6 +434,12 @@ class DownloadRow(QFrame):
             self.bar.setRange(0, 1000)
             self.bar.setValue(int(item.fraction * 1000))
         running = item.state == "running"
+        self.pause.setVisible(running and item.can_pause)
+        self.pause.setIcon(qta.icon("ph.play-circle" if item.paused else "ph.pause-circle", color=self.color))
+        self.pause.setToolTip("Resume" if item.paused else "Pause")
+        self.pause.setAccessibleName(self.pause.toolTip())
+        if item.paused:
+            self.bar.setRange(0, 1000)  # (still: no busy animation while it waits)
         self.action.setVisible(running or (item.state == "done" and bool(item.path)))
         self.action.setIcon(qta.icon("ph.x-circle" if running else "ph.magnifying-glass", color=self.color))
         self.action.setToolTip("Cancel" if running else "Show in Finder")

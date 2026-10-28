@@ -418,6 +418,7 @@ class PrivateSession(QObject):
             self.browser.passkeys.attach_profile(self.profile)  # (security keys work there too)
             self.browser.passwords.attach_profile(self.profile)  # (filling works; saving still asks)
             spelling.apply([self.profile], self.browser.store.settings)
+            self.browser.apply_autoplay([self.profile])
             self.profile.downloadRequested.connect(self._download_started)
             self.profile.downloadRequested.connect(self.browser._on_download)
         window = PrivateWindow(self, url=url, request=request)

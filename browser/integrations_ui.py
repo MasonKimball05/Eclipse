@@ -323,10 +323,7 @@ class AppsUI(QObject):
         layout.setSpacing(14)
         store = self.browser.store
         cfg = self.cfg
-        form_card = QFrame()
-        form_card.setObjectName("OptionsCard")
-        form = QFormLayout(form_card)
-        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        row, card = settings_window._row, settings_window._card  # (laid out like the other Settings pages)
         fields = {}
         mine = defaults() is not GENERAL  # (the maker's copy: their own apps, by name)
         own = (("homebase", "Homebase"), ("parliament", "Parliament"), ("jobtracker", "Job Tracker"),
@@ -335,24 +332,19 @@ class AppsUI(QObject):
         general = (("github_user", "GitHub user"), ("repos_root", "Repos folder"), ("editor", "Open repos in"))
         placeholders = {"github_user": "your GitHub username", "repos_root": "~/Projects (where you clone repos)",
                         "editor": "an app, like Visual Studio Code"}
+        rows = [row("Your apps" if mine else "GitHub",
+                    "Clear an address to leave that app out. The desktop ones are reached over Tailscale." if mine
+                    else "Your GitHub account gets a Live Folder of your repos and a search shortcut (mygh); a repo "
+                         "you have cloned gets Open Repo in your app, from its GitHub page.", None)]
         for key, label in own + general:
             edit = QLineEdit(cfg.get(key, ""))
             edit.setPlaceholderText(defaults().get(key) or placeholders.get(key, ""))
+            edit.setFixedWidth(300)
             edit.editingFinished.connect(lambda k=key, e=edit: self._save(k, e.text().strip()))
             fields[key] = edit
-            form.addRow(label, edit)
-        hint = FittedLabel("Clear an address to leave that app out. The desktop ones are reached over Tailscale."
-                           if mine else "Your GitHub account gets a Live Folder of your repos and a search shortcut "
-                           "(mygh); a repo you have cloned gets Open Repo in your app, from its GitHub page.")
-        hint.setObjectName("Hint")
-        hint.setWordWrap(True)
-        form.addRow("", hint)
-        layout.addWidget(form_card)
+            rows.append(row(label, None, edit))
+        layout.addWidget(card(rows))
 
-        ai_card = QFrame()
-        ai_card.setObjectName("OptionsCard")
-        ai = QFormLayout(ai_card)
-        ai.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         who = QComboBox()
         who.addItem("Claude", "claude")
         who.addItem("Local AI on homebase" if mine else "Local AI (Ollama)", "local")
@@ -365,22 +357,18 @@ class AppsUI(QObject):
         # (the answer can come after Settings has closed: then there's nothing to fill in)
         self.feature.local_ai.models(lambda names: sip.isdeleted(model) or [
             model.addItem(n) for n in names if n != cfg["local_model"]])
-        ai.addRow("Questions answered by", who)
         server = QLineEdit(cfg.get("ollama", ""))
         server.setPlaceholderText("through Homebase" if mine else "http://localhost:11434")
         server.editingFinished.connect(lambda: self._save("ollama", server.text().strip()))
-        ai.addRow("Ollama server", server)
-        ai.addRow("Local model", model)
-        note = FittedLabel("For ⌘T questions and Ask on Page (⌘F, then a question). The other one is always a row "
-                      "below in ⌘T. Tidy, Translate and Browse for Me stay with Claude.")
-        note.setObjectName("Hint")
-        note.setWordWrap(True)
-        ai.addRow("", note)
-        layout.addWidget(ai_card)
+        for widget in (who, server, model):
+            widget.setFixedWidth(300)
+        layout.addWidget(card([
+            row("Questions answered by", "For ⌘T questions and Ask on Page (⌘F, then a question). The other one is "
+                                         "always a row below in ⌘T. Tidy, Translate and Browse for Me stay with "
+                                         "Claude.", who),
+            row("Ollama server", None, server),
+            row("Local model", None, model)]))
 
-        setup = QFrame()
-        setup.setObjectName("OptionsCard")
-        sv = QVBoxLayout(setup)
         add_folders = QPushButton("Add Live Folders for My Apps…")
         add_folders.clicked.connect(self.add_live_folders)
         widgets = [add_folders]
@@ -395,9 +383,12 @@ class AppsUI(QObject):
                                   f"{'…' if len(hop) > 6 else ''})")
             add_hop.clicked.connect(lambda: self.add_search_shortcuts(hop_quicklinks()))
             widgets.append(add_hop)
+        setup = row("Quick setup", "Live Folders and search shortcuts for these apps, in a click.", None)
+        words = setup.layout().itemAt(0).layout()
+        words.addSpacing(6)
         for widget in widgets:
-            sv.addWidget(widget, 0, Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(setup)
+            words.addWidget(widget, 0, Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(card([setup]))
         layout.addStretch(1)
         return page
 

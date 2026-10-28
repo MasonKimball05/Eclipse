@@ -8,12 +8,18 @@ from . import brand
 from .motion import FadesIn
 from .theme import quiet_scrollbars, stylesheet
 
-EDITION = 16
+EDITION = 17
 SETTING = "whats_new_seen"
 
 NOTES = """
 ## Lately
 
+- **A start view**: with no tab open, the sites you visit most and the tabs you closed last, on your Space's
+  colours (Settings → Tabs → Start view turns it off).
+- **Videos wait for a click** (Settings → Privacy): nothing plays by itself.
+- **Pause downloads**: a button beside Cancel in Downloads pauses and resumes.
+- **Tidier Settings**: Downloads, Profiles, Air Traffic Control, Extensions and My Apps are laid out like the
+  rest, and the Saved passwords buttons have a line of their own.
 - **Updates** come in a window of their own, with what's new, a progress bar, and Skip This Version. Eclipse
   looks every few hours.
 - **More room** in the sidebar's top row, and the traffic lights stay put when you point at them.

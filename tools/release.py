@@ -6,6 +6,7 @@ Run it with:   ./run.sh --release                     (dist/Eclipse.app and dist
                ./run.sh --release --notarize PROFILE --publish
                                                       (…and put on GitHub as a release, which every
                                                       release copy offers to update to: release_update.py)
+               (each makes dist/Eclipse.dmg too: the drag-to-Applications window people download)
                ./run.sh --release --publish-built     (put the release already in dist/ on GitHub, without
                                                       building or notarizing again, once its code is committed
                                                       and pushed exactly as it was built)
@@ -372,6 +373,84 @@ def _team(identity: str) -> str:
 
 # --- Putting it together ------------------------------------------------------------------------------------
 
+# --- The DMG: the window people download, Eclipse beside an Applications folder to drag it to ------------------
+
+DMG_SIZE = (660, 420)  # (the window, in points)
+DMG_ICONS = {"app": (180, 200), "Applications": (480, 200)}
+
+
+def dmg_background(folder: Path) -> Path:
+    """The DMG window's picture, at 1x and 2x (one TIFF, so Retina screens get the sharp one): the night sky of
+    Eclipse's icon, an arrow from where Eclipse sits to the Applications folder, and what to do."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PyQt6.QtCore import QPointF, QRectF, Qt
+    from PyQt6.QtGui import QColor, QFont, QGuiApplication, QImage, QLinearGradient, QPainter, QPainterPath, QPen
+    app = QGuiApplication.instance() or QGuiApplication(["eclipse-dmg"])  # noqa: F841 (fonts need one)
+    paths = []
+    for scale in (1, 2):
+        w, h = DMG_SIZE
+        image = QImage(w * scale, h * scale, QImage.Format.Format_ARGB32)
+        image.setDevicePixelRatio(scale)
+        p = QPainter(image)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        sky = QLinearGradient(0, 0, w, h)
+        sky.setColorAt(0, QColor("#1e1b4b"))
+        sky.setColorAt(1, QColor("#020617"))
+        p.fillRect(QRectF(0, 0, w, h), sky)
+        (ax, ay), (bx, by) = DMG_ICONS["app"], DMG_ICONS["Applications"]
+        start, end = QPointF(ax + 84, ay), QPointF(bx - 84, by)
+        pen = QPen(QColor(255, 210, 122, 200), 4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        arc = QPainterPath(start)
+        arc.quadTo(QPointF((start.x() + end.x()) / 2, ay - 34), end)
+        p.drawPath(arc)
+        head = QPainterPath(end)  # (the arrow's head, along the curve's last direction)
+        head.lineTo(end + QPointF(-14, -10))
+        head.moveTo(end)
+        head.lineTo(end + QPointF(-14, 9))
+        p.drawPath(head)
+        p.setPen(QColor(242, 242, 244, 210))
+        font = QFont("Helvetica Neue", 15)
+        font.setWeight(QFont.Weight.DemiBold)
+        p.setFont(font)
+        p.drawText(QRectF(0, h - 96, w, 28), Qt.AlignmentFlag.AlignCenter, f"Drag {NAME} into Applications")
+        p.end()
+        path = folder / ("background.png" if scale == 1 else "background@2x.png")
+        image.save(str(path))
+        paths.append(path)
+    tiff = folder / "background.tiff"
+    run("tiffutil", "-cathidpicheck", *paths, "-out", tiff)
+    return tiff
+
+
+def make_dmg(app: Path, identity: str) -> Path:
+    """dist/Eclipse.dmg: Eclipse and an Applications shortcut, laid out over the background (dmgbuild writes the
+    window's layout itself: nothing on your screen moves while it builds), then signed."""
+    import dmgbuild  # (in the release venv: tools/release_python.py)
+    dmg = DIST / f"{NAME}.dmg"
+    dmg.unlink(missing_ok=True)
+    with tempfile.TemporaryDirectory() as scratch:
+        settings = {
+            "files": [str(app)], "symlinks": {"Applications": "/Applications"},
+            "icon_locations": {app.name: DMG_ICONS["app"], "Applications": DMG_ICONS["Applications"]},
+            "background": str(dmg_background(Path(scratch))), "window_rect": ((200, 160), DMG_SIZE),
+            "icon_size": 128, "text_size": 13, "show_status_bar": False, "show_toolbar": False,
+            "show_sidebar": False, "format": "ULFO", "filesystem": "APFS",
+            "badge_icon": None, "default_view": "icon-view", "show_icon_preview": False,
+        }
+        dmgbuild.build_dmg(str(dmg), NAME, settings=settings)
+    run("codesign", "--force", "--timestamp", "--sign", identity, dmg)
+    return dmg
+
+
+def notarize(path: Path, profile: str):
+    print(f"Sending {path.name} to Apple for notarization (usually a few minutes)…")
+    done = subprocess.run(["xcrun", "notarytool", "submit", str(path), "--keychain-profile", profile, "--wait"],
+                          text=True)
+    if done.returncode:
+        raise SystemExit(f"Notarization failed: `xcrun notarytool log <id> --keychain-profile {profile}` says why")
+
+
 def git(*args) -> str:
     return subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True,
                           env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"}).stdout.strip()
@@ -398,11 +477,12 @@ def release_notes() -> str:
     return log or "- Small fixes"
 
 
-def publish(archive: Path, build: str, version: str):
+def publish(archive: Path, build: str, version: str, dmg: Path | None = None):
+    """The release on GitHub: the zip (what updates download) and the DMG (what people download)."""
     tag = f"release-{build}"
     print(f"Publishing {tag} on GitHub…")
-    run("gh", "release", "create", tag, archive, "--target", git("rev-parse", "HEAD"),
-        "--title", f"{NAME} {version}", "--notes", release_notes())
+    run("gh", "release", "create", tag, archive, *([dmg] if dmg and dmg.exists() else []),
+        "--target", git("rev-parse", "HEAD"), "--title", f"{NAME} {version}", "--notes", release_notes())
     print(f"Published: every release copy of {NAME} will offer it within a day")
 
 
@@ -431,7 +511,10 @@ def publish_built():
         raise SystemExit("The release in dist/ was built from different code than this commit (" +
                          ", ".join(different[:5]) + "): build it again with --notarize PROFILE --publish")
     info = plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
-    publish(archive, info["CFBundleVersion"], info["CFBundleShortVersionString"])
+    dmg = DIST / f"{NAME}.dmg"
+    if dmg.exists() and subprocess.run(["xcrun", "stapler", "validate", str(dmg)], capture_output=True).returncode:
+        raise SystemExit("The DMG in dist/ isn't notarized: build it again with --notarize PROFILE")
+    publish(archive, info["CFBundleVersion"], info["CFBundleShortVersionString"], dmg)
 
 
 def release(identity: str, notary_profile: str | None, install: bool, publishing=False) -> Path:
@@ -471,20 +554,17 @@ def release(identity: str, notary_profile: str | None, install: bool, publishing
     sign_all(app, identity)
     size = sum(f.stat().st_size for f in app.rglob("*") if f.is_file() and not f.is_symlink()) // 1_000_000
     print(f"Signed: {app} ({size} MB)")
-    archive = DIST / f"{NAME}.zip"
+    print("Making the DMG…")
+    dmg = make_dmg(app, identity)
+    if notary_profile:
+        # One round with Apple: the DMG, whose ticket covers the app inside it too
+        notarize(dmg, notary_profile)
+        run("xcrun", "stapler", "staple", dmg)
+        run("xcrun", "stapler", "staple", app)
+        print("Notarized and stapled")
+    archive = DIST / f"{NAME}.zip"  # (what updates download: the stapled app)
     archive.unlink(missing_ok=True)
     run("ditto", "-c", "-k", "--keepParent", app, archive)
-    if notary_profile:
-        print("Sending to Apple for notarization (usually a few minutes)…")
-        done = subprocess.run(["xcrun", "notarytool", "submit", str(archive), "--keychain-profile", notary_profile,
-                               "--wait"], text=True)
-        if done.returncode:
-            raise SystemExit(f"Notarization failed: `xcrun notarytool log <id> --keychain-profile {notary_profile}`"
-                             " says why")
-        run("xcrun", "stapler", "staple", app)
-        archive.unlink()
-        run("ditto", "-c", "-k", "--keepParent", app, archive)  # (the zip to share: with the ticket inside)
-        print("Notarized and stapled")
     if install:
         if APP.exists():
             existing = plistlib.loads((APP / "Contents" / "Info.plist").read_bytes()).get("CFBundleIdentifier")
@@ -495,8 +575,8 @@ def release(identity: str, notary_profile: str | None, install: bool, publishing
         subprocess.run([build_app.LSREGISTER, "-f", str(APP)], check=False)
         print(f"Installed {APP}")
     if publishing:
-        publish(archive, build, version)
-    print(f"\nShare {archive}: it opens on Macs with Apple silicon and macOS {minimum} or later.")
+        publish(archive, build, version, dmg)
+    print(f"\nShare {dmg}: it opens on Macs with Apple silicon and macOS {minimum} or later.")
     return app
 
 

@@ -83,7 +83,7 @@ def make_venv():
     run(python, "-m", "venv", VENV)
     print("Installing Eclipse's requirements from PyPI…")
     subprocess.run([VENV / "bin" / "python", "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "-r",
-                    ROOT / "requirements.txt"], check=True)
+                    ROOT / "requirements.txt", "dmgbuild"], check=True)  # (dmgbuild: the DMG's window, tools/release.py)
     print(run(VENV / "bin" / "python", "-c", "import ssl, PyQt6.QtWebEngineWidgets; print('Ready:', ssl.OPENSSL_VERSION)"))
 
 

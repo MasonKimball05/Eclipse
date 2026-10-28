@@ -14,7 +14,7 @@ from PyQt6.QtCore import QByteArray, QEvent, QPoint, QRect, QSize, QStandardPath
 from PyQt6.QtGui import (QAction, QColor, QCursor, QDesktopServices, QGuiApplication, QIcon, QKeySequence,
                          QShortcut)
 from PyQt6.QtWebEngineCore import (QWebEngineDownloadRequest, QWebEngineNewWindowRequest, QWebEnginePage,
-                                   QWebEnginePermission, QWebEngineScript)
+                                   QWebEnginePermission, QWebEngineScript, QWebEngineSettings)
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import (QApplication, QColorDialog, QDialog, QFileDialog,
                              QHBoxLayout, QInputDialog, QLineEdit, QMainWindow, QMenu, QMessageBox, QSplitter,
@@ -67,6 +67,7 @@ from .timefmt import portable
 MAC = sys.platform == "darwin"
 # Qt maps "Ctrl" to ⌘ on macOS; the physical Control key is "Meta" there
 CONTROL = "Meta" if MAC else "Ctrl"
+AUTOPLAY_SETTING = "media_waits_for_click"  # (Settings → Privacy: videos don't play until you click)
 SIDEBAR_WIDTH = 250  # default; drag the sidebar's edge to change it
 SIDEBAR_GAP = 12     # between the sidebar's contents and the page: all of it is the resize edge
 
@@ -260,6 +261,8 @@ class MainWindow(QMainWindow):
                 panel.apply_theme()
         for corner in self.content.corners:
             corner.update()
+        if self.content.blank:
+            self.content.empty.refresh()  # (the start view, in the new Space's colours and name)
 
     def _schedule_rebuild(self):
         # Many store changes can land in one event loop pass; rebuild the sidebar once
@@ -420,6 +423,15 @@ class MainWindow(QMainWindow):
         self.notifications.attach_profile(profile)
         self.emit("profile_ready", profile)
         spelling.apply([profile], self.store.settings)
+        self.apply_autoplay([profile])
+
+    def apply_autoplay(self, profiles=None):
+        """Videos and sound wait for a click (Settings → Privacy), or play when a page starts them."""
+        wait = self.store.settings.get(AUTOPLAY_SETTING, False)
+        if profiles is None:
+            profiles = list(self._profiles.values()) + ([self.private.profile] if self.private.profile else [])
+        for profile in profiles:
+            profile.settings().setAttribute(QWebEngineSettings.WebAttribute.PlaybackRequiresUserGesture, wait)
 
     def apply_spelling(self) -> bool:
         profiles = list(self._profiles.values()) + ([self.private.profile] if self.private.profile else [])

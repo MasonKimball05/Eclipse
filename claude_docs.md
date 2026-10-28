@@ -34,7 +34,7 @@ This builds `/Applications/Eclipse.app`, in Finder's Applications folder, which 
 ./run.sh --release
 ```
 
-This builds `dist/Eclipse.app` (and `dist/Eclipse.zip` to send). Unlike `--build-app`, everything is inside it: its own Python, Qt and Qt WebEngine, and Eclipse's code. It runs without this checkout, and doesn't change when the checkout does. It's for **Macs with Apple silicon and macOS 13 or later** (PyQt's Qt is Apple-silicon only, and macOS 13 is the oldest it supports).
+This builds `dist/Eclipse.app`, `dist/Eclipse.dmg` (what people download: Eclipse beside an Applications shortcut to drag it onto, over a background drawn in the icon's colours, laid out by `dmgbuild` without touching Finder) and `dist/Eclipse.zip` (what updates download). Unlike `--build-app`, everything is inside it: its own Python, Qt and Qt WebEngine, and Eclipse's code. It runs without this checkout, and doesn't change when the checkout does. It's for **Macs with Apple silicon and macOS 13 or later** (PyQt's Qt is Apple-silicon only, and macOS 13 is the oldest it supports).
 
 - **Built with python.org's Python:** set it up once with `tools/release_python.py`. It downloads python.org's installer (checking it's signed by the Python Software Foundation and notarized), unpacks it into `~/Library/Application Support/Eclipse Build/release-python/` without installing it, points its libraries at each other there instead of `/Library/Frameworks`, and makes a venv with Eclipse's requirements. `./run.sh --release` uses it from then on. Its OpenSSL comes with it, and its code is trimmed to Apple silicon. Without it the release is built with the development venv's Homebrew Python, which only runs on the macOS of the Mac that built it. Either way, the build works out the real minimum from the binaries and writes it into the app, so an older Mac says it needs a newer macOS rather than failing to start.
 
@@ -46,10 +46,10 @@ This builds `dist/Eclipse.app` (and `dist/Eclipse.zip` to send). Unlike `--build
   xcrun notarytool store-credentials eclipse-notary --apple-id you@example.com --team-id F4P3T9JYP2
   ```
 
-  Then `./run.sh --release --notarize eclipse-notary` sends it to Apple, waits (a few minutes), and staples the ticket into the app, so it opens without a warning on any Mac, even offline.
+  Then `./run.sh --release --notarize eclipse-notary` sends the DMG to Apple (one round: its ticket covers the app inside), waits a few minutes, and staples the ticket into the DMG and the app, so both open without a warning on any Mac, even offline.
 - `--install` also puts it in /Applications, in place of the development app. Both use the same data folder, so your Spaces, passwords and settings carry over. The first time, macOS asks whether the release may use the passwords' key (it's signed differently from the development app). Click Always Allow.
 - **Versions:** each build is numbered by when it was made: version `2026.10.27`, build `202610271452` (what updates compare).
-- **Publishing:** `./run.sh --release --notarize eclipse-notary --publish` also puts it on GitHub as a release (tag `release-<build>`, with `Eclipse.zip` and the commit subjects since the last one as its notes), through `gh`. It refuses a checkout with uncommitted changes or a commit that isn't pushed, so a release is always a commit anyone can look at. To publish the notarized build already in `dist/` without building it again, use `./run.sh --release --publish-built`: it checks the build is notarized and that its code is exactly the pushed commit's.
+- **Publishing:** `./run.sh --release --notarize eclipse-notary --publish` also puts it on GitHub as a release (tag `release-<build>`, with `Eclipse.dmg` for people, `Eclipse.zip` for updates, and the commit subjects since the last one as its notes), through `gh`. It refuses a checkout with uncommitted changes or a commit that isn't pushed, so a release is always a commit anyone can look at. To publish the notarized build already in `dist/` without building it again, use `./run.sh --release --publish-built`: it checks the build is notarized and that its code is exactly the pushed commit's.
 - **Updates:** a release copy checks GitHub's latest release soon after it opens (if it's been 6 hours) and every 6 hours after, and offers it in the **update window** (`update_window.py`): the new version and its size, the release's notes, and *Update & Restart* (it downloads right there, with a progress bar, then restarts), *Later*, or *Skip This Version* (not offered again by itself; Check Now still shows it). The download is checked by macOS before anything happens: signed by the maker's team (codesign, with the same requirement as Verified), notarized (spctl), Eclipse's bundle ID, and a newer build. Anything else is refused. After Eclipse quits, the new copy takes the old one's place (which goes back if that fails), and Eclipse opens again. Same team, same signature requirement, so the Keychain doesn't ask again. A copy macOS is running from Downloads (translocated) asks to be moved to Applications first. Code: `browser/release_update.py`.
 - **Checked before signing:** the build runs the finished app's own Qt and Eclipse offscreen (no windows): every module imports, Qt WebEngine loads a page, and Python has macOS's trusted certificates for HTTPS (without them, python.org's Python can't verify any site, so updates couldn't connect: `net.py`). A build that wouldn't run stops there.
 - How it's put together: `tools/release.py`. Python's own libraries from Homebrew (OpenSSL, SQLite, zstd, xz, mpdecimal) are copied into `Contents/Frameworks` with their paths rewritten to point there. Of Qt, only what Eclipse uses goes in: the Python modules it imports (`QT_MODULES`), the plugins they load (`QT_PLUGINS`), and the Qt libraries those link to, worked out from the links themselves. That leaves out Qt Quick 3D, Designer, multimedia and its FFmpeg, QML and the database drivers, about a quarter of the app.
@@ -94,6 +94,7 @@ Your session, favicons, cookies and cache normally live in `~/Library/Applicatio
 | **Dark websites** | *Settings → General → Dark websites* darkens pages that only come in light (Chromium recolours the page; images stay as they are), straight away and without reloading. Pages with a dark look of their own stay as they are. Leave a site light with *Dark Pages on …* in the shield menu. |
 | **Keeping your place** | A tab remembers how far down its page you'd scrolled. When it wakes from sleep, or comes back after you quit and reopen the browser, it reloads to the same spot. |
 | **Today tabs** | Tabs below the divider. New tabs go on top. They're archived after 12 hours unused (you can change this from the archive button). Rows slide in when a tab opens, slide out when one closes (the ones below glide up), and *Clear* sweeps them away top to bottom (with **Undo** in the message that follows, for five seconds: everything comes back where it was, folders and all); folders opening and closing do the same. |
+| **Start view** | With no tab open (the last one closed, an empty Space), the page area keeps the Space's own background, as in Arc, with a little to start from: the Space's name, a search pill that opens ⌘T, your **most visited** sites as tiles (one per site, ranked the way ⌘T ranks history: visits, weighted to recent ones, and named after the site: "Gmail", not "Inbox (3)"), and **recently closed** tabs to bring back in a click. *Settings → Tabs → Start view* turns it off for the plain emptiness (`start_view.py`). |
 | **Command bar** | ⌘T or ⌘L. One box for URLs, searches, open tabs, history, archived tabs and app commands. ↑ and ↓ move the highlight, which glides between rows. VoiceOver reads each result's title, and its address or kind. |
 | **Little window** | Arc's "Little Arc": links from other apps, page popups, or ⌥⌘N open in a compact window, fading in as it rises into place (and fading out as it closes). It has a slim header tinted with your Space theme, the site's name (click it or press ⌘L to edit the address), back/reload/copy-link buttons, and **Open** (⌘O), which moves the live page into the main window as a Today tab. To send outside links to a new tab instead, use *File → Open Links from Other Apps In*. |
 
@@ -232,6 +233,8 @@ Set up in *Settings → My Apps* (addresses default to your setup: homebase and 
 Built in, so it works without an extension. It works in three layers:
 - **Network:** third-party requests to ad and tracker domains are cancelled before they leave the browser. The domains come from Peter Lowe's list and the StevenBlack hosts list (about 70,000 domains), refreshed weekly. Requests to the site you're on are never blocked, which keeps sites working.
 - **Cosmetic:** a few CSS rules hide the empty boxes ads leave behind.
+
+**Videos wait for a click** (*Settings → Privacy & Ad Blocking*): video and sound don't start by themselves anywhere, private windows too, until you click them. Qt has one switch for all media, so muted background videos wait as well. Off by default.
 - **YouTube:** its ads come from the same servers as the videos, so a small script skips them instead (it clicks Skip, or jumps to the end).
 
 The shield in the URL pill shows how many requests were blocked on the current site. Click it to allow ads on that site or turn blocking off.
@@ -263,6 +266,8 @@ Qt WebEngine's own extension support crashes on macOS, so Eclipse has its **own 
 - Changes apply to pages loaded afterwards.
 
 ### Downloads & yt-dlp
+
+A download a page starts can be **paused and resumed** from its row in Downloads (⌥⌘L): the button beside Cancel. yt-dlp's video downloads can only be cancelled.
 
 **File → Downloads** (⌥⌘L) lists every download. Drag a finished one straight into Finder, Mail or Messages (it's the file itself), or double-click it to open it.
 
@@ -427,6 +432,7 @@ They run headless and use a throwaway data folder.
 | `window.py` | `MainWindow`: the controller. It owns the web views and every user action (tabs, spaces, menus, shortcuts, downloads, fullscreen, devtools). |
 | `sidebar.py` | The sidebar widgets: tab rows, favorites grid, drag-and-drop zones, space switcher. |
 | `command_bar.py` | The ⌘T overlay and its result ranking (`to_url()` decides URL vs search). |
+| `start_view.py` | The start view: with no tab open, the Space's name, a ⌘T pill, most-visited sites and recently closed tabs. |
 | `content.py` | The rounded page card, plus overlays: progress line, link-hover label, find bar, toasts. |
 | `little.py` | Little windows. |
 | `app.py` | Startup, single-instance hand-off (local socket), and links arriving from macOS. |

@@ -282,7 +282,7 @@ def _address_dialog(parent, address=None):
 
 
 def settings_page(settings):
-    from PyQt6.QtWidgets import QCheckBox, QHBoxLayout, QMessageBox, QVBoxLayout, QWidget
+    from PyQt6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QMessageBox, QVBoxLayout, QWidget
     browser = settings.browser
     page = QWidget()
     outer = QVBoxLayout(page)
@@ -333,6 +333,11 @@ def settings_page(settings):
             details = ", ".join(p for p in (address.get("email", ""), address.get("tel", ""),
                                             address.get("city", "")) if p)
             rows.append(settings._row(summary(address), details or None, actions))
+        if not all_addresses():
+            empty = QLabel("None yet. Add one, and checkout and sign-up forms can be filled in a click.")
+            empty.setObjectName("Hint")
+            empty.setContentsMargins(0, 8, 0, 8)
+            rows.append(empty)
         outer.addWidget(settings._card(rows))
         outer.addStretch(1)
     fill()

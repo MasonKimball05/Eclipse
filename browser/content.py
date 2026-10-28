@@ -277,15 +277,6 @@ class PreviewCard(QFrame):
             self.browser.open_url(url)
 
 
-class EmptyState(QWidget):
-    """What the page area shows with nothing open: nothing, like Arc. The frame goes see-through
-    (ContentFrame.blank), so it's just the Space's own background."""
-
-    def __init__(self):
-        super().__init__()
-        self.setObjectName("EmptyState")
-
-
 class ContentFrame(QFrame):
     def __init__(self, browser, parent=None):
         super().__init__(parent)
@@ -294,7 +285,8 @@ class ContentFrame(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
 
         self.stack = QStackedWidget(self)
-        self.empty = EmptyState()
+        from .start_view import StartView
+        self.empty = StartView(browser)  # (with no tab open: start_view.py)
         self.stack.addWidget(self.empty)
 
         self.progress = QFrame(self)
@@ -364,6 +356,7 @@ class ContentFrame(QFrame):
         if self.splitting:
             self.split_view.release(self.stack)
         if view is None:
+            self.empty.refresh()
             self.stack.setCurrentWidget(self.empty)
         else:
             if self.stack.indexOf(view) < 0:

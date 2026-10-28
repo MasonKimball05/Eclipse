@@ -920,7 +920,11 @@ def settings_page(settings):
         ask = _combo([("launch", "Once each time Eclipse opens"), ("every", "Every time")],
                      store_settings.get(UNLOCK_SETTING, "launch"))
         ask.currentIndexChanged.connect(lambda: setting(UNLOCK_SETTING, ask.currentData()))
-        rows = [settings._row("Saved passwords", about, buttons),
+        saved_row = settings._row("Saved passwords", about, None)
+        h.addStretch(1)
+        saved_row.layout().itemAt(0).layout().addSpacing(6)
+        saved_row.layout().itemAt(0).layout().addWidget(buttons)  # (under the words: four buttons beside them crushed them)
+        rows = [saved_row,
                 settings._row("Offer to fill passwords", "A card on a sign-in page offers your accounts for the site.",
                               fill_box),
                 settings._row("Offer to save passwords", "After you sign in somewhere new.", save_box),

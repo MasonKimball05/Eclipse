@@ -771,3 +771,61 @@ def test_the_update_window_shows_whats_new_downloads_and_can_skip(window, monkey
     assert updater.window.isVisible()
     updater.window.close()
     updater._set_status({"state": "idle"})
+
+
+def test_videos_and_sound_can_wait_for_a_click(window, site):
+    from browser.window import AUTOPLAY_SETTING
+    window.store.settings[AUTOPLAY_SETTING] = True
+    window.apply_autoplay()
+    tab = open_page(window, f"{site}/music.html")  # (its audio starts itself)
+    pause(0.8)
+    assert run_js(tab.view, "a.paused", world=0) is True  # (waiting for a click)
+    window.store.settings[AUTOPLAY_SETTING] = False
+    window.apply_autoplay()
+    tab.view.reload()
+    assert wait_until(lambda: run_js(tab.view, "typeof a !== 'undefined' && !a.paused", world=0) is True, 5)
+    window.close_tab(tab)
+
+
+def test_a_download_pauses_and_resumes(window, tmp_path, monkeypatch):
+    import http.server
+    import threading
+    import time as clock
+    from PyQt6.QtCore import QUrl
+    from browser import window as window_module
+    monkeypatch.setattr(window_module, "ytdlp_settings", lambda store: {"folder": str(tmp_path)})  # (not ~/Downloads)
+    monkeypatch.setattr(window, "_download_finished", lambda item, download: None)  # (no Claude renaming it)
+    size = 64 * 1024
+
+    class Slow(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Disposition", 'attachment; filename="slow.bin"')
+            self.send_header("Content-Length", str(size))
+            self.end_headers()
+            for _ in range(64):  # (a kilobyte at a time, slowly: time to pause it)
+                try:
+                    self.wfile.write(b"x" * 1024)
+                    self.wfile.flush()
+                except OSError:
+                    return
+                clock.sleep(0.05)
+
+        def log_message(self, *args):
+            pass
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Slow)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        window.open_url(f"http://127.0.0.1:{server.server_port}/slow.bin")
+        downloads = window.downloads_window
+        assert wait_until(lambda: any(getattr(i, "title", "") == "slow.bin" for i in downloads.items), 5)
+        item = next(i for i in downloads.items if i.title == "slow.bin")
+        assert item.can_pause and item.state == "running"
+        item.toggle_pause()
+        assert wait_until(lambda: item.paused and item.status.startswith("Paused"), 3)
+        item.toggle_pause()
+        assert wait_until(lambda: item.state == "done", 15)
+        assert (tmp_path / "slow.bin").stat().st_size == size
+    finally:
+        server.shutdown()

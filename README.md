@@ -4,7 +4,7 @@ An Arc-style web browser for the Mac: tabs down the side, Spaces for different p
 instead of a new-tab page, and tabs that tidy themselves away. Arc is winding down, so Eclipse carries its ideas
 forward. It's a personal project, open source, and free.
 
-**[Download Eclipse](https://github.com/MasonKimball05/Eclipse/releases/latest)** · Macs with Apple silicon, macOS 13 or later
+**[Download Eclipse for Mac](https://github.com/MasonKimball05/Eclipse/releases/latest/download/Eclipse.dmg)** · Macs with Apple silicon, macOS 13 or later
 
 Eclipse renders pages with Chromium (through Qt WebEngine), so sites work as they do in Chrome. It's signed with a
 Developer ID and notarized by Apple, and **Settings → General** shows whether your copy is verified: exactly as
@@ -12,8 +12,8 @@ it was signed.
 
 ## Getting started
 
-1. Download `Eclipse.zip` from the [latest release](https://github.com/MasonKimball05/Eclipse/releases/latest),
-   open it, and drag **Eclipse** into your **Applications** folder.
+1. Download **Eclipse.dmg** from the [latest release](https://github.com/MasonKimball05/Eclipse/releases/latest),
+   open it, and drag **Eclipse** onto the **Applications** folder beside it.
 2. Open it. The welcome offers to bring over your bookmarks, history and passwords from Chrome, Brave, Edge,
    Safari or Arc, and to make Eclipse your default browser.
 3. Press **⌘T** for anything: a site, a search, an open tab, something from your history, or a command.

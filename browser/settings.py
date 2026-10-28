@@ -8,7 +8,8 @@ from PyQt6.QtCore import QSize, Qt, QUrl
 from PyQt6.QtGui import QIcon, QKeySequence, QPixmap
 from PyQt6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame,
                              QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
-                             QPushButton, QScrollArea, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
+                             QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout,
+                             QWidget)
 
 from . import brand, clean_links, dark_pages, macos, passwords, spelling, tab_titles, verified
 from .command_bar import CUSTOM_SETTING, SEARCH_ENGINES, use_custom_sites
@@ -528,6 +529,9 @@ class SettingsWindow(FadesIn, QWidget):
         swipes = QCheckBox()
         swipes.setChecked(self.store.settings.get("swipe_navigation", True))
         swipes.toggled.connect(lambda on: self._setting("swipe_navigation", on))
+        start = QCheckBox()
+        start.setChecked(self.store.settings.get("start_view", True))
+        start.toggled.connect(lambda on: (self._setting("start_view", on), self.browser.content.empty.refresh()))
         banners = QCheckBox()
         banners.setChecked(not self.store.settings.get("notifications_dnd", False))
         banners.toggled.connect(lambda on: self._setting("notifications_dnd", not on))
@@ -539,6 +543,8 @@ class SettingsWindow(FadesIn, QWidget):
                                                       "sleep.", sleep),
             self._row("Peek", "Links opened from pinned tabs and favorites float over the page instead of "
                               "opening a new tab.", peek),
+            self._row("Start view", "With no tab open, the page area shows your most-visited sites and recently "
+                                    "closed tabs. Off, it's empty, like Arc's.", start),
             self._row("Tidy tab titles", "Like Arc Max: the sidebar leaves the site's name out of a tab's title "
                                          "(its icon says it), so “Q3 plan - Google Docs” shows as “Q3 plan”.",
                       tidy),
@@ -554,6 +560,13 @@ class SettingsWindow(FadesIn, QWidget):
                                               "of the window. Off is Do Not Disturb: unread badges still update.",
                       banners),
         ]))
+
+    def _autoplay_box(self):
+        from .window import AUTOPLAY_SETTING
+        box = QCheckBox()
+        box.setChecked(self.store.settings.get(AUTOPLAY_SETTING, False))
+        box.toggled.connect(lambda on: (self._setting(AUTOPLAY_SETTING, on), self.browser.apply_autoplay()))
+        return box
 
     def _privacy(self):
         blocker = self.browser.adblock
@@ -630,7 +643,9 @@ class SettingsWindow(FadesIn, QWidget):
                                                            "pop-ups for you. Never clicks Accept. Sites where ads "
                                                            "are allowed are left alone.", cookie_box),
                         self._row("Clean links", "Takes tracking tags (utm_source, fbclid, gclid…) off links "
-                                                 "before they open, and off links you copy.", clean_box)]),
+                                                 "before they open, and off links you copy.", clean_box),
+                        self._row("Videos wait for a click", "Video and sound don't start by themselves: nothing "
+                                  "plays until you click it (muted background videos wait too).", self._autoplay_box())]),
             self._card([self._row("Browsing history", "Used for command bar suggestions. Also browsable in the "
                                                       "Library (⌘Y).", clear_history),
                         self._row("Search what you've read", "Keeps the text of pages you visit on this Mac so ⌘T "
@@ -641,23 +656,43 @@ class SettingsWindow(FadesIn, QWidget):
         )
 
     def _downloads(self):
-        form = DownloadSettingsForm(self.store, autosave=True)
+        # The Download Video window's form, its controls laid out as this window's rows (they save as they change)
+        form = self._download_form = DownloadSettingsForm(self.store, autosave=True)
+        form.hide()
+
+        def control(widget, width=240):
+            widget.setParent(None)
+            widget.show()  # (out of the hidden form, it would stay hidden)
+            if isinstance(widget, (QLineEdit, QComboBox, QPushButton)):
+                widget.setFixedWidth(width)
+                # (the folder button ignores its size, to stretch in a form: in a row that put it past the edge)
+                widget.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            return widget
+        form.subs.setPlaceholderText("en, es")
+        form.rate.setPlaceholderText("5M")
+
+        def switch(box):
+            title = box.text()
+            box.setText("")
+            return title, control(box)
         ytdlp = find_tool("yt-dlp")
-        status = (f"yt-dlp: {ytdlp}" if ytdlp else "yt-dlp isn't installed. Install it with: brew install yt-dlp")
-        status += "   ·   ffmpeg: " + ("found" if find_tool("ffmpeg") else "missing (brew install ffmpeg)")
-        note = QLabel(status)
-        note.setObjectName("Hint")
-        note.setWordWrap(True)
-        card = QFrame()
-        card.setObjectName("OptionsCard")
-        v = QVBoxLayout(card)
-        v.setContentsMargins(16, 14, 16, 14)
-        v.addWidget(form)
-        v.addWidget(note)
-        hint = QLabel("These are also the defaults in File → Download Video (⇧⌘D). Regular downloads use the same "
-                      "folder.")
-        hint.setObjectName("Hint")
-        hint.setWordWrap(True)
+        tools = (f"yt-dlp: {ytdlp}" if ytdlp else "yt-dlp isn't installed: brew install yt-dlp") + "  ·  ffmpeg: " + (
+            "found" if find_tool("ffmpeg") else "missing (brew install ffmpeg)")
+        where = self._card([self._row("Save to", "Where downloads go: files from pages, and videos from "
+                                                 "File → Download Video (⇧⌘D).", control(form.folder))])
+        rows = [self._row("Download", "What File → Download Video saves by default. " + tools, control(form.kind)),
+                self._row("Video format", None, control(form.video_format)),
+                self._row("Video quality", None, control(form.max_height)),
+                self._row("Audio format", None, control(form.audio_format)),
+                self._row("File names", "yt-dlp's output template: %(uploader)s/%(title)s.%(ext)s makes a folder "
+                                        "per channel.", control(form.template)),
+                self._row("Subtitles", "Language codes, like en, es (blank for none).", control(form.subs))]
+        rows += [self._row(title, None, box) for title, box in (switch(form.embed_subs), switch(form.embed_metadata),
+                                                                switch(form.embed_thumbnail))]
+        rows += [self._row("Cookies from", "Lets yt-dlp use that browser's logins for age-restricted or members-only "
+                                           "videos. Safari needs Full Disk Access for this.", control(form.cookies)),
+                 self._row("Speed limit", "Like 5M (blank for no limit).", control(form.rate))]
+        card = self._stack(where, self._card(rows))
         tidy = QCheckBox()
         tidy.setChecked(self.store.settings.get("tidy_downloads", True))
         tidy.toggled.connect(lambda on: self._setting("tidy_downloads", on))
@@ -665,8 +700,8 @@ class SettingsWindow(FadesIn, QWidget):
                                           "something readable (\"IMG_3847.pdf\" → \"Acme Invoice March 2026.pdf\"). "
                                           "Needs Claude features on.", tidy)])
         if self.browser.feature("claude") is None:
-            return self._stack(card, hint)  # (Tidy Downloads is Claude's)
-        return self._stack(card, tidy_card, hint)
+            return card  # (Tidy Downloads is Claude's)
+        return self._stack(card, tidy_card)
 
     def _profiles(self):
         self.profile_list = QListWidget()
@@ -675,17 +710,10 @@ class SettingsWindow(FadesIn, QWidget):
         self.profile_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         clear = QPushButton("Clear Cookies && Site Data…")  # && shows a literal "&" on a button
         clear.clicked.connect(self._clear_profile)
-        box = QWidget()
-        v = QVBoxLayout(box)
-        v.setContentsMargins(0, 10, 0, 10)
-        v.addWidget(self.profile_list)
-        v.addWidget(clear, 0, Qt.AlignmentFlag.AlignRight)
-        explain = QLabel("A profile is a separate set of cookies, logins and site data. Give Work and Personal "
-                         "their own profiles to be signed in to different accounts. Pick a Space's profile by "
-                         "right-clicking the Space.")
-        explain.setObjectName("Hint")
-        explain.setWordWrap(True)
-        return self._stack(self._card([box]), explain)
+        heading = self._row("Profiles", "A profile is a separate set of cookies, logins and site data. Give Work and "
+                                        "Personal their own to be signed in to different accounts; pick a Space's "
+                                        "by right-clicking the Space. Clearing works on the one picked below.", clear)
+        return self._card([heading, self.profile_list])
 
     def _air_traffic(self):
         self.air_rows = QVBoxLayout()
@@ -693,18 +721,18 @@ class SettingsWindow(FadesIn, QWidget):
         self.air_rows.setSpacing(8)
         add = QPushButton("Add Rule")
         add.clicked.connect(lambda: self._add_air_rule({"match": "", "space": self.store.active_space.id}, focus=True))
+        heading = self._row("Rules", "Links you click in other apps (Slack, Mail, Messages…) normally open in a Little "
+                                     "window. A rule sends matching links straight to a Space instead: a domain "
+                                     "(\"zoom.us\" covers its subdomains too) or any text the link contains. The "
+                                     "first that matches wins.", add)
         box = QWidget()
         v = QVBoxLayout(box)
-        v.setContentsMargins(0, 10, 0, 10)
+        v.setContentsMargins(0, 8, 0, 8)
+        self.air_empty = QLabel("No rules yet: links from other apps all open in a Little window.")
+        self.air_empty.setObjectName("Hint")
+        v.addWidget(self.air_empty)
         v.addLayout(self.air_rows)
-        v.addWidget(add, 0, Qt.AlignmentFlag.AlignLeft)
-        explain = QLabel("Links you click in other apps (Slack, Mail, Messages…) normally open in a Little window. "
-                         "These rules send matching links straight to a Space instead. Type a domain "
-                         "(\"zoom.us\" also covers its subdomains) or any text the link contains. The first "
-                         "matching rule wins.")
-        explain.setObjectName("Hint")
-        explain.setWordWrap(True)
-        return self._stack(self._card([box]), explain)
+        return self._card([heading, box])
 
     def _fill_air_rules(self):
         # Rebuilt each time Settings opens, so new Spaces show up in the lists
@@ -714,8 +742,10 @@ class SettingsWindow(FadesIn, QWidget):
                 widget.deleteLater()
         for rule in self.store.settings.get("air_traffic", []):
             self._add_air_rule(rule)
+        self.air_empty.setVisible(not self.store.settings.get("air_traffic"))
 
     def _add_air_rule(self, rule, focus=False):
+        self.air_empty.hide()
         row = QWidget()
         h = QHBoxLayout(row)
         h.setContentsMargins(0, 0, 0, 0)
@@ -745,6 +775,7 @@ class SettingsWindow(FadesIn, QWidget):
                 match, space = row.air
                 rules.append({"match": match.text().strip(), "space": space.currentData()})
         self._setting("air_traffic", rules)
+        self.air_empty.setVisible(not rules)
 
     def _shortcuts(self):
         self.shortcut_filter = QLineEdit()

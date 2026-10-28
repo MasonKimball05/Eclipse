@@ -477,11 +477,13 @@ class ExtensionsPage(QWidget):
         add_ext.setMenu(ext_menu)
         actions.addWidget(add_script)
         actions.addWidget(add_ext)
-        actions.addStretch(1)
         updates = QPushButton("Check for Updates")
         updates.clicked.connect(lambda: self.feature.updates.check(manual=True))
         actions.addWidget(updates)
-        layout.addLayout(actions)
+        actions.addStretch(1)
+        actions.setContentsMargins(0, 0, 0, 0)
+        buttons = QWidget()
+        buttons.setLayout(actions)
 
         self.scripts_title = QLabel("Userscripts")
         self.scripts_title.setObjectName("SettingTitle")
@@ -496,18 +498,23 @@ class ExtensionsPage(QWidget):
         self.empty.setWordWrap(True)
         for widget in (self.scripts_title, self.ext_title):
             widget.setContentsMargins(2, 6, 0, 0)
-        layout.addWidget(self.empty)
+        # A card like the other Settings pages': what this is, the buttons on a line of their own under it
+        heading = settings._row(
+            "Extensions and userscripts",
+            f"Extensions run on {brand.NAME}'s own lightweight runtime, not Chrome's. Content scripts, storage, "
+            "messaging, popups, options pages and background scripts work; features that need Chrome's internals "
+            "(blocking requests, side panels, native apps…) don't, and extensions that rely on them are marked. "
+            "Changes apply to pages loaded afterwards.", None)
+        words = heading.layout().itemAt(0).layout()
+        words.addSpacing(6)
+        words.addWidget(buttons)
+        words.addSpacing(4)
+        words.addWidget(self.empty)
+        layout.addWidget(settings._card([heading]))
         layout.addWidget(self.scripts_title)
         layout.addLayout(self.scripts_box)
         layout.addWidget(self.ext_title)
         layout.addLayout(self.ext_box)
-        about = QLabel(f"Extensions run on {brand.NAME}'s own lightweight runtime, not Chrome's. Content scripts, "
-                       "storage, messaging, popups, options pages and background scripts work; features that need "
-                       "Chrome's internals (blocking requests, side panels, native apps…) don't, and extensions "
-                       "that rely on them are marked. Changes apply to pages loaded afterwards.")
-        about.setObjectName("Hint")
-        about.setWordWrap(True)
-        layout.addWidget(about)
         self.host.changed.connect(self.refresh)
 
     def _script_from_link(self):
