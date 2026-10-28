@@ -4,6 +4,7 @@
 import html
 import re
 import secrets
+import shutil
 import sys
 import time
 from collections import OrderedDict
@@ -22,11 +23,13 @@ from PyQt6.QtWidgets import (QApplication, QColorDialog, QDialog, QFileDialog,
 
 import qtawesome as qta
 
-from . import backup, brand, clean_links, dark_pages, macos, motion, screenshots, spelling, storage
+from . import (backup, brand, clean_links, dark_pages, macos, motion, screenshots, shortcuts, space_share, spelling,
+               storage)
 from .adblock import AdBlocker
 from .command_bar import CUSTOM_SETTING, CommandBar, use_custom_sites
 from .content import ContentFrame
-from .downloads import BrowserDownload, DownloadSettings, DownloadsWindow, reveal_in_finder, ytdlp_settings
+from .downloads import (BrowserDownload, DownloadSettings, DownloadsWindow, reveal_in_finder,
+                        risky as downloads_risky, ytdlp_settings)
 from .library import LibraryWindow
 from .air_traffic import route
 from .little import LittleWindow
@@ -67,6 +70,8 @@ from .timefmt import portable
 MAC = sys.platform == "darwin"
 # Qt maps "Ctrl" to ⌘ on macOS; the physical Control key is "Meta" there
 CONTROL = "Meta" if MAC else "Ctrl"
+RECENT_PAGES = 12  # (at the bottom of the History menu)
+KEEP_RUNNING = "keep_running"  # (closing the window leaves Eclipse open, on a Mac)
 AUTOPLAY_SETTING = "media_waits_for_click"  # (Settings → Privacy: videos don't play until you click)
 SIDEBAR_WIDTH = 250  # default; drag the sidebar's edge to change it
 SIDEBAR_GAP = 12     # between the sidebar's contents and the page: all of it is the resize edge
@@ -94,6 +99,7 @@ class MainWindow(QMainWindow):
         self._mru: list[str] = []                   # tab ids, most recently used first
         self._closed: list[tuple[dict, str]] = []   # (tab data, space id) for ⇧⌘T
         self._extra_windows: list[QWidget] = []     # Little windows and DevTools
+        self._recent_downloads: dict[int, list[float]] = {}  # id(page) → when it last started downloads
         self._fullscreen = False
         self._rebuild_pending = False
         # Claude, Live Folders, extensions, Easels…: whichever features are here (features.py), each hooked in
@@ -196,6 +202,8 @@ class MainWindow(QMainWindow):
         self.apply_theme()
         # The native macOS menu bar is slow to build (~150 ms), so draw the window first
         QTimer.singleShot(0, self._build_menus)
+        self.apply_keep_running()
+        QApplication.instance().applicationStateChanged.connect(self._app_state_changed)
 
         if store.window_geometry:
             self.restoreGeometry(QByteArray.fromBase64(store.window_geometry.encode()))
@@ -572,7 +580,7 @@ class MainWindow(QMainWindow):
         page.linkHovered.connect(lambda url: tab is self.current_tab and self._on_link_hovered(url))
         page.newWindowRequested.connect(lambda req: self.handle_new_window(tab, req))
         page.windowCloseRequested.connect(lambda: self.close_tab(tab))
-        page.fullScreenRequested.connect(self._on_fullscreen)
+        page.fullScreenRequested.connect(lambda request, v=view: self._on_fullscreen(request, v))
         page.console_message.connect(lambda message: self._on_console(tab, message))
         page.lifecycleStateChanged.connect(lambda _state: tab.changed.emit())  # dim/undim in the sidebar
         page.recentlyAudibleChanged.connect(lambda _audible: self._on_audible(tab))  # the speaker icon
@@ -761,6 +769,9 @@ class MainWindow(QMainWindow):
         dest = request.destination()
         if request.requestedUrl().scheme() in ("note", "easel"):
             return  # (a web page doesn't get to open your notes or easels)
+        opener = source_tab.view.url().scheme() if source_tab is not None and isinstance(source_tab.view, QWebEngineView) else ""
+        if request.requestedUrl().scheme() in ("pbext", "file") and opener not in ("pbext", "file"):
+            return  # (nor an extension's own pages or your files: kept as a tab, it'd load later as if you'd opened it)
         # The new page must share the opener's profile (and so its logins)
         if source_tab is not None and isinstance(source_tab.view, QWebEngineView):
             profile = source_tab.view.page().profile()
@@ -810,9 +821,24 @@ class MainWindow(QMainWindow):
         window.destroyed.connect(lambda: self._extra_windows.remove(window) if window in self._extra_windows else None)
         return window
 
-    def _on_fullscreen(self, request):
+    def _on_fullscreen(self, request, view=None):
+        if request.toggleOn() and view is not None and not view.isVisible():
+            request.reject()  # (only the page you're looking at: one in the background can't take over the screen)
+            return
         request.accept()
+        self._fullscreen_view = view if request.toggleOn() else None
         self._set_fullscreen(request.toggleOn())
+        if request.toggleOn():
+            # Said every time, so a page can't pass off its own drawing of a browser (or a password box) as real
+            host = display_host(request.origin().toString()) or "This page"
+            self.toast(f"{host} is full screen. Press Esc to leave.")
+
+    def _leave_page_fullscreen(self):
+        view = getattr(self, "_fullscreen_view", None)
+        if view is not None and not sip.isdeleted(view):
+            view.page().triggerAction(QWebEnginePage.WebAction.ExitFullScreen)
+        else:
+            self._set_fullscreen(False)
 
     def _set_fullscreen(self, on):
         self._fullscreen = on
@@ -838,6 +864,9 @@ class MainWindow(QMainWindow):
                 if download.state() == QWebEngineDownloadRequest.DownloadState.DownloadCompleted
                 else "Couldn't save the page"))
             return
+        if not self._download_allowed(download):
+            download.cancel()
+            return
         # Same "Save to" folder as yt-dlp downloads (Download Settings), ~/Downloads by default
         download.setDownloadDirectory(ytdlp_settings(self.store)["folder"])
         download.accept()
@@ -846,6 +875,33 @@ class MainWindow(QMainWindow):
         self.downloads_window.add(item)
         download.isFinishedChanged.connect(lambda: self._download_finished(item, download))
         self.toast(f"Downloading {download.downloadFileName()}…  (⌥⌘L shows downloads)")
+
+    def _download_allowed(self, download) -> bool:
+        """Whether a page's download goes ahead. Not from a page that isn't in a tab or window (Browse for Me's and
+        Live Folders' readers); a file that can run things on your Mac (an app, a script, an installer) asks first; and so
+        does a page's second file within a few seconds, so a page can't fill your Downloads folder."""
+        page = download.page()
+        view = QWebEngineView.forPage(page) if page is not None else None
+        if page is not None and view is None:  # (a tab in the background is still yours: ⌘-clicking a file's link)
+            print(f"Refused a download from a page with no window: {download.url().toString()[:120]}")
+            return False
+        name = download.downloadFileName()
+        host = display_host(download.url().toString()) or "A page"
+        if downloads_risky(name):
+            answer = QMessageBox.question(
+                self, "Download File", f"“{name}” can run programs on your Mac. Download it from {host} anyway?\n\n"
+                "Only download it if you trust where it came from.",
+                QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Save, QMessageBox.StandardButton.Cancel)
+            return answer == QMessageBox.StandardButton.Save
+        now, key = time.monotonic(), id(page)
+        recent = [t for t in self._recent_downloads.get(key, []) if now - t < 8]
+        self._recent_downloads[key] = recent + [now]
+        if recent:
+            answer = QMessageBox.question(self, "Download Files", f"{host} wants to download several files. Allow "
+                                          f"“{name}”?", QMessageBox.StandardButton.Cancel |
+                                          QMessageBox.StandardButton.Save, QMessageBox.StandardButton.Cancel)
+            return answer == QMessageBox.StandardButton.Save
+        return True
 
     def _download_finished(self, item, download):
         # Tidy Downloads: Claude gives the file a readable name (not for a private window's: that would
@@ -1325,6 +1381,28 @@ class MainWindow(QMainWindow):
                            self.reopen_closed_tab(self._closed.index(e)))
         menu.addSeparator()
         menu.addAction("Clear This List", self._closed.clear)
+
+    def _fill_recent_pages(self, menu):
+        """The bottom of the History menu, as Safari's: the pages you've been to lately, newest first (a click
+        opens one in a new tab). Not in a private window's: those were never kept."""
+        for action in menu.actions():
+            if action.property(shortcuts.DYNAMIC):
+                menu.removeAction(action)
+                action.deleteLater()
+        pages = self.store.history[:RECENT_PAGES]
+        if not pages:
+            return
+        line = menu.addSeparator()
+        line.setProperty(shortcuts.DYNAMIC, True)
+        heading = menu.addAction("Recently Visited")
+        heading.setEnabled(False)
+        heading.setProperty(shortcuts.DYNAMIC, True)
+        for entry in pages:
+            title = (entry.get("title") or display_host(entry["url"]) or entry["url"]).replace("&", "&&")
+            item = menu.addAction(storage.favicon(entry["url"]) or QIcon(), title[:70],
+                                  lambda url=entry["url"]: self.open_url(url))
+            item.setToolTip(entry["url"])
+            item.setProperty(shortcuts.DYNAMIC, True)
 
     def move_tab(self, node, kind, index=None, folder=None):
         loc = self.store.locate(node)
@@ -1900,6 +1978,9 @@ class MainWindow(QMainWindow):
             # the mouse happens to rest on a link doesn't trigger one
             self._shift_alone = event.key() == Qt.Key.Key_Shift
             zapping = getattr(self.feature("boosts"), "zap_tab", None) is not None  # (Esc is Zap's then)
+            if event.key() == Qt.Key.Key_Escape and self._fullscreen:
+                self._leave_page_fullscreen()  # (always, as the notice says: a page can't keep you in)
+                return True
             if event.key() == Qt.Key.Key_Escape and self.peek.isVisible() and not zapping:
                 self.peek.close_peek()
                 return True
@@ -2106,16 +2187,27 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Can't Restore", str(error))
             return
         made = time.strftime(portable("%-d %B %Y at %-I:%M %p"), time.localtime(info["created"]))
-        answer = QMessageBox.question(
-            self, "Restore from Backup",
-            f"Replace your Spaces, tabs, settings, notes and extensions with this backup from {made}?\n\n"
+        code = [f"{n} {what}{'s' if n != 1 else ''}" for n, what in
+                ((info["extensions"], "extension"), (info["userscripts"], "userscript"),
+                 (info["native"], "app extensions can talk to")) if n]
+        box = QMessageBox(QMessageBox.Icon.Question, "Restore from Backup",
+                          f"Replace your Spaces, tabs, settings and notes with this backup from {made}?", parent=self)
+        box.setTextFormat(Qt.TextFormat.PlainText)
+        box.setInformativeText(
             f"It has {len(info['spaces'])} Space(s) ({', '.join(info['spaces'][:5])}) and {info['tabs']} tabs. "
-            "What you have now is kept in a folder, not deleted. Sign-ins and cookies aren't affected.\n\n"
+            + (f"It also has {', '.join(code)}: code that can read and change the sites you visit. Only restore "
+               "those from a backup you made yourself. " if code else "")
+            + "What you have now is kept in a folder, not deleted. Sign-ins and cookies aren't affected.\n\n"
             f"{brand.NAME} will quit; open it again to finish.")
-        if answer != QMessageBox.StandardButton.Yes:
+        everything = box.addButton("Restore Everything" if code else "Restore", QMessageBox.ButtonRole.AcceptRole)
+        without = box.addButton("Restore Without Extensions", QMessageBox.ButtonRole.AcceptRole) if code else None
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(without or everything)
+        box.exec()
+        if box.clickedButton() not in (everything, without):
             return
         try:
-            backup.stage(Path(path))
+            backup.stage(Path(path), with_code=box.clickedButton() is everything)
         except (OSError, ValueError) as error:
             QMessageBox.warning(self, "Can't Restore", str(error))
             return
@@ -2171,6 +2263,66 @@ class MainWindow(QMainWindow):
         used = {s.color for s in self.store.spaces}
         color = next((c for _, c in PALETTE if c not in used), PALETTE[len(self.store.spaces) % len(PALETTE)][1])
         self.switch_space(self.store.add_space(name.strip(), color))
+
+    # --- Sharing a Space (space_share.py) ---------------------------------------------------------
+
+    def share_space(self, space=None):
+        """The Space as a file, in macOS's share menu (AirDrop, Messages, Mail…), or saved where you choose."""
+        space = space or self.store.active_space
+        if not list(walk_tabs(space.pinned)) and not any(f.live for f in walk_folders(space.pinned)):
+            self.toast(f"“{space.name}” has no pinned tabs to share")
+            return
+        folder = storage.data_dir() / "shared spaces"
+        folder.mkdir(exist_ok=True)
+        for old in folder.glob("*" + space_share.SUFFIX):
+            old.unlink(missing_ok=True)  # (only the latest is kept: it's there to be sent)
+        path = space_share.write(space, folder)
+        title = self.sidebar.space_title
+        anchor = QRect(title.mapTo(self, QPoint(0, 0)), title.size()) if title.isVisible() else \
+            QRect(self.content.mapTo(self, QPoint(self.content.width() // 2, 0)), QSize(1, 1))
+        if macos.share(self, bytes(QUrl.fromLocalFile(str(path)).toEncoded()).decode(), anchor):
+            return
+        start = str(Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)) / path.name)
+        dest, _ = QFileDialog.getSaveFileName(self, "Share Space", start, f"Shared Spaces (*{space_share.SUFFIX})")
+        if dest:
+            shutil.copyfile(path, dest)
+            self.toast(f"Saved “{space.name}” as {Path(dest).name}: send it to anyone with {brand.NAME}")
+
+    def import_space(self):
+        folder = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation)
+        path, _ = QFileDialog.getOpenFileName(self, "Import Space", folder, f"Shared Spaces (*{space_share.SUFFIX})")
+        if path:
+            self.import_space_file(path)
+
+    def import_space_file(self, path):
+        """A shared Space someone sent: added as a new Space, after asking."""
+        self.bring_to_front()
+        try:
+            shared = space_share.read(Path(path))
+        except ValueError as error:
+            QMessageBox.warning(self, "Can't Import Space", str(error))
+            return
+        box = QMessageBox(QMessageBox.Icon.Question, "Import Space",
+                          f"Add the Space “{shared['name']}”, with {space_share.summary(shared)}?", parent=self)
+        box.setTextFormat(Qt.TextFormat.PlainText)  # (its name is whatever the file says)
+        box.setInformativeText("It brings only addresses and names: you sign in to its sites yourself.")
+        add = box.addButton("Add Space", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(add)
+        box.exec()
+        if box.clickedButton() is not add:
+            return
+        used = {s.color for s in self.store.spaces}
+        color = next((c for _, c in PALETTE if c not in used), PALETTE[len(self.store.spaces) % len(PALETTE)][1])
+        space = space_share.build(shared, color)
+        self.store.spaces.append(space)
+        self.store._changed()
+        self.switch_space(space)
+        live = self.feature("live_folders")
+        for folder in walk_folders(space.pinned):
+            if folder.live and live is not None:
+                live.folders.refresh(folder)
+        self.toast(f"Added “{space.name}”")
 
     def rename_space(self, space):
         name, ok = QInputDialog.getText(self, "Rename Space", "Space name:", text=space.name)
@@ -2337,13 +2489,23 @@ class MainWindow(QMainWindow):
     def _build_menus(self):
         bar = self.menuBar()
 
+        # What opens a window of its own: the rest bring the main window back first, if it was closed (on a Mac,
+        # Eclipse keeps running, with its menus, when the window closes)
+        own_window = {"New Little Window", "New Private Window", "Downloads", "Keyboard Shortcuts", "Library",
+                      "Archived Tabs", "Notes", "Browse for Me Answers", "Minimize", "Zoom", "Toggle Full Screen",
+                      "Send Feedback…", "What's New", "Show Crash Logs", "Back Up Everything…",
+                      "Restore from Backup…", "Download Settings…"}
+
         def add(menu, text, shortcut, slot):
             action = QAction(text, self)
             if shortcut:
                 action.setShortcut(QKeySequence(shortcut))
+            if text not in own_window:
+                slot = (lambda inner: lambda: (self.isHidden() and self.bring_to_front(), inner()))(slot)
             action.triggered.connect(lambda _=False: slot())
             menu.addAction(action)
             self.addAction(action)  # keeps the shortcut working when the menu bar isn't native
+            return action
 
         file = bar.addMenu("File")
         add(file, "New Tab", "Ctrl+T", lambda: self.open_command_bar("new"))
@@ -2427,6 +2589,8 @@ class MainWindow(QMainWindow):
         recent = history.addMenu("Recently Closed")
         recent.aboutToShow.connect(lambda m=recent: self._fill_recently_closed(m))
         self._fill_recently_closed(recent)  # (macOS reads the menu before it's first shown)
+        history.aboutToShow.connect(lambda m=history: self._fill_recent_pages(m))
+        self._fill_recent_pages(history)
 
         tabs = bar.addMenu("Tabs")
         add(tabs, "Pin / Unpin Tab", "Ctrl+D", self.toggle_pin)
@@ -2447,11 +2611,22 @@ class MainWindow(QMainWindow):
 
         spaces = bar.addMenu("Spaces")
         add(spaces, "New Space…", "", self.new_space)
+        add(spaces, "Share This Space…", "", self.share_space)
+        add(spaces, "Import Space…", "", self.import_space)
         add(spaces, "Next Space", "Ctrl+Alt+Right", lambda: self.cycle_space(1))
         add(spaces, "Previous Space", "Ctrl+Alt+Left", lambda: self.cycle_space(-1))
         spaces.addSeparator()
         for n in range(1, 10):
             add(spaces, f"Space {n}", f"{CONTROL}+{n}", lambda n=n: self.switch_to_space_number(n))
+        windows = bar.addMenu("Window")
+        for text, keys, slot in (("Minimize", "Ctrl+M", lambda: self._front_window().showMinimized()),
+                                 ("Zoom", "", self._zoom_window),
+                                 ("Toggle Full Screen", f"Ctrl+{CONTROL}+F" if MAC else "F11", self._toggle_full_screen)):
+            add(windows, text, keys, slot).setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)  # (any window)
+        windows.addSeparator()
+        windows.aboutToShow.connect(lambda m=windows: self._fill_window_menu(m))
+        self._fill_window_menu(windows)  # (macOS reads the menu before it's first shown)
+        self._build_dock_menu()
         help_menu = bar.addMenu("Help")
         add(help_menu, "Send Feedback…", "", self.send_feedback)
         add(help_menu, "What's New", "", self.show_whats_new)
@@ -2460,6 +2635,83 @@ class MainWindow(QMainWindow):
         menus = {"File": file, "Edit": edit, "View": view, "History": history, "Tabs": tabs, "Spaces": spaces,
                  "Help": help_menu}
         self.emit("menus", add, menus, bar)
+        self.apply_shortcuts()
+
+    def _open_windows(self) -> list:
+        """Eclipse's windows on screen: this one, then private and Little windows (and DevTools)."""
+        return [w for w in [self, *self.private.windows, *self._extra_windows] if not sip.isdeleted(w) and w.isVisible()]
+
+    def _front_window(self):
+        active = QApplication.activeWindow()
+        return active if active is not None else self
+
+    def _zoom_window(self):
+        window = self._front_window()
+        window.showNormal() if window.isMaximized() else window.showMaximized()
+
+    def _toggle_full_screen(self):
+        window = self._front_window()
+        if window is self and self._fullscreen:
+            self._set_fullscreen(False)  # (a video that went full screen)
+        elif window.isFullScreen():
+            window.showNormal()
+        else:
+            window.showFullScreen()
+
+    def _fill_window_menu(self, menu):
+        """The Window menu's list of windows (a tick on the one in front), refilled each time it opens."""
+        for action in menu.actions():
+            if action.property(shortcuts.DYNAMIC):
+                menu.removeAction(action)
+                action.deleteLater()
+        front = QApplication.activeWindow()
+        for window in self._open_windows():
+            item = menu.addAction(window.windowTitle() or brand.NAME)
+            item.setProperty(shortcuts.DYNAMIC, True)
+            item.setCheckable(True)
+            item.setChecked(window is front)
+            item.triggered.connect(lambda _=False, w=window: self._raise_window(w))
+        tail = menu.addSeparator()
+        tail.setProperty(shortcuts.DYNAMIC, True)
+        everything = menu.addAction("Bring All to Front", lambda: [self._raise_window(w) for w in self._open_windows()])
+        everything.setProperty(shortcuts.DYNAMIC, True)
+
+    def _raise_window(self, window):
+        if window.isMinimized():
+            window.showNormal()
+        window.raise_()
+        window.activateWindow()
+        macos.activate_app()
+
+    def _build_dock_menu(self):
+        """Right-click Eclipse in the Dock: a new tab or window, and the Spaces (macOS lists the windows itself)."""
+        if not MAC:
+            return
+        menu = QMenu(self)
+
+        def front_then(slot):
+            self.bring_to_front()
+            slot()
+        menu.addAction("New Tab", lambda: front_then(lambda: self.open_command_bar("new")))
+        menu.addAction("New Little Window", lambda: front_then(self.new_little_window))
+        menu.addAction("New Private Window", lambda: front_then(self.private.new_window))
+        spaces = menu.addMenu("Switch to Space")
+        spaces.aboutToShow.connect(lambda: self._fill_dock_spaces(spaces))
+        self._fill_dock_spaces(spaces)
+        menu.setAsDockMenu()
+        self._dock_menu = menu
+
+    def _fill_dock_spaces(self, menu):
+        menu.clear()
+        for space in self.store.spaces:
+            item = menu.addAction(space.name, lambda s=space: (self.bring_to_front(), self.switch_space(s)))
+            item.setCheckable(True)
+            item.setChecked(space is self.store.active_space)
+
+    def apply_shortcuts(self):
+        """The menu items' shortcuts, with yours (Settings → Keyboard Shortcuts) in place of their own."""
+        shortcuts.apply(self.menuBar(), self.store.settings.get(shortcuts.SETTING, {}))
+        self.emit("shortcuts_changed")
 
     # --- Shutdown --------------------------------------------------------------------------
 
@@ -2479,7 +2731,44 @@ class MainWindow(QMainWindow):
             self._note_scroll(tab)
         self.store.window_geometry = bytes(self.saveGeometry().toBase64()).decode()
         self.store.save()
+        # The red button (a close from the window system, not from quitting): on a Mac, Eclipse stays open, in
+        # the Dock and the menu bar, and the window comes back from the Dock as you left it
+        if event.spontaneous() and self.keeps_running():
+            event.ignore()
+            self._put_away()
+            return
         super().closeEvent(event)
+
+    def keeps_running(self) -> bool:
+        return MAC and self.store.settings.get(KEEP_RUNNING, True)
+
+    def apply_keep_running(self):
+        QApplication.instance().setQuitOnLastWindowClosed(not self.keeps_running())  # (⌘Q still quits)
+
+    def _put_away(self):
+        """The window closed while Eclipse keeps running: hidden, its tabs kept, but nothing goes on playing in
+        a window you've closed."""
+        for tab in self.store.all_tabs():
+            if isinstance(tab.view, QWebEngineView):
+                tab.view.page().runJavaScript("document.querySelectorAll('video, audio').forEach(m => m.pause())")
+        if self._fullscreen:
+            self._set_fullscreen(False)
+        elif self.isFullScreen():
+            self.showNormal()
+        self.peek.close_peek() if self.peek.isVisible() else None
+        self.hide()
+        self.emit("put_away")
+
+    def _app_state_changed(self, state):
+        """Clicking the Dock icon (Qt says the app is active then, every click) brings a closed window back,
+        unless another of Eclipse's windows is open, as with any Mac app."""
+        if state != Qt.ApplicationState.ApplicationActive or not self.isHidden() or not self.keeps_running():
+            return
+        if any(w.isVisible() for w in QApplication.topLevelWidgets() if w is not self and w.isWindow()
+               and not w.windowFlags() & (Qt.WindowType.Popup | Qt.WindowType.ToolTip)
+               and w.windowType() in (Qt.WindowType.Window, Qt.WindowType.Dialog)):
+            return
+        self.bring_to_front()
 
     def shutdown(self):
         if self._downloads is not None:

@@ -29,7 +29,8 @@ def test_cookie_banners_are_rejected_and_nothing_else_is_clicked(window, site):
     generic = open_page(window, f"{site}/consent2.html")
     aem = open_page(window, f"{site}/aem.html")
     assert wait_until(lambda: onetrust.view.title() == "REJECTED-ONETRUST", 8)
-    assert wait_until(lambda: generic.view.title() == "REJECTED-GENERIC", 8)  # a banner that came late
+    # A banner that came late, in a tab in the background (where Chromium slows timers: on a busy Mac, a while)
+    assert wait_until(lambda: generic.view.title() == "REJECTED-GENERIC", 20)
     pause(1)
     assert aem.view.title() == "Store"  # a "No thanks" that isn't a cookie banner
     assert generic.view.url().path() == "/consent2.html"  # its "Reject" link wasn't followed
@@ -44,6 +45,9 @@ def test_private_window_keeps_nothing(window, site):
     assert loaded(view)
     assert view.page().profile().isOffTheRecord()
     assert run_js(view, "document.cookie", 0) == ""
+    from PyQt6.QtWebEngineCore import QWebEngineSettings
+    # (a script run from here isn't a click, and pages can't open windows by themselves: allowed for this page)
+    view.page().settings().setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanOpenWindows, True)
     run_js(view, "window.open('img.html', '_blank')", 0)
     assert wait_until(lambda: len(private.views) == 2, 5)  # popups stay in the private window
     assert len(window.store.history) == history
@@ -1364,6 +1368,11 @@ def test_eclipse_saves_a_passkey_and_signs_in_with_it(window, site, monkeypatch)
     asked = _stand_ins(monkeypatch)
     page = site.replace("127.0.0.1", "localhost")
     tab = open_page(window, page + "/index.html?passkeys")
+    # A message that looks like the passkey script's but isn't (from a frame in the page, an ad say) is ignored
+    run_js(tab.view, "console.debug('__eclipse_passkey__:' + JSON.stringify({id: 1, kind: 'create', options: "
+                     "{rp_id: 'localhost', user: 'forged', challenge: 'AQ'}})); 1", world=0)
+    pause(0.4)
+    assert window.passkeys.card_for(tab.view) is None
     # Sites ask first whether the browser has passkeys of its own
     assert run_js(tab.view, "PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable().then(a => "
                             "window.able = a); 1", world=0) and wait_until(
@@ -1639,6 +1648,29 @@ def test_a_verification_code_is_filled_after_touch_id(window, site, monkeypatch)
     assert asked == ["fill your verification code for localhost"]  # (once each time Eclipse opens)
 
 
+def test_a_code_field_heard_before_the_page_has_its_address_still_gets_its_card(window, site, monkeypatch):
+    # The page's script can speak before Qt has told the view where it is (it did, now and then, on fast pages):
+    # with no address, no login matched and the card never came, as the script says each thing only once
+    import json
+    from browser import password_store
+    from browser.webview import PASSWORD_CALL
+    _stand_ins(monkeypatch)
+    page = site.replace("127.0.0.1", "localhost")
+    saved = password_store.add(page, "arkan@example.com", "with codes")
+    password_store.update(saved["id"], otp=password_store.otp_link("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"))
+    tab = open_page(window, "about:blank")
+    view = tab.view
+    monkeypatch.setattr(view, "url", lambda: QUrl())  # (not told yet)
+    window.passwords._said(view, PASSWORD_CALL + json.dumps({"token": window.passwords.token, "kind": "form",
+                                                             "step": "code"}))
+    pause(0.2)
+    assert window.passwords.card_for(view) is None
+    monkeypatch.setattr(view, "url", lambda: QUrl(page + "/verify.html"))  # (and now it is)
+    assert wait_until(lambda: type(window.passwords.card_for(view)).__name__ == "CodeCard", 3)
+    window.passwords.close(window.passwords.card_for(view))
+    window.close_tab(tab)
+
+
 def test_signing_up_gets_a_strong_password_thats_saved(window, site, monkeypatch):
     import re
     from browser import password_store
@@ -1656,3 +1688,12 @@ def test_signing_up_gets_a_strong_password_thats_saved(window, site, monkeypatch
     run_js(tab.view, "document.querySelector('button').click(); 1", world=0)
     assert wait_until(lambda: [(e["username"], e["password"]) for e in password_store.logins()]
                       == [("new@example.com", made)], 5)  # (saved without asking: Eclipse made it)
+
+
+def test_a_page_cant_open_windows_by_itself(window, site):
+    before = len(window._extra_windows)
+    tab = open_page(window, site + "/popup.html")
+    pause(1.0)
+    assert len(window._extra_windows) == before  # (no Little windows: neither at load nor from a timer)
+    assert run_js(tab.view, "window.opened.length === 2 && window.opened.every(w => w === null)", world=0)
+    window.close_tab(tab)

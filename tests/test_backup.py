@@ -49,3 +49,27 @@ def test_rejects_other_zips_and_tricks(data_dir, tmp_path):
     backup.apply_pending()
     assert not (data_dir.parent / "escape.txt").exists()
     assert not (data_dir / "profile" / "Cookies").exists()
+
+
+def test_a_backups_extensions_are_counted_and_can_be_left_out(data_dir, tmp_path):
+    _fill(data_dir, "Theirs")
+    for path, text in (("extensions/abc/manifest.json", "{}"), ("extensions/abc/content.js", "steal()"),
+                       ("userscripts/one.user.js", "x"), ("NativeMessagingHosts/com.evil.json", "{}")):
+        (data_dir / path).parent.mkdir(parents=True, exist_ok=True)
+        (data_dir / path).write_text(text)
+    zip_path = tmp_path / "theirs.zip"
+    backup.create(zip_path)
+    info = backup.describe(zip_path)
+    assert (info["extensions"], info["userscripts"], info["native"]) == (1, 1, 1)
+    # Restored without them: the backup's Spaces arrive, and the extensions you have now stay
+    import shutil
+    for name in backup.CODE + ["session.json"]:
+        target = data_dir / name
+        shutil.rmtree(target) if target.is_dir() else target.unlink(missing_ok=True)
+    (data_dir / "extensions" / "mine").mkdir(parents=True)
+    (data_dir / "extensions" / "mine" / "manifest.json").write_text("{}")
+    backup.stage(zip_path, with_code=False)
+    backup.apply_pending()
+    assert "Theirs" in (data_dir / "session.json").read_text()
+    assert [p.name for p in (data_dir / "extensions").iterdir()] == ["mine"]
+    assert not (data_dir / "userscripts").exists() and not (data_dir / "NativeMessagingHosts").exists()

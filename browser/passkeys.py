@@ -17,7 +17,9 @@
 # Passkeys kept in iCloud Keychain or on a phone can't be used yet: macOS lets a browser reach those only with
 # an entitlement Apple grants browser makers (with a Developer ID), and Qt WebEngine doesn't connect to them.
 
+import hmac
 import json
+import secrets
 
 from PyQt6.QtCore import QEvent, QObject, Qt, QTimer, pyqtSignal
 from PyQt6.QtWebEngineCore import QWebEngineScript, QWebEngineWebAuthUxRequest
@@ -60,6 +62,7 @@ PIN_ERRORS = {
 
 MARK = "__eclipse_passkey__:"  # (how the page script's messages start)
 SCRIPT_NAME = "eclipse-passkeys"
+TOKEN = secrets.token_hex(16)  # (this launch's: see SOURCE)
 # In the page's own world, before the site's scripts: every passkey request goes to the browser first (described:
 # challenge, site, account, which passkeys the site will take), and waits for its answer, through
 # window.__eclipsePasskeys(id, answer): {credential} (one of Eclipse's: built into the objects a site expects),
@@ -69,10 +72,16 @@ SCRIPT_NAME = "eclipse-passkeys"
 # browser has passkeys of its own, and autofill, before offering them: it has both.
 SOURCE = r"""
 (() => {
-  const credentials = navigator.credentials, MARK = %(mark)s, PKC = window.PublicKeyCredential;
+  const credentials = navigator.credentials, MARK = %(mark)s, TOKEN = %(token)s, PKC = window.PublicKeyCredential;
   if (!credentials || !PKC || window.__eclipsePasskeys) return;
   const pending = new Map(), originals = {};
-  const say = console.debug.bind(console);  // (kept now: a site may silence its console later)
+  const debug = console.debug.bind(console);  // (kept now: a site may silence its console later)
+  // Every message carries this launch's token, which only this closure knows: a frame inside the page (an ad)
+  // writes to the same console, but can't pass off a passkey request as the page's
+  // (put together now, before the site's scripts run, and only ever added to: no method a site could replace
+  // ever sees the token)
+  const PREFIX = MARK + '{"token":"' + TOKEN + '",', SKIP = MARK.length + 1;
+  const say = text => debug(PREFIX + text.slice(SKIP));
   let next = 0;
   const b64 = value => {
     if (value == null) return null;
@@ -182,7 +191,7 @@ SOURCE = r"""
     passkeyPlatformAuthenticator: true, userVerifyingPlatformAuthenticator: true, conditionalCreate: false,
     conditionalGet: true, hybridTransport: false, relatedOrigins: false})});
 })();
-""" % {"mark": json.dumps(MARK)}
+""" % {"mark": json.dumps(MARK), "token": json.dumps(TOKEN)}
 
 
 def script() -> QWebEngineScript:
@@ -470,7 +479,7 @@ class Passkeys(QObject):
         view.page().loadStarted.connect(lambda v=view: self._left(v))
         view.destroyed.connect(lambda _=None, key=id(view): self._cards.pop(key, None))
 
-    def _said(self, view, message):
+    def _said(self, view, message, tries=0):
         """The page script: a site asked for a passkey ({id, kind, options}), or one that went to a security key is
         over ({id, done})."""
         if not message.startswith(MARK):
@@ -479,6 +488,13 @@ class Passkeys(QObject):
             said = json.loads(message[len(MARK):])
             request_id = int(said["id"])
         except (ValueError, KeyError, TypeError):
+            return
+        if not hmac.compare_digest(str(said.get("token", "")), TOKEN):
+            return  # (not the page's own script: a frame in it, say)
+        if view.url().isEmpty() and tries < 20:
+            # (a sign-in page asking as it arrives can speak before Qt's told the view its address: then which
+            # site it is isn't known yet, so it's heard again in a moment)
+            QTimer.singleShot(50, lambda: not _gone(view) and self._said(view, message, tries + 1))
             return
         card = self._cards.get(id(view))
         if said.get("done"):

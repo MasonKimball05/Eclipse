@@ -305,6 +305,7 @@ class ContentFrame(QFrame):
         toast_layout.setSpacing(12)
         self.toast_text = QLabel()
         self.toast_text.setObjectName("ToastText")
+        self.toast_text.setTextFormat(Qt.TextFormat.PlainText)  # (it often says a page's title: never as HTML)
         self.toast_button = QPushButton()  # an action to go with it, like Undo
         self.toast_button.setObjectName("ToastAction")
         self.toast_button.setCursor(Qt.CursorShape.PointingHandCursor)

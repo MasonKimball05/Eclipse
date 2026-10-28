@@ -3,6 +3,7 @@
 # Like Arc, every Space has an accent colour; the whole window chrome is tinted
 # with a soft gradient of it. Light/dark follows the macOS appearance setting.
 
+import html
 import random
 from dataclasses import dataclass
 from functools import lru_cache
@@ -230,6 +231,13 @@ class FittedLabel(QLabel):
         super().resizeEvent(event)
         if event.oldSize().width() != event.size().width():
             self.updateGeometry()  # (the height that fits changes with the width)
+
+
+def plain_tip(text: str) -> str:
+    """Text from a page (a title, a site's name) for a tooltip or a message box, shown as it is. Qt takes
+    anything that starts like HTML as HTML, so "<b>accounts.google.com</b><!--" would draw a fake site name and
+    hide the rest; escaped and wrapped like this, it's only ever text."""
+    return '<p style="white-space:pre-wrap">' + html.escape(str(text)) + "</p>"
 
 
 def quiet_scrollbars(area):
@@ -853,6 +861,7 @@ def stylesheet(t: Theme) -> str:
     *[panel="true"] QPushButton#FolderButton {{ text-align: left; }}
     *[panel="true"] QFrame#OptionsCard {{ background: {rgba(t.panel_text, 0.04)}; border: 1px solid {panel_line}; border-radius: 12px; }}
     *[panel="true"] QFrame#DownloadRow {{ background: {rgba(t.panel_text, 0.04)}; border-radius: 10px; }}
+    *[panel="true"] QFrame#DownloadRow:focus {{ background: {rgba(t.accent, 0.16)}; }}
     *[panel="true"] QScrollArea, #DownloadList {{ background: transparent; }}
     *[panel="true"] QProgressBar {{ background: {panel_line}; border: none; border-radius: 2px; }}
     *[panel="true"] QProgressBar::chunk {{ background: {rgba(t.accent)}; border-radius: 2px; }}
@@ -881,10 +890,12 @@ def stylesheet(t: Theme) -> str:
     QListWidget#SettingsList::item {{ padding: 5px 6px; border-radius: 5px; }}
     QListWidget#SettingsList::item:selected {{ background: {rgba(t.accent)}; color: {rgba(t.on_accent)}; }}
     QListWidget#LibraryList {{ background: transparent; border: none; outline: 0; }}
-    QLabel#KeyCap {{
+    QLabel#KeyCap, QPushButton#KeyCap {{
         background: {rgba(t.panel_text, 0.08)}; color: {panel_text}; border: 1px solid {panel_line};
         border-bottom-width: 2px; border-radius: 6px; padding: 2px 8px; font-size: 12px; font-weight: 600;
     }}
+    QPushButton#KeyCap:hover {{ background: {rgba(t.panel_text, 0.14)}; }}
+    QPushButton#KeyCap[recording="true"] {{ border: 2px solid {rgba(t.accent)}; color: {panel_dim}; }}
 
     #ContentFrame[split="true"] {{ background: transparent; }}
     QSplitter#SplitView::handle {{ background: transparent; }}

@@ -127,6 +127,17 @@ def info_plist() -> dict:
             "CFBundleTypeName": "Web page",
             "CFBundleTypeRole": "Viewer",
             "LSItemContentTypes": ["public.html", "public.xhtml"],
+        }, {  # ...and Spaces people share with you (browser/space_share.py), which open in Eclipse
+            "CFBundleTypeName": "Eclipse Space",
+            "CFBundleTypeRole": "Viewer",
+            "LSHandlerRank": "Owner",
+            "LSItemContentTypes": ["com.masonkimball.eclipse.space"],
+        }],
+        "UTExportedTypeDeclarations": [{
+            "UTTypeIdentifier": "com.masonkimball.eclipse.space",
+            "UTTypeDescription": "Eclipse Space",
+            "UTTypeConformsTo": ["public.json", "public.data"],
+            "UTTypeTagSpecification": {"public.filename-extension": ["eclipse-space"]},
         }],
     }
 

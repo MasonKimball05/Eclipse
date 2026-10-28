@@ -4,11 +4,12 @@ from pathlib import Path
 
 # QtWebEngine must be imported before the QApplication is created
 from PyQt6.QtWebEngineWidgets import QWebEngineView  # noqa: F401
-from PyQt6.QtCore import QEvent, QObject, QTimer, QUrl
+from PyQt6.QtCore import QEvent, QObject, QTimer, QUrl, pyqtSlot
+from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication
 
-from . import backup, brand, crash, features, macos, spelling, storage, whats_new
+from . import backup, brand, crash, features, macos, space_share, spelling, storage, whats_new
 from .models import Store
 from .theme import DropdownLists
 from .webview import build_profile
@@ -56,11 +57,30 @@ class LinkReceiver(QObject):
             url = event.url()
             if url.isEmpty() and event.file():
                 url = QUrl.fromLocalFile(event.file())
+            if url.isLocalFile() and Path(url.toLocalFile()).suffix.lower() == space_share.SUFFIX:
+                self.window.import_space_file(url.toLocalFile())  # (a Space someone shared)
+                return True
             if url.isLocalFile() and Path(url.toLocalFile()).suffix.lower() not in OPENABLE_FILES:
                 return True
             self.window.open_external(url.toString())
             return True
         return False
+
+    @pyqtSlot(QUrl)
+    def continue_page(self, url):
+        """A page handed over from your iPhone or iPad (Handoff, with Eclipse as the default browser): macOS
+        gives it to the app, and Qt to whoever handles web links in it. It opens in a tab, to carry on reading."""
+        if url.scheme() in ("http", "https"):
+            self.window.open_url(url.toString())
+            self.window.bring_to_front()
+
+    def listen_for_handoff(self):
+        for scheme in ("https", "http"):  # (also what Qt would open in "the browser" from inside Eclipse: here)
+            QDesktopServices.setUrlHandler(scheme, self, "continue_page")
+
+    def stop(self):
+        for scheme in ("https", "http"):
+            QDesktopServices.unsetUrlHandler(scheme)
 
     def _accept(self):
         socket = self.server.nextPendingConnection()
@@ -105,7 +125,9 @@ def run() -> int:
     if not macos.is_built_app() or brand.chosen_look(store.settings) != brand.LOOK:
         brand.apply_icon(app, store.settings)  # (the built app has the default in its bundle already)
     window = MainWindow(store, profile)
-    app.installEventFilter(LinkReceiver(window, server))
+    receiver = LinkReceiver(window, server)
+    app.installEventFilter(receiver)
+    receiver.listen_for_handoff()
     window.show()
     QTimer.singleShot(0, lambda: (macos.activate_app(), window.raise_(), window.activateWindow()))  # (see activate_app)
     if restored is not None:
@@ -119,6 +141,7 @@ def run() -> int:
     QTimer.singleShot(1500, lambda: setattr(window, "_whats_new", whats_new.show_if_new(window)))
 
     code = app.exec()
+    receiver.stop()
     window.shutdown()
     crash.clean_exit()
     features.after_app()

@@ -13,6 +13,7 @@ import qtawesome as qta
 
 from .models import display_host
 from .features import Feature
+from .theme import plain_tip
 
 WORLD = 1  # the application world: the page's DOM, not its JavaScript
 POLL_MS = 1500
@@ -150,7 +151,7 @@ class NowPlayingCard(QFrame):
         self.next_btn.setIcon(qta.icon("ph.skip-forward-fill", color=color))
         self.close_btn.setIcon(qta.icon("ph.x", color=color))
         self.next_btn.setVisible(has_next)
-        self.setToolTip(f"{title} — {subtitle}\nClick to go to the tab")
+        self.setToolTip(plain_tip(f"{title} — {subtitle}\nClick to go to the tab"))
         self._elide()
 
     def _elide(self):

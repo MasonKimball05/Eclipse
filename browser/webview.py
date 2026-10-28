@@ -35,6 +35,9 @@ def harden(profile):
     say) can't read other files on the Mac: Qt lets it fetch any file:// address by default, and send
     what it reads anywhere."""
     profile.settings().setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, False)
+    # Nor open a pop-up window by itself (Qt allows it by default): window.open() still works after a click,
+    # for sign-in pop-ups, but a page can't bury you in windows from a timer
+    profile.settings().setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanOpenWindows, False)
     # Nor open another app (zoommtg:, vscode:…) by itself: the browser's visible pages ask first (WebPage)
     profile.settings().setUnknownUrlSchemePolicy(QWebEngineSettings.UnknownUrlSchemePolicy.DisallowUnknownUrlSchemes)
 

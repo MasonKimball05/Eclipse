@@ -138,14 +138,21 @@ class ChromeExtension:
     def has_host_access(self, url: str) -> bool:
         return matches(url, self.host_patterns)
 
-    def web_accessible(self, path: str) -> bool:
-        """Whether websites may load this file (web_accessible_resources, MV2 or MV3 form)."""
+    def web_accessible(self, path: str, initiator: str = "") -> bool:
+        """Whether a website (at `initiator`, its origin) may load this file: web_accessible_resources, MV2 or
+        MV3 form, where an entry's "matches" say which sites. The runtime's own files never are, whatever a
+        pattern like "*" says (they'd tell any site which extensions you have, and all their messages)."""
+        if path in (BACKGROUND_PAGE, META_FILE):
+            return False
         entries = self.manifest.get("web_accessible_resources") or []
         globs = []
         for entry in entries:
             if isinstance(entry, str):
                 globs.append(entry)
             elif isinstance(entry, dict):
+                sites = [r for r in (match_pattern(p) for p in entry.get("matches", []) if isinstance(p, str)) if r]
+                if "matches" in entry and not (initiator and matches(initiator.rstrip("/") + "/", sites)):
+                    continue  # (exposed to other sites, not this one)
                 globs += [g for g in entry.get("resources", []) if isinstance(g, str)]
         return any(fnmatch.fnmatchcase(path, g.lstrip("/")) for g in globs)
 
@@ -265,7 +272,7 @@ class ExtensionScheme(QWebEngineUrlSchemeHandler):
         initiator = job.initiator()
         own = initiator.scheme() == "pbext" and initiator.host() == ext.id
         from_browser = initiator.isEmpty()  # typed or opened by us; an opaque origin ("null") is a website
-        if not own and not from_browser and not ext.web_accessible(path):
+        if not own and not from_browser and not ext.web_accessible(path, initiator.toString()):
             job.fail(QWebEngineUrlRequestJob.Error.RequestDenied)
             return
         if path == BACKGROUND_PAGE:

@@ -135,6 +135,7 @@ class SpaceEditor(QWidget):
         line.setFixedHeight(1)
         layout.addWidget(line)
         for icon, text, slot, danger in (("ph.folder-plus", "New Folder", self._new_folder, False),
+                                         ("ph.share-network", "Share Space…", self._share, False),
                                          ("ph.trash", "Delete Space…", self._delete, True)):
             btn = QPushButton(text)
             btn.setObjectName("DangerRow" if danger else "ActionRow")
@@ -236,6 +237,10 @@ class SpaceEditor(QWidget):
     def _new_folder(self):
         self.close()
         self.browser.new_folder()
+
+    def _share(self):
+        self.close()
+        self.browser.share_space(self.space)
 
     def _delete(self):
         self.close()

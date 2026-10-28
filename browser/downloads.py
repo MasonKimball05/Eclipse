@@ -18,7 +18,7 @@ from PyQt6.QtCore import (QFileInfo, QMimeData, QObject, QProcess, QProcessEnvir
 from PyQt6.QtGui import QColor, QDesktopServices, QDrag
 from PyQt6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
                              QFileIconProvider, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QProgressBar,
-                             QPushButton, QScrollArea, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
+                             QMenu, QPushButton, QScrollArea, QSizePolicy, QToolButton, QVBoxLayout, QWidget)
 
 from . import macos
 from .motion import FadesIn
@@ -50,6 +50,24 @@ DEFAULT_SETTINGS = {
     "cookies_from": "",
     "rate_limit": "",
 }
+
+
+# Files that can run something on a Mac when opened (an app, a script, an installer, a link that opens one):
+# a page's download of one asks first
+RISKY = {".app", ".command", ".tool", ".terminal", ".pkg", ".mpkg", ".webloc", ".inetloc", ".fileloc",
+         ".scpt", ".scptd", ".applescript", ".workflow", ".jar", ".sh", ".zsh", ".bash",
+         ".prefpane", ".mobileconfig", ".exe", ".msi", ".bat", ".cmd", ".ps1", ".lnk"}
+
+
+def risky(name: str) -> bool:
+    """Whether a downloaded file of this name could run something when opened (".app.zip" counts: opening the
+    zip unpacks the app)."""
+    parts = [f".{p.lower()}" for p in name.split(".")[1:]]
+    if parts and parts[-1] in (".zip", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar"):
+        parts = parts[:-1] + ([".tar"] if parts[-1] == ".tgz" else [])
+        if parts and parts[-1] == ".tar":
+            parts = parts[:-1]
+    return bool(parts) and parts[-1] in RISKY
 
 
 def ytdlp_settings(store) -> dict:
@@ -131,6 +149,21 @@ def _duration(seconds) -> str:
     seconds = int(seconds)
     h, m, s = seconds // 3600, seconds % 3600 // 60, seconds % 60
     return f"{h}:{m:02}:{s:02}" if h else f"{m}:{s:02}"
+
+
+def quick_look(path, running=None):
+    """Quick Look, as Finder's space bar does (macOS only): a preview of the file in its own panel. Pass back
+    what it returned to close the panel instead, as pressing space again does in Finder."""
+    if running is not None and running.state() != QProcess.ProcessState.NotRunning:
+        running.kill()
+        return None
+    if sys.platform != "darwin" or not path or not os.path.exists(path):
+        return None
+    process = QProcess()
+    process.setStandardOutputFile(QProcess.nullDevice())  # (it talks a lot)
+    process.setStandardErrorFile(QProcess.nullDevice())
+    process.start("/usr/bin/qlmanage", ["-p", path])
+    return process
 
 
 def reveal_in_finder(path):
@@ -345,12 +378,21 @@ class BrowserDownload(DownloadItem):
         self.changed.emit()
 
 
+def _file_mime(path) -> QMimeData:
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(path)])  # (what Finder puts on the clipboard, or drags, for a file)
+    return mime
+
+
 class DownloadRow(QFrame):
+    removed = pyqtSignal(object)
+
     def __init__(self, item: DownloadItem, theme_color):
         super().__init__()
         self.item = item
         self.color = theme_color
         self.setObjectName("DownloadRow")
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)  # (clicked, it takes the space bar: Quick Look)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 8, 8, 8)
         layout.setSpacing(10)
@@ -360,6 +402,7 @@ class DownloadRow(QFrame):
         middle = QVBoxLayout()
         middle.setSpacing(3)
         self.title = QLabel()
+        self.title.setTextFormat(Qt.TextFormat.PlainText)  # (a video's title, from the site)
         self.title.setObjectName("DownloadTitle")
         self.status = QLabel()
         self.status.setObjectName("DownloadStatus")
@@ -403,10 +446,8 @@ class DownloadRow(QFrame):
                 or (event.position().toPoint() - self._press).manhattanLength() < QApplication.startDragDistance()):
             return
         self._press = None
-        mime = QMimeData()
-        mime.setUrls([QUrl.fromLocalFile(path)])
         drag = QDrag(self)
-        drag.setMimeData(mime)
+        drag.setMimeData(_file_mime(path))
         drag.setPixmap(QFileIconProvider().icon(QFileInfo(path)).pixmap(48, 48))
         drag.exec(Qt.DropAction.CopyAction)
 
@@ -419,12 +460,45 @@ class DownloadRow(QFrame):
         if path is not None:
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
+    # Click a finished one and press space for Quick Look (again to close it), as in Finder; right-click for more
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_Space and self._file() is not None:
+            self.look()
+            return
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self._file() is not None:
+            self.mouseDoubleClickEvent(None)
+            return
+        super().keyPressEvent(event)
+
+    def look(self):
+        self._looking = quick_look(self._file(), getattr(self, "_looking", None))
+
+    def contextMenuEvent(self, event):
+        menu = QMenu(self)
+        path = self._file()
+        if path is not None:
+            menu.addAction("Open", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(path)))
+            if sys.platform == "darwin":
+                menu.addAction("Quick Look", self.look)
+            menu.addAction("Show in Finder" if sys.platform == "darwin" else "Show in Folder",
+                           lambda: reveal_in_finder(path))
+            menu.addAction("Copy", lambda: QApplication.clipboard().setMimeData(_file_mime(path)))
+            menu.addSeparator()
+        if self.item.state == "running":
+            if self.item.can_pause:
+                menu.addAction("Resume" if self.item.paused else "Pause", self.item.toggle_pause)
+            menu.addAction("Cancel", self.item.cancel)
+        else:
+            menu.addAction("Remove from List", lambda: self.removed.emit(self))
+        menu.exec(event.globalPos())
+
     def refresh(self):
         item = self.item
         self.title.setText(self.title.fontMetrics().elidedText(item.title, Qt.TextElideMode.ElideMiddle, 380))
         self.title.setToolTip(item.path or item.title)
         if self._file():
-            self.setToolTip("Drag it into another app, or double-click to open it")
+            self.setToolTip("Drag it into another app, double-click to open it, or press space for Quick Look"
+                            if sys.platform == "darwin" else "Drag it into another app, or double-click to open it")
             self.setCursor(Qt.CursorShape.OpenHandCursor)
         self.status.setText(item.status)
         self.bar.setVisible(item.state == "running")
@@ -707,6 +781,7 @@ class DownloadsWindow(FadesIn, QWidget):
         v.setContentsMargins(14, 12, 14, 14)
         v.setSpacing(8)
         self.info_title = QLabel()
+        self.info_title.setTextFormat(Qt.TextFormat.PlainText)
         self.info_title.setObjectName("InfoTitle")
         self.info_title.setWordWrap(True)
         self.info_meta = QLabel()
@@ -881,26 +956,45 @@ class DownloadsWindow(FadesIn, QWidget):
         item.setParent(self)
         self.items.insert(0, item)
         self.empty.hide()
-        self.list_layout.insertWidget(0, DownloadRow(item, self.browser.theme.panel_text))
+        row = DownloadRow(item, self.browser.theme.panel_text)
+        row.removed.connect(self._remove)
+        self.list_layout.insertWidget(0, row)
         item.changed.connect(lambda: self._announce(item))
+        self._badge()
 
     def _announce(self, item):
+        self._badge()
         if item.state == "done" and not getattr(item, "_announced", False):
             item._announced = True
             self.browser.toast(f"Downloaded {item.title}")
+            if QApplication.applicationState() != Qt.ApplicationState.ApplicationActive:
+                QApplication.alert(self.browser, 0)  # (one bounce of the Dock icon: it's ready, while you're elsewhere)
+
+    def _badge(self):
+        """The Dock icon counts the downloads still coming ("↓2"; unread messages from your sites come first)."""
+        count = self.active_count
+        if count != getattr(self, "_badged", 0):
+            self._badged = count
+            macos.set_dock_badge(f"↓{count}" if count else "", "downloads")
+
+    def _remove(self, row):
+        if row.item in self.items:
+            self.items.remove(row.item)
+        row.hide()
+        row.deleteLater()
+        self.empty.setVisible(not self.items)
 
     def clear_finished(self):
         for row in self.findChildren(DownloadRow):
             if row.item.state != "running":
-                self.items.remove(row.item)
-                row.deleteLater()
-        self.empty.setVisible(not self.items)
+                self._remove(row)
 
     @property
     def active_count(self) -> int:
         return sum(1 for i in self.items if i.state == "running")
 
     def shutdown(self):
+        macos.set_dock_badge("", "downloads")
         for item in self.items:
             if isinstance(item, YtDlpDownload):
                 item.cancel()

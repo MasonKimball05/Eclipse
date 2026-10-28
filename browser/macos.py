@@ -271,11 +271,19 @@ def style_traffic_lights(widget, hidden: bool, alpha: float = 1.0, animate=False
 # --- Dock badge --------------------------------------------------------------------------------
 
 _badge = None
+_badges = {"unread": "", "downloads": ""}  # (what each wants shown: unread messages win, then downloads)
 
 
-def set_dock_badge(text: str):
-    """The number on the Dock icon (unread messages across your sites); "" removes it."""
+def dock_badge_text() -> str:
+    return _badges["unread"] or _badges["downloads"]
+
+
+def set_dock_badge(text: str, source="unread"):
+    """The Dock icon's badge: unread messages across your sites (source "unread", a number or "•"), or else the
+    downloads still coming (source "downloads", "↓2"). "" removes that source's."""
     global _badge
+    _badges[source] = text
+    text = dock_badge_text()
     if _objc is None or text == _badge:
         return
     _badge = text
@@ -288,6 +296,53 @@ def set_dock_badge(text: str):
     _send(tile, "display", restype=None)
     if label:
         _cf.CFRelease(label)
+
+
+# --- Handoff -------------------------------------------------------------------------------------------
+#
+# The page you're on, offered to your iPhone and iPad (and other Macs) signed in to the same Apple Account: it
+# shows in their app switcher or Dock, and opens there in their browser. It's the activity macOS has for web
+# browsing, so no setup is needed (only Handoff turned on, in System Settings → General → AirDrop & Handoff).
+
+_activity = None  # (the activity being offered: kept, or macOS stops offering it)
+
+
+def handoff(url: str, title: str = "") -> bool:
+    """Offer this page to your other devices (in place of whatever was offered before)."""
+    global _activity
+    if not _cocoa() or not url.startswith(("https://", "http://")):
+        end_handoff()
+        return False
+    text = _cfstr(url)
+    link = _send(_objc.objc_getClass(b"NSURL"), "URLWithString:", text, argtypes=(ctypes.c_void_p,))
+    _cf.CFRelease(text)
+    if not link:
+        end_handoff()
+        return False
+    if _activity is None:
+        kind = _cfstr("NSUserActivityTypeBrowsingWeb")
+        made = _send(_objc.objc_getClass(b"NSUserActivity"), "alloc")
+        _activity = _send(made, "initWithActivityType:", kind, argtypes=(ctypes.c_void_p,)) if made else None
+        _cf.CFRelease(kind)
+        if not _activity:
+            _activity = None
+            return False
+    _send(_activity, "setWebpageURL:", link, restype=None, argtypes=(ctypes.c_void_p,))
+    name = _cfstr(title[:200]) if title else None
+    _send(_activity, "setTitle:", name, restype=None, argtypes=(ctypes.c_void_p,))
+    if name:
+        _cf.CFRelease(name)
+    _send(_activity, "becomeCurrent", restype=None)
+    return True
+
+
+def end_handoff():
+    """Stop offering a page (a private window's in front, the window's closed, nothing's open)."""
+    global _activity
+    if _activity is not None:
+        _send(_activity, "invalidate", restype=None)
+        _send(_activity, "release", restype=None)
+        _activity = None
 
 
 # --- Share menu --------------------------------------------------------------------------------

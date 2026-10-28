@@ -23,6 +23,10 @@ OLD_FORMATS = ("pythonbrowser-backup",)  # (made before the rename: restored the
 INCLUDED = ["session.json", "notes", "easels", "browse", "userscripts", "extension_storage", "extensions",
             "NativeMessagingHosts", "passkeys", "passwords", "recovery.json"]
 PENDING = "restore-pending"
+# What runs code: in your pages (extensions, userscripts) or on your Mac (the apps extensions may talk to). A backup
+# from someone else could carry any of it, so restoring says what's there, and can leave it out.
+CODE = ["extensions", "extension_storage", "userscripts", "NativeMessagingHosts"]
+KEEP_CODE = "keep-current-extensions"  # (in a staged restore: leave the extensions you have now)
 
 
 def create(dest: Path) -> int:
@@ -49,6 +53,7 @@ def describe(path: Path) -> dict:
         with zipfile.ZipFile(path) as archive:
             info = json.loads(archive.read("backup.json"))
             session = json.loads(archive.read("session.json")) if "session.json" in archive.namelist() else {}
+            names = archive.namelist()
     except (KeyError, ValueError, zipfile.BadZipFile) as error:
         raise ValueError(f"That isn't a {brand.NAME} backup.") from error
     if info.get("format") not in (FORMAT, *OLD_FORMATS):
@@ -56,11 +61,23 @@ def describe(path: Path) -> dict:
     spaces = session.get("spaces", [])
     return {"created": info.get("created", 0), "files": info.get("files", 0),
             "spaces": [s.get("name", "") for s in spaces],
-            "tabs": sum(len(s.get("pinned", [])) + len(s.get("today", [])) for s in spaces)}
+            "tabs": sum(len(s.get("pinned", [])) + len(s.get("today", [])) for s in spaces),
+            **code_in(names)}
 
 
-def stage(path: Path):
-    """Unpack a backup so the next launch restores it."""
+def code_in(names: list[str]) -> dict:
+    """What in a backup's files runs code: {"extensions": n, "userscripts": n, "native": n}."""
+    def under(top, depth):
+        return {"/".join(n.split("/")[:depth]) for n in names if n.startswith(top + "/") and n.count("/") >= depth - 1
+                and not n.endswith("/")}
+    return {"extensions": len(under("extensions", 2)),
+            "userscripts": len([n for n in under("userscripts", 2) if n.endswith(".js")]),
+            "native": len([n for n in under("NativeMessagingHosts", 2) if n.endswith(".json")])}
+
+
+def stage(path: Path, with_code=True):
+    """Unpack a backup so the next launch restores it. Without code: not its extensions, userscripts or apps
+    for extensions, and the ones you have now stay."""
     import zipfile
     describe(path)  # refuses anything that isn't a backup
     pending = storage.data_dir() / PENDING
@@ -74,8 +91,12 @@ def stage(path: Path):
             # Only what a backup can contain, and nothing that climbs out of the folder
             if top not in INCLUDED or not target.is_relative_to(pending.resolve()) or name.endswith("/"):
                 continue
+            if top in CODE and not with_code:
+                continue
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(archive.read(name))
+    if not with_code:
+        (pending / KEEP_CODE).touch()
 
 
 def apply_pending() -> Path | None:
@@ -86,7 +107,10 @@ def apply_pending() -> Path | None:
         return None
     kept = root / time.strftime("before-restore-%Y-%m-%d-%H%M%S")
     kept.mkdir()
+    keep_code = (pending / KEEP_CODE).exists()
     for name in INCLUDED:
+        if keep_code and name in CODE:
+            continue
         if (root / name).exists():
             shutil.move(str(root / name), str(kept / name))
         if (pending / name).exists():

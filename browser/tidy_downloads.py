@@ -4,6 +4,7 @@
 # ever overwritten, and Claude can leave a name alone if it's already clear.
 
 import re
+import unicodedata
 from pathlib import Path
 
 from PyQt6.QtPdf import QPdfDocument
@@ -53,6 +54,9 @@ def clean_name(reply: str) -> str | None:
         return None
     name = re.sub(r"\.[A-Za-z0-9]{2,4}$", "", name)          # drop an extension Claude added anyway
     name = re.sub(r'[/\\:*?"<>|\x00-\x1f]', " ", name)        # characters macOS or other systems won't take
+    # Nor ones that change how the rest reads: a right-to-left override makes "Invoice\u202efdp.command" show as
+    # "Invoicedmmoc.pdf" (and zero-width ones hide things)
+    name = "".join(c for c in name if unicodedata.category(c) not in ("Cf", "Cc"))
     name = re.sub(r"\s+", " ", name).strip(" .")
     return name[:MAX_NAME].strip() or None
 

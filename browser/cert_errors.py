@@ -132,12 +132,17 @@ class CertificateWarning(QWidget):
         return False
 
 
+def _site(url: QUrl) -> tuple[str, int]:
+    return url.host().lower(), url.port(443)
+
+
 class CertificateGuard:
     """Gives every page's certificate errors the warning card."""
 
     def __init__(self, browser):
         self.browser = browser
         self._cards = {}  # id(view) → CertificateWarning
+        self._visited_anyway = set()  # (host, port) you went on to anyway: no lock in the pill for them
 
     def attach(self, view):
         view.page().certificateError.connect(lambda error, v=view: self._error(v, error))
@@ -158,6 +163,10 @@ class CertificateGuard:
                                                    lambda _=False, v=view: self.visit_anyway(v))
         card.previous = previous if previous != error.url() else QUrl()
 
+    def overridden(self, url) -> bool:
+        """Whether this address's site has a certificate you chose to trust anyway (this session)."""
+        return _site(QUrl(url)) in self._visited_anyway
+
     def warning(self, view):
         return self._cards.get(id(view))
 
@@ -165,6 +174,7 @@ class CertificateGuard:
         card = self._cards.pop(id(view), None)
         if card is not None:
             card.error.acceptCertificate()  # for this site, until the browser quits
+            self._visited_anyway.add(_site(card.error.url()))
             card.done()
 
     def go_back(self, view):

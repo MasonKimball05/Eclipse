@@ -29,7 +29,8 @@ UP, UV, BE, BS, AT = 0x01, 0x04, 0x08, 0x10, 0x40  # authenticator data flags: p
                                                     # eligible, backed up, credential included
 
 # Domains under which anyone can register a name (so a site can't claim one as its own): the common two-part
-# ones. (The full Public Suffix List isn't here; a site claiming "co.uk" is refused, one claiming the rare
+# ones, and hosting services that give each customer a name under theirs (so evil.neocities.org can't use
+# neocities.org's passwords or passkeys). (The full Public Suffix List isn't here; a site claiming "co.uk" is refused, one claiming the rare
 # suffix missing from this list would still need you to approve the passkey on its own page.)
 PUBLIC_SUFFIXES = {
     "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "ltd.uk", "plc.uk", "net.uk", "com.au", "net.au", "org.au",
@@ -38,6 +39,25 @@ PUBLIC_SUFFIXES = {
     "co.za", "com.sg", "com.hk", "com.tw", "co.il", "github.io", "gitlab.io", "pages.dev", "netlify.app",
     "vercel.app", "herokuapp.com", "appspot.com", "web.app", "firebaseapp.com", "blogspot.com", "azurewebsites.net",
     "cloudfront.net", "workers.dev", "fly.dev", "onrender.com", "glitch.me", "repl.co",
+    # More countries' second levels
+    "com.pl", "net.pl", "org.pl", "com.es", "org.es", "com.pt", "com.gr", "com.ru", "org.ru", "com.ua", "co.at",
+    "or.at", "co.hu", "com.ro", "co.id", "or.id", "web.id", "com.my", "org.my", "com.ph", "com.vn", "com.pk",
+    "com.bd", "com.eg", "com.sa", "com.ng", "co.ke", "com.co", "com.pe", "com.ve", "com.uy", "com.ec", "co.th",
+    "in.th", "ac.nz", "gen.nz", "net.nz", "id.au", "asn.au", "qc.ca", "on.ca", "bc.ca", "ab.ca", "co.no",
+    "gov.in", "ac.in", "edu.cn", "gov.cn", "ac.za", "org.za", "gov.za", "ac.il", "org.il", "gob.mx", "org.mx",
+    "edu.mx", "gov.br", "edu.br", "co.ve", "com.nz",
+    # Hosting where each customer gets a name under the company's
+    "neocities.org", "myshopify.com", "ngrok.io", "ngrok-free.app", "ngrok.app", "s3.amazonaws.com",
+    "elasticbeanstalk.com", "amplifyapp.com", "awsapps.com", "cloudfunctions.net", "run.app", "r.appspot.com",
+    "azurestaticapps.net", "azureedge.net", "trafficmanager.net", "windows.net", "blob.core.windows.net",
+    "web.core.windows.net", "digitaloceanspaces.com", "ondigitalocean.app", "railway.app", "up.railway.app",
+    "deno.dev", "surge.sh", "now.sh", "bitbucket.io", "readthedocs.io", "wordpress.com", "tumblr.com",
+    "substack.com", "wixsite.com", "weebly.com", "squarespace.com", "webflow.io", "carrd.co", "notion.site",
+    "framer.app", "framer.website", "pythonanywhere.com", "replit.app", "replit.dev", "codesandbox.io",
+    "csb.app", "stackblitz.io", "github.dev", "githubpreview.dev", "app.github.dev", "gitpod.io",
+    "duckdns.org", "dyndns.org", "no-ip.org", "ddns.net", "hopto.org", "freemyip.com", "loca.lt",
+    "trycloudflare.com", "pages.github.com", "githubusercontent.com", "sharepoint.com", "translate.goog",
+    "blogspot.co.uk", "000webhostapp.com", "fandom.com", "medium.com", "hashnode.dev", "itch.io", "bandcamp.com",
 }
 
 

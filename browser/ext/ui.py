@@ -792,6 +792,9 @@ class ExtensionsFeature(Feature):
     def menus(self, add, menus, bar):
         self.install_shortcuts()  # after every menu, so they can't steal a browser shortcut
 
+    def shortcuts_changed(self):
+        self.install_shortcuts()  # (one you've given a menu item now is the browser's)
+
     def commands(self):
         window = self.window
         return [("Extensions & Userscripts", "ph.puzzle-piece", lambda: window.open_settings("extensions")),

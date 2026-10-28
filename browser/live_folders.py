@@ -37,6 +37,7 @@ from .downloads import find_tool
 from .models import TODAY, Folder, Tab, walk_folders, walk_tabs
 from .timefmt import portable
 
+MAX_FEED_BYTES = 8_000_000
 REFRESH_MS = 30 * 60 * 1000
 GH_TIMEOUT_MS = 30_000  # gh stuck on the network that long is given up on
 MAX_ITEMS = 25
@@ -412,10 +413,13 @@ class LiveFolders(QObject):
         request.setAttribute(QNetworkRequest.Attribute.RedirectPolicyAttribute, policy)
         request.setTransferTimeout(20_000)
         reply = self.network.get(request)
+        # (a feed is a few hundred KB at most: one that goes on and on is stopped rather than kept in memory)
+        reply.downloadProgress.connect(lambda received, _total: received > MAX_FEED_BYTES and reply.abort())
 
         def finished():
             if reply.error() != QNetworkReply.NetworkError.NoError:
-                fail(reply.errorString())
+                fail("it's too big to be a feed" if reply.bytesAvailable() > MAX_FEED_BYTES or
+                     reply.error() == QNetworkReply.NetworkError.OperationCanceledError else reply.errorString())
             else:
                 done(bytes(reply.readAll()), reply.url().toString())
             reply.deleteLater()

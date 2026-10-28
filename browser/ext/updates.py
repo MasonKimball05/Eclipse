@@ -16,6 +16,7 @@ from PyQt6.QtCore import QObject, QTimer
 from PyQt6.QtWidgets import QMessageBox
 
 from . import chrome, userscripts
+from ..theme import plain_tip
 from .ui import fetch
 
 CHECK_EVERY_SECONDS = 24 * 3600
@@ -165,5 +166,6 @@ class Updater(QObject):
             self._done_one()
 
     def _ask(self, title, detail) -> bool:
-        answer = QMessageBox.question(self.browser, "Update Available", f"{title}.\n\n{detail}\n\nUpdate it?")
+        # (as text, never HTML: the name and version come from the script's own update file)
+        answer = QMessageBox.question(self.browser, "Update Available", plain_tip(f"{title}.\n\n{detail}\n\nUpdate it?"))
         return answer == QMessageBox.StandardButton.Yes

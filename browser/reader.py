@@ -193,6 +193,7 @@ class ReaderView(QFrame):
         row.setSpacing(4)
         self.label = QLabel("Reader")
         self.label.setObjectName("ReaderLabel")
+        self.label.setTextFormat(Qt.TextFormat.PlainText)  # (it shows the site's own name for itself)
         row.addWidget(self.label)
         row.addStretch(1)
         self.smaller = self._button("ph.text-aa", "Smaller text", lambda: self.step_size(-1), small=True)

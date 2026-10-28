@@ -1306,8 +1306,13 @@ class ExtensionHost(QObject):
         self.browser.toast(f"{title} — {text}" if text else title)
 
     def _m_gm_xhr(self, bridge, script_id, details):
-        # GM_xmlhttpRequest exists to get around the same-origin rule, so it's made from Python
-        request = QNetworkRequest(QUrl(details["url"]))
+        # GM_xmlhttpRequest exists to get around the same-origin rule, so it's made from Python. Only to the web:
+        # Python could read file:// too, and a script that builds its address from the page would hand your files
+        # to whatever page tricked it
+        url = QUrl(details["url"])
+        if url.scheme() not in ("http", "https"):
+            raise PermissionError("only http and https addresses can be fetched")
+        request = QNetworkRequest(url)
         request.setAttribute(QNetworkRequest.Attribute.RedirectPolicyAttribute,
                              QNetworkRequest.RedirectPolicy.NoLessSafeRedirectPolicy)
         for name, value in (details.get("headers") or {}).items():

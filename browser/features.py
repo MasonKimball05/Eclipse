@@ -19,7 +19,7 @@ import traceback
 FEATURE_MODULES = [
     "self_update", "arc_import", "welcome", "addresses", "member_card", "notes", "easel", "gestures", "now_playing", "upnext",
     "integrations_ui", "github_status", "live_folder_dialog", "boosts", "claude_feature", "page_chat",
-    "ext.ui",
+    "handoff", "sync", "ext.ui",
 ]
 CORE_ONLY = "ECLIPSE_CORE_ONLY"
 
@@ -158,6 +158,12 @@ class Feature:
     def menus(self, add, menus, bar) -> None:
         """Items for the menu bar: add(menus["File"], title, shortcut, action). bar: the menu bar itself, for a
         menu of the feature's own."""
+
+    def put_away(self) -> None:
+        """The window was closed while Eclipse keeps running (hidden: it comes back from the Dock)."""
+
+    def shortcuts_changed(self) -> None:
+        """The menu items' shortcuts changed (yours, from Settings → Keyboard Shortcuts, are in place)."""
 
     def pill_buttons(self) -> list:
         """Chips for the address pill (a pull request's checks, Save Job), shown or hidden by update_pill."""

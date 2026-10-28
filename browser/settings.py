@@ -3,21 +3,25 @@
 # Most settings live in Store.settings and take effect immediately; the window calls back into
 # MainWindow for anything that has to change live (ad blocking, Claude, default browser, …).
 
+import sys
+import time
+
 import qtawesome as qta
 from PyQt6.QtCore import QSize, Qt, QUrl
-from PyQt6.QtGui import QIcon, QKeySequence, QPixmap
+from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame,
                              QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
                              QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout,
                              QWidget)
 
-from . import brand, clean_links, dark_pages, macos, passwords, spelling, tab_titles, verified
+from . import brand, clean_links, dark_pages, macos, passwords, shortcuts, spelling, tab_titles, verified
 from .command_bar import CUSTOM_SETTING, SEARCH_ENGINES, use_custom_sites
 from .downloads import DownloadSettingsForm, find_tool
 from .external_links import all_rules as external_rules, set_allowed as set_external
 from .motion import FadesIn
 from .permissions import set_capture_rule
 from .theme import FittedLabel, quiet_scrollbars, stylesheet
+from .timefmt import portable
 from .webview import DEFAULT_PROFILE
 
 ARCHIVE_CHOICES = [(12, "12 hours"), (24, "1 day"), (24 * 7, "7 days"), (24 * 30, "30 days"), (0, "Never")]
@@ -465,6 +469,35 @@ class SettingsWindow(FadesIn, QWidget):
                               self.spell_box)
         spell_row.layout().itemAt(0).layout().addWidget(self.spell_status)
         self._spell_download = None
+        self.keep_running_box = QCheckBox()
+        self.keep_running_box.setChecked(self.browser.keeps_running())
+        self.keep_running_box.toggled.connect(self._toggle_keep_running)
+        keep_row = self._row("Keep running when the window closes", "Like other Mac apps: closing the window "
+                             "leaves Eclipse in the Dock, and clicking it brings your tabs back. ⌘Q quits.",
+                             self.keep_running_box)
+        self.handoff_box = QCheckBox()
+        self.handoff_box.setChecked(self.store.settings.get("handoff", True))
+        self.handoff_box.toggled.connect(self._toggle_handoff)
+        handoff_row = self._row("Offer pages to your iPhone and iPad (Handoff)", "The page you're on shows in "
+                                "their app switcher, to carry on reading there. Not private windows.",
+                                self.handoff_box)
+        # (hidden, never setVisible(True): with no parent yet, that would make a row a window of its own)
+        if sys.platform != "darwin":
+            keep_row.hide()
+        if sys.platform != "darwin" or self.browser.feature("handoff") is None:
+            handoff_row.hide()
+        self.sync_box = QCheckBox()
+        self.sync_box.setChecked(bool(self.store.settings.get("sync")))
+        self.sync_box.toggled.connect(self._toggle_sync)
+        self.sync_status = QLabel()
+        self.sync_status.setObjectName("Hint")
+        self.sync_status.setWordWrap(True)
+        sync_row = self._row("Sync with your other Macs and PCs", "Spaces, their pinned tabs and folders, and "
+                             "Favorites, through iCloud Drive. Today's tabs stay on each computer.", self.sync_box)
+        sync_row.layout().itemAt(0).layout().addWidget(self.sync_status)
+        sync_card = self._card([sync_row])
+        if self.browser.feature("sync") is None:
+            sync_card.hide()
 
         self.shortcut_list = QListWidget(self)  # (a parent from the start: shown, it's never a window of its own)
         self.shortcut_list.setObjectName("SettingsList")
@@ -485,7 +518,8 @@ class SettingsWindow(FadesIn, QWidget):
                         self._row("Open links from other apps in",
                                   "Like Arc, a Little window is quick to glance at and close. ⌘O keeps it.", links),
                         self._row("Search engine", "Used by the command bar and Little windows.", engine),
-                        spell_row]),
+                        spell_row, keep_row, handoff_row]),
+            sync_card,
             self._card([self._row("Search shortcuts", "Your own sites to search from ⌘T: type the keyword and a "
                                                       "space (\u201cparl budget\u201d), or the keyword and Tab. "
                                                       "Built-in ones: yt, gh, w, r, x, az, so, npm, pypi…",
@@ -781,11 +815,23 @@ class SettingsWindow(FadesIn, QWidget):
         self.shortcut_filter = QLineEdit()
         self.shortcut_filter.setPlaceholderText("Search shortcuts…")
         self.shortcut_filter.textChanged.connect(self._fill_shortcuts)
+        hint = QLabel("Click a shortcut and type a new one (Delete removes it, Esc leaves it). Search to give any "
+                      "menu item one.")
+        hint.setObjectName("Hint")
+        hint.setWordWrap(True)
+        self.shortcut_reset = QPushButton("Restore Defaults")
+        self.shortcut_reset.clicked.connect(self._reset_shortcuts)
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.addWidget(hint, 1)
+        top.addWidget(self.shortcut_reset, 0, Qt.AlignmentFlag.AlignTop)
+        header = QWidget()
+        header.setLayout(top)
         self.shortcut_box = QWidget()
         self.shortcut_layout = QVBoxLayout(self.shortcut_box)
         self.shortcut_layout.setContentsMargins(0, 0, 0, 0)
         self.shortcut_layout.setSpacing(14)
-        return self._stack(self.shortcut_filter, self.shortcut_box)
+        return self._stack(self.shortcut_filter, header, self.shortcut_box)
 
     # --- Live state ------------------------------------------------------------------------
 
@@ -828,6 +874,8 @@ class SettingsWindow(FadesIn, QWidget):
         self._fill_air_rules()
         self._fill_permissions()
         self._fill_shortcuts()
+        self.sync_status.setText(self._sync_text())
+        self.sync_status.setVisible(bool(self.sync_status.text()))
 
     def _fill_permissions(self):
         self.perm_list.clear()
@@ -954,44 +1002,151 @@ class SettingsWindow(FadesIn, QWidget):
                 item.widget().hide()  # gone at once: deleteLater alone leaves it drawn under the new rows
                 item.widget().deleteLater()
         query = self.shortcut_filter.text().strip().lower()
-        groups: dict[str, list[tuple[str, str]]] = {}
-        for group, name, keys in self._menu_shortcuts() + [(g, d, k) for g, k, d in EXTRA_SHORTCUTS]:
-            if not query or query in name.lower() or query in group.lower() or query in keys.lower():
-                groups.setdefault(group, []).append((name, keys))
+        mine = self.store.settings.get(shortcuts.SETTING, {})
+        self.shortcut_reset.setEnabled(bool(mine))
+        groups: dict[str, dict[str, list]] = {}
+        for key, group, name, action in shortcuts.menu_items(self.browser.menuBar()):
+            keys = shortcuts.portable(action.shortcut())
+            if not keys and key not in mine and not query:
+                continue  # (searching shows the items without one, to give them one)
+            if not query or query in name.lower() or query in group.lower() or \
+                    (keys and query in shortcuts.native(keys).lower()):
+                groups.setdefault(group, {}).setdefault(name, []).append((key, keys, action))
+        for group, keys, description in EXTRA_SHORTCUTS:
+            if not query or query in description.lower() or query in group.lower() or query in keys.lower():
+                groups.setdefault(group, {})[description] = keys
         for group, rows in groups.items():
             title = QLabel(group.upper())
             title.setObjectName("EditorSection")
             self.shortcut_layout.addWidget(title)
-            self.shortcut_layout.addWidget(self._card([self._shortcut_row(n, k) for n, k in rows]))
+            self.shortcut_layout.addWidget(self._card([self._shortcut_row(n, k) for n, k in rows.items()]))
         if not groups:
             empty = QLabel("No shortcuts match.")
             empty.setObjectName("Hint")
             self.shortcut_layout.addWidget(empty)
 
     def _shortcut_row(self, name, keys) -> QWidget:
+        """A menu item's row (its shortcuts can be changed), or one of the fixed ones (`keys` is their text)."""
         row = QWidget()
         h = QHBoxLayout(row)
         h.setContentsMargins(0, 4, 0, 4)
         label = QLabel(name)
         h.addWidget(label, 1)
-        for part in keys.split(" / "):
-            cap = QLabel(part)
-            cap.setObjectName("KeyCap")
-            h.addWidget(cap)
+        if isinstance(keys, str):
+            for part in keys.split(" / "):
+                cap = QLabel(part)
+                cap.setObjectName("KeyCap")
+                h.addWidget(cap)
+            return row
+        mine = self.store.settings.get(shortcuts.SETTING, {})
+        if any(key in mine for key, _keys, _action in keys):
+            reset = QPushButton("Reset")
+            reset.setObjectName("Link")
+            reset.setFlat(True)
+            reset.setCursor(Qt.CursorShape.PointingHandCursor)
+            reset.setToolTip("Back to " + " / ".join(shortcuts.native(shortcuts.default_of(a)) or "none"
+                                                     for _key, _keys, a in keys))
+            reset.clicked.connect(lambda _=False, k=[key for key, _keys, _a in keys]: self._reset_shortcuts(k))
+            h.addWidget(reset)
+        for key, current, action in keys:
+            recorder = shortcuts.KeyRecorder(current)
+            recorder.setToolTip("Click, then type a new shortcut")
+            recorder.chosen.connect(lambda new, key=key, action=action: self._set_shortcut(key, action, new))
+            h.addWidget(recorder)
         return row
 
-    def _menu_shortcuts(self) -> list[tuple[str, str, str]]:
-        """(menu, action, keys) for every menu-bar item that has a shortcut, merged by name."""
-        found: dict[tuple[str, str], list[str]] = {}
+    def _set_shortcut(self, key, action, keys):
+        name = action.text().replace("&", "")
+        why = shortcuts.problem(keys)
+        if why:
+            QMessageBox.information(self, "Keyboard Shortcut", f"{why} Pick another one for {name}.")
+            return
+        mine = self.store.settings.get(shortcuts.SETTING, {})
+        taken = shortcuts.user_of(self.browser.menuBar(), keys, skip=key)
+        if taken is not None:
+            other_key, other = taken
+            answer = QMessageBox.question(
+                self, "Keyboard Shortcut", f"{shortcuts.native(keys)} is the shortcut for {other}. Use it for "
+                f"{name} instead? ({other} will have none.)")
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            other_action = next(a for k, _g, _n, a in shortcuts.menu_items(self.browser.menuBar()) if k == other_key)
+            mine = shortcuts.changed(mine, other_key, "", shortcuts.default_of(other_action))
+        mine = shortcuts.changed(mine, key, keys, shortcuts.default_of(action))
+        self._save_shortcuts(mine)
+        self.browser.toast(f"{name}: {shortcuts.native(keys) or 'no shortcut'}")
 
-        def walk(menu, group):
-            for action in menu.actions():
-                if action.menu() is not None:
-                    walk(action.menu(), group)
-                elif not action.shortcut().isEmpty():
-                    keys = action.shortcut().toString(QKeySequence.SequenceFormat.NativeText)
-                    found.setdefault((group, action.text().replace("&", "")), []).append(keys)
-        for action in self.browser.menuBar().actions():
-            if action.menu() is not None:
-                walk(action.menu(), action.text().replace("&", ""))
-        return [(group, name, " / ".join(dict.fromkeys(keys))) for (group, name), keys in found.items()]
+    def _reset_shortcuts(self, keys=None):
+        mine = self.store.settings.get(shortcuts.SETTING, {})
+        if keys is None:
+            if QMessageBox.question(self, "Restore Defaults", f"Put back {brand.NAME}'s own shortcuts for "
+                                    f"the {len(mine)} you've changed?") != QMessageBox.StandardButton.Yes:
+                return
+            mine = {}
+        else:
+            mine = {k: v for k, v in mine.items() if k not in keys}
+        self._save_shortcuts(mine)
+
+    def _sync_text(self):
+        feature = self.browser.feature("sync")
+        if feature is None:
+            return ""
+        from . import sync as module  # (a feature's: only once it's known to be here)
+        if module.sync_folder() is None:
+            return "Turn on iCloud Drive (System Settings → your name → iCloud) to sync."
+        if not self.store.settings.get("sync"):
+            return ""
+        engine = feature.sync
+        if engine.last is None:
+            return "Syncing…"
+        others = ", ".join(engine.devices[:3]) or "no other computers yet"
+        return f"Synced {time.strftime(portable('%-I:%M %p'), time.localtime(engine.last))} · with {others}"
+
+    def _toggle_sync(self, on):
+        feature = self.browser.feature("sync")
+        if feature is None:
+            return
+        from . import sync as module
+        if on and module.sync_folder() is None:
+            QMessageBox.information(self, "Sync", "Sync goes through iCloud Drive, which isn't on. Turn it on in "
+                                    "System Settings → your name → iCloud → iCloud Drive, then try again.")
+            self.sync_box.setChecked(False)
+            return
+        if on:
+            first = feature.sync.first_look()
+            if first is not None:
+                box = QMessageBox(QMessageBox.Icon.Question, "Sync",
+                                  f"{first['name']} already syncs its Spaces: {', '.join(first['spaces'][:6])}.",
+                                  parent=self)
+                box.setTextFormat(Qt.TextFormat.PlainText)
+                box.setInformativeText("Use its Spaces here (yours are kept in a backup), or keep both sets?")
+                theirs = box.addButton(f"Use {first['name']}'s", QMessageBox.ButtonRole.AcceptRole)
+                both = box.addButton("Keep Both", QMessageBox.ButtonRole.AcceptRole)
+                box.addButton(QMessageBox.StandardButton.Cancel)
+                box.setDefaultButton(both)
+                box.exec()
+                if box.clickedButton() not in (theirs, both):
+                    self.sync_box.setChecked(False)
+                    return
+                if box.clickedButton() is theirs:
+                    feature.sync.adopt()
+        self._setting("sync", on)
+        feature.sync.refresh_setting()
+        if on:
+            feature.sync.run()
+        self.sync_status.setText(self._sync_text())
+
+    def _toggle_handoff(self, on):
+        self._setting("handoff", on)
+        feature = self.browser.feature("handoff")
+        if feature is not None:
+            feature.offer()
+
+    def _toggle_keep_running(self, on):
+        self._setting("keep_running", on)
+        self.browser.apply_keep_running()
+
+    def _save_shortcuts(self, mine):
+        self._setting(shortcuts.SETTING, mine)
+        self.browser.apply_shortcuts()
+        self._fill_shortcuts()

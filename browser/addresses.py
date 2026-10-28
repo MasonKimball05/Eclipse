@@ -15,7 +15,7 @@ import os
 import secrets
 import time
 
-from PyQt6.QtCore import QObject
+from PyQt6.QtCore import QObject, QTimer
 from PyQt6.QtWebEngineCore import QWebEngineScript
 from PyQt6.QtWidgets import QPushButton
 
@@ -38,7 +38,19 @@ SOURCE = r"""
   if (window.__eclipseAddress) return;
   const TOKEN = %(token)s, MARK = %(mark)s, say = console.debug.bind(console);
   const tell = data => say(MARK + JSON.stringify({token: TOKEN, ...data}));
-  const shown = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+  // Only a field you can actually see is filled: a page can't hide others (off the side, see-through, a pixel
+  // wide, invisible) beside the one you click and collect your address through them
+  const shown = el => {
+    const box = el.getBoundingClientRect();
+    if (box.width < 4 || box.height < 4) return false;
+    if (box.right + scrollX <= 0 || box.bottom + scrollY <= 0) return false;
+    for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      if (style.visibility === 'hidden' || style.display === 'none' || parseFloat(style.opacity) < 0.1) return false;
+      if (style.clipPath && style.clipPath !== 'none' && node === el) return false;
+    }
+    return true;
+  };
   // What a field asks for: the autocomplete name sites are meant to use, or else what it's called
   const BY_AUTOCOMPLETE = {name: 'name', 'given-name': 'given', 'family-name': 'family', email: 'email',
     tel: 'tel', 'tel-national': 'tel', organization: 'org', 'street-address': 'street', 'address-line1': 'line1',
@@ -63,7 +75,14 @@ SOURCE = r"""
   };
   const fieldsOf = scope => [...scope.querySelectorAll('input, select, textarea')]
     .map(el => [el, kindOf(el)]).filter(([, kind]) => kind);
-  const scopeOf = el => el.form || document;
+  // Its form, or with no form, the smallest part of the page around it that asks for three things (never
+  // the whole page, so fields elsewhere on it aren't filled too)
+  const scopeOf = el => {
+    if (el.form) return el.form;
+    for (let node = el.parentElement; node && node !== document.documentElement; node = node.parentElement)
+      if (new Set(fieldsOf(node).map(([, kind]) => kind)).size >= 3) return node;
+    return el.parentElement || document;
+  };
   // A form that asks for at least three such things (not a newsletter's lone email), and isn't a sign-in
   const worth = scope => !scope.querySelector('input[type=password]') &&
     new Set(fieldsOf(scope).map(([, kind]) => kind)).size >= 3;
@@ -210,13 +229,16 @@ class Addresses(QObject):
         view.page().loadStarted.connect(lambda v=view: self._left(v))
         view.destroyed.connect(lambda _=None, key=id(view): self._cards.pop(key, None))
 
-    def _said(self, view, message):
+    def _said(self, view, message, tries=0):
         try:
             said = json.loads(message[len(ADDRESS_CALL):])
         except ValueError:
             return
         if not isinstance(said, dict) or not secrets.compare_digest(str(said.get("token", "")), self.token):
             return  # (not our script: a page making it up)
+        if view.url().isEmpty() and tries < 20:  # (too soon: see Passwords._said)
+            QTimer.singleShot(50, lambda: not _gone(view) and self._said(view, message, tries + 1))
+            return
         if (said.get("kind") != "form" or not self.browser.store.settings.get(SETTING, True)
                 or not _fillable(view.url()) or id(view) in self._cards):
             return

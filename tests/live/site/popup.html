@@ -1,0 +1,9 @@
+<!doctype html>
+<html><head><title>Popup</title></head>
+<body>
+<p>Tries to open a window by itself, as the page loads and from a timer.</p>
+<script>
+  window.opened = [window.open('index.html?popup-at-load', 'one', 'width=400,height=300')];
+  setTimeout(() => { window.opened.push(window.open('index.html?popup-from-timer', 'two', 'width=400,height=300')); }, 200);
+</script>
+</body></html>

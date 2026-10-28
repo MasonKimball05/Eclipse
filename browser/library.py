@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget
 from . import clean_links, storage
 from .motion import FadesIn
 from .models import display_host
-from .theme import letter_icon, quiet_scrollbars, stylesheet
+from .theme import letter_icon, plain_tip, quiet_scrollbars, stylesheet
 from .timefmt import portable
 
 SECTIONS = [
@@ -334,8 +334,8 @@ class LibraryWindow(FadesIn, QWidget):
             self.store.archive = [a for a in self.store.archive if a != entry["source"]]
         else:
             kind = "note" if self.section == "notes" else "answer"
-            answer = QMessageBox.question(self, f"Delete {kind.capitalize()}", f"Delete “{entry['title']}”? "
-                                          "This can't be undone.")
+            answer = QMessageBox.question(self, f"Delete {kind.capitalize()}",
+                                          plain_tip(f"Delete “{entry['title']}”? This can't be undone."))
             if answer != QMessageBox.StandardButton.Yes:
                 return
             for tab in [t for t in self.store.all_tabs() if t.url == entry["url"]]:

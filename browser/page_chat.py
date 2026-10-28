@@ -160,7 +160,9 @@ class PageChat(QFrame):
         self.view.setFrameShape(QFrame.Shape.NoFrame)
         self.view.document().setDocumentMargin(2)
         self.view.document().setIndentWidth(16)  # (lists sit in close: it's a narrow column)
-        self.view.anchorClicked.connect(lambda url: browser.open_url(url.toString()))
+        # Only web links open: an answer is the model's words, which a page can steer, so a data:, file: or app
+        # link in one goes nowhere
+        self.view.anchorClicked.connect(lambda url: url.scheme() in ("http", "https") and browser.open_url(url.toString()))
         layout.addWidget(self.view, 1)
 
         self.starters = QVBoxLayout()

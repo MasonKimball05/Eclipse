@@ -299,13 +299,18 @@ class Passwords(QObject):
         view.page().loadStarted.connect(lambda v=view: self._left(v))
         view.destroyed.connect(lambda _=None, key=id(view): self._cards.pop(key, None))
 
-    def _said(self, view, message):
+    def _said(self, view, message, tries=0):
         try:
             said = json.loads(message[len(PASSWORD_CALL):])
         except ValueError:
             return
         if not isinstance(said, dict) or not secrets.compare_digest(str(said.get("token", "")), self.token):
             return  # (not our script: a page making it up)
+        if view.url().isEmpty() and tries < 20:
+            # A page that's only just arrived can speak before Qt has told the view its address: with none, no
+            # login would match, and the script says each thing once, so it's heard again once the address is in
+            QTimer.singleShot(50, lambda: not _gone(view) and self._said(view, message, tries + 1))
+            return
         url, frame = view.url().toString(), None
         if "frame" in said:  # (a form in an embedded frame: its own address, and only the page's own site's)
             frame = str(said["frame"])
@@ -376,8 +381,16 @@ class Passwords(QObject):
             return
         self._unlock(f"fill your password for {site}", lambda: self._fill(card, login))
 
+    def _still_for(self, card, login) -> bool:
+        """After Touch ID: the card is still this page's, and the page (or frame) is still the login's site. The
+        page may have gone somewhere else while you were touching the sensor; then nothing's filled."""
+        if _gone(card) or self._cards.get(id(card.view)) is not card:
+            return False
+        here = QUrl(card.frame or card.view.url().toString())
+        return _fillable(here.toString()) and password_store.related(QUrl(login["origin"]).host(), here.host())
+
     def _fill(self, card, login, with_password=True):
-        if _gone(card):
+        if not self._still_for(card, login):
             return
         view = card.view
         if not with_password:
@@ -398,7 +411,7 @@ class Passwords(QObject):
         self._unlock(f"fill your verification code for {site}", lambda: self._fill_code(card, login))
 
     def _fill_code(self, card, login):
-        if _gone(card):
+        if not self._still_for(card, login):
             return
         code, _left = password_store.otp_code(login["otp"])  # (made now: after Touch ID, not when the card came)
         call = (f"window.__eclipseCode && window.__eclipseCode({json.dumps(self.token)}, {json.dumps(code)})")

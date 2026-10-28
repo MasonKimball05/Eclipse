@@ -8,12 +8,30 @@ from . import brand
 from .motion import FadesIn
 from .theme import quiet_scrollbars, stylesheet
 
-EDITION = 17
+EDITION = 18
 SETTING = "whats_new_seen"
 
 NOTES = """
 ## Lately
 
+- **Sync**: turn it on in Settings → General, and your Spaces, pinned tabs and Favorites stay the same on each Mac
+  (and PC) you use, through iCloud Drive. Today's tabs stay on each computer.
+- **Handoff**: the page you're on shows on your iPhone and iPad, to carry on reading there (Settings → General
+  turns it off). And with Eclipse as your default browser, a page from Safari on your phone continues here.
+- **Share a Space**: right-click a Space → Share Space… and AirDrop, message or mail it. Whoever opens it in
+  Eclipse gets the Space, with its look and pinned tabs, after saying yes.
+- **Closing the window keeps Eclipse running**, like other Mac apps: click it in the Dock and your window comes
+  back as you left it (Settings → General turns this off). ⌘Q quits.
+- **Downloads in the Dock**: the Dock icon counts the downloads still coming (↓2), and bounces once when one finishes
+  while you're elsewhere. In Downloads, click a finished file and press space for Quick Look, or right-click it.
+- **Recently Visited** pages at the bottom of the History menu.
+- **Your own keyboard shortcuts**: in Settings → Keyboard Shortcuts, click a shortcut and type a new one, or
+  search for any menu item to give it one. Restore Defaults puts them all back.
+- **Safer browsing**: pages can't open pop-ups by themselves, full screen always says so (Esc leaves), long
+  addresses keep the site's name in view, apps and scripts ask before they download, and addresses are only
+  filled into fields you can see. Restoring someone else's backup asks before adding their extensions.
+- **A Window menu**: Minimize (⌘M), Zoom, Full Screen, and a list of your windows. Right-click Eclipse in the
+  Dock for a new tab or window, or to switch Space.
 - **A start view**: with no tab open, the sites you visit most and the tabs you closed last, on your Space's
   colours (Settings → Tabs → Start view turns it off).
 - **Videos wait for a click** (Settings → Privacy): nothing plays by itself.

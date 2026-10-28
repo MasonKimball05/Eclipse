@@ -111,6 +111,7 @@ def window(data_dir, qapp):
     from browser.window import MainWindow
     store = Store(storage.session_path())
     store.is_new = False  # no first-launch Arc import offer
+    store.settings["handoff"] = False  # nor test pages offered to your iPhone (Handoff)
     w = MainWindow(store, build_profile(qapp))
     if w.feature("github") is not None:
         w.feature("github").repos.fetched = float("inf")  # never ask GitHub (gh) for your repos from a test

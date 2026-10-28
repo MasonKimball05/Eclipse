@@ -602,6 +602,300 @@ def test_the_ask_panel_resizes_and_pops_out_into_its_own_window(window, site):
 
 
 
+def test_a_shortcut_can_be_changed_in_settings(window, monkeypatch):
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QLabel, QMessageBox
+    from browser import shortcuts
+    window.open_settings("shortcuts")
+    settings = window._settings
+    item = {key: action for key, _g, _n, action in shortcuts.menu_items(window.menuBar())}
+
+    def recorder(name):
+        title = next(l for l in settings.shortcut_box.findChildren(QLabel) if l.text() == name and l.isVisible())
+        return title.parentWidget().findChildren(shortcuts.KeyRecorder)[0]
+
+    def type_into(name, key, mods):
+        cap = recorder(name)
+        cap.click()
+        QTest.keyClick(cap, key, mods)
+        pause(0.05)
+    cmd, shift = Qt.KeyboardModifier.ControlModifier, Qt.KeyboardModifier.ShiftModifier
+    type_into("Reader View", Qt.Key.Key_E, cmd | shift)
+    assert shortcuts.portable(item["View › Reader View"].shortcut()) == "Ctrl+Shift+E"
+    assert window.store.settings["shortcuts"] == {"View › Reader View": "Ctrl+Shift+E"}
+    # Taking another item's shortcut asks first, and that item is left without one
+    monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.StandardButton.No)
+    type_into("Reader View", Qt.Key.Key_R, cmd)
+    assert shortcuts.portable(item["View › Reload"].shortcut()) == "Ctrl+R"
+    monkeypatch.setattr(QMessageBox, "question", lambda *a: QMessageBox.StandardButton.Yes)
+    type_into("Reader View", Qt.Key.Key_R, cmd)
+    assert shortcuts.portable(item["View › Reader View"].shortcut()) == "Ctrl+R"
+    assert shortcuts.portable(item["View › Reload"].shortcut()) == ""
+    # Searching finds items without one, to give them one
+    settings.shortcut_filter.setText("share")
+    pause(0.05)
+    type_into("Share…", Qt.Key.Key_U, cmd | shift)
+    assert shortcuts.portable(item["File › Share…"].shortcut()) == "Ctrl+Shift+U"
+    settings.shortcut_filter.setText("")
+    settings._reset_shortcuts(["View › Reload"])
+    assert shortcuts.portable(item["View › Reload"].shortcut()) == "Ctrl+R"
+    settings._reset_shortcuts()  # (Restore Defaults: asked, and said Yes above)
+    assert window.store.settings["shortcuts"] == {}
+    assert shortcuts.portable(item["View › Reader View"].shortcut()) == "Ctrl+Alt+R"
+    assert shortcuts.portable(item["File › Share…"].shortcut()) == ""
+
+
+def test_the_window_menu_lists_the_windows_and_minimizes_the_front_one(window):
+    from browser import shortcuts
+    menu = next(a.menu() for a in window.menuBar().actions() if a.text() == "Window")
+    little = window.new_little_window("about:blank")
+    wait_until(little.isVisible, 3)
+    menu.aboutToShow.emit()
+    listed = [a.text() for a in menu.actions() if a.property(shortcuts.DYNAMIC) and not a.isSeparator()]
+    assert listed[0] == window.windowTitle() and "Little Window" in listed and listed[-1] == "Bring All to Front"
+    menu.aboutToShow.emit()  # (refilled, not added to)
+    assert [a.text() for a in menu.actions() if a.property(shortcuts.DYNAMIC) and not a.isSeparator()] == listed
+    assert not any(key.startswith("Window › Little") for key, *_ in shortcuts.menu_items(window.menuBar()))
+    # Minimize acts on the window in front (never really minimized here: it'd fly into your Dock as you work)
+    minimized = []
+    window._front_window = lambda: little
+    little.showMinimized = lambda: minimized.append(little)
+    window.showMinimized = lambda: minimized.append(window)
+    next(a for a in menu.actions() if a.text() == "Minimize").trigger()
+    assert minimized == [little]
+    little.close()
+
+
+def test_the_history_menu_lists_recent_pages(window):
+    from browser import shortcuts
+    for n in range(15):
+        window.store.record_history(f"https://example{n}.com/", f"Example {n} & Co")
+    menu = next(a.menu() for a in window.menuBar().actions() if a.text() == "History")
+    for _ in range(2):  # (refilled each time, not added to)
+        menu.aboutToShow.emit()
+        pages = [a for a in menu.actions() if a.property(shortcuts.DYNAMIC) and a.isEnabled() and not a.isSeparator()]
+        assert len(pages) == 12 and pages[0].text() == "Example 14 && Co" and pages[0].toolTip() == "https://example14.com/"
+    assert not any(key.startswith("History › Example") for key, *_ in shortcuts.menu_items(window.menuBar()))
+    opened = []
+    window.open_url = lambda url, **_: opened.append(url)
+    pages[1].trigger()
+    assert opened == ["https://example13.com/"]
+
+
+def test_closing_the_window_keeps_eclipse_running_and_the_dock_brings_it_back(window, site):
+    import sys
+    from PyQt6.QtGui import QCloseEvent
+    if sys.platform != "darwin":
+        return
+
+    class RedButton(QCloseEvent):  # (a close from the window system, as clicking the red button is)
+        def spontaneous(self):
+            return True
+    tab = open_page(window, site + "/music.html")
+    run_js(tab.view, "window.playing = document.createElement('audio'); window.playing.pause = () => "
+                     "(window.paused = true); document.body.append(window.playing); 1", world=0)
+    event = RedButton()
+    window.closeEvent(event)
+    assert not event.isAccepted() and window.isHidden()
+    assert not QApplication.instance().quitOnLastWindowClosed()
+    assert wait_until(lambda: run_js(tab.view, "window.paused === true", world=0), 3)  # (nothing plays on)
+    window._app_state_changed(Qt.ApplicationState.ApplicationActive)  # (the Dock icon, clicked)
+    assert wait_until(lambda: not window.isHidden(), 3) and window.current_tab is tab
+    # Turned off, the red button closes it as before
+    window.store.settings["keep_running"] = False
+    window.apply_keep_running()
+    assert not window.keeps_running() and QApplication.instance().quitOnLastWindowClosed()
+    window.store.settings.pop("keep_running")
+    window.apply_keep_running()
+    window.close_tab(tab)
+
+
+def test_a_space_is_shared_and_imported(window, monkeypatch, tmp_path):
+    from PyQt6.QtWidgets import QMessageBox
+    from browser import macos, space_share
+    from browser.models import Folder, Tab
+    space = window.store.active_space
+    space.pinned.append(Folder("Shared", [Tab("https://example.com/", "Example", home_url="https://example.com/")]))
+    shared = []
+    monkeypatch.setattr(macos, "share", lambda widget, url, anchor: shared.append(url) or True)
+    window.share_space(space)
+    assert len(shared) == 1 and shared[0].startswith("file:///") and shared[0].endswith(".eclipse-space")
+    assert "%20" in shared[0] or " " not in shared[0]  # (an address macOS takes: spaces encoded)
+    from PyQt6.QtCore import QUrl
+    path = QUrl(shared[0]).toLocalFile()
+    # Opened on the other Mac (here, the same one): asked first, then added as a Space of its own
+    answers = iter(["Cancel", "Add Space"])
+
+    def answer(box):
+        wanted = next(answers)
+        next(b for b in box.buttons() if b.text().replace("&", "") == wanted).click()
+    monkeypatch.setattr(QMessageBox, "exec", answer)
+    count = len(window.store.spaces)
+    window.import_space_file(path)
+    assert len(window.store.spaces) == count  # (Cancel)
+    window.import_space_file(path)
+    added = window.store.spaces[-1]
+    assert len(window.store.spaces) == count + 1 and window.store.active_space is added
+    assert added.name == space.name and added.id != space.id
+    folder = next(n for n in added.pinned if isinstance(n, Folder) and n.name == "Shared")
+    assert [t.url for t in folder.children] == ["https://example.com/"]
+    # Not a Space: says so, adds nothing
+    warned = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a: warned.append(a[2]))
+    bad = tmp_path / "bad.eclipse-space"
+    bad.write_text("{}")
+    window.import_space_file(str(bad))
+    assert warned == ["That isn't a shared Space."] and len(window.store.spaces) == count + 1
+    # From Finder (double-clicked, or dropped on the Dock icon): macOS sends it as a file to open
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtNetwork import QLocalServer
+    from browser.app import LinkReceiver
+
+    class FileOpen:  # (what macOS sends; Qt won't make one of its own here)
+        type = staticmethod(lambda: QEvent.Type.FileOpen)
+        url = staticmethod(lambda: QUrl.fromLocalFile(path))
+        file = staticmethod(lambda: path)
+    imported = []
+    monkeypatch.setattr(window, "import_space_file", imported.append)
+    assert LinkReceiver(window, QLocalServer()).eventFilter(None, FileOpen())
+    assert imported == [path]
+    window.store.remove_space(added)
+    window.switch_space(space)
+
+
+def test_the_page_youre_on_is_offered_to_your_other_devices(window, site, monkeypatch):
+    from PyQt6.QtGui import QCloseEvent
+    from browser import macos
+    offered = []  # (never really offered from a test: it'd show on your iPhone)
+    monkeypatch.setattr(macos, "handoff", lambda url, title="": offered.append((url, title)) or True)
+    monkeypatch.setattr(macos, "end_handoff", lambda: offered.append(None))
+    window.store.settings["handoff"] = True  # (off in tests: see conftest)
+    tab = open_page(window, site + "/article.html")
+    assert wait_until(lambda: offered and offered[-1] == (tab.url, tab.label) and tab.label != tab.url, 5)
+    # Closing the window (Eclipse keeps running) stops it; the Dock bringing it back offers it again
+    class RedButton(QCloseEvent):
+        def spontaneous(self):
+            return True
+    if window.keeps_running():
+        window.closeEvent(RedButton())
+        assert offered[-1] is None
+        window._app_state_changed(Qt.ApplicationState.ApplicationActive)
+        window.feature("handoff")._app_state(Qt.ApplicationState.ApplicationActive)
+        assert offered[-1] == (tab.url, tab.label)
+    # Turned off in Settings: nothing's offered
+    window.store.settings["handoff"] = False
+    window.feature("handoff").offer()
+    assert offered[-1] is None
+    window.close_tab(tab)
+
+
+def test_a_page_handed_over_from_your_iphone_opens_in_a_tab(window, monkeypatch):
+    from PyQt6.QtCore import QUrl
+    from PyQt6.QtGui import QDesktopServices
+    from PyQt6.QtNetwork import QLocalServer
+    from browser.app import LinkReceiver
+    opened, fronted = [], []
+    monkeypatch.setattr(window, "open_url", lambda url, **_: opened.append(url))
+    monkeypatch.setattr(window, "bring_to_front", lambda: fronted.append(True))
+    receiver = LinkReceiver(window, QLocalServer())
+    receiver.listen_for_handoff()
+    try:
+        # (macOS gives Qt the page; Qt gives it to the app's handler for web links, as openUrl does)
+        assert QDesktopServices.openUrl(QUrl("https://example.com/article?from=phone"))
+        assert opened == ["https://example.com/article?from=phone"] and fronted == [True]
+        receiver.continue_page(QUrl("file:///etc/passwd"))
+        assert len(opened) == 1  # (only web pages)
+    finally:
+        receiver.stop()
+
+
+def test_sync_brings_another_macs_changes_into_the_window(window, site, tmp_path, monkeypatch):
+    import json
+    from browser import sync
+    from browser.models import Tab
+    monkeypatch.setenv("ECLIPSE_SYNC_DIR", str(tmp_path / "iCloud"))
+    (tmp_path / "iCloud").mkdir()
+    space = window.store.active_space
+    keep = Tab(site + "/index.html", "Kept", home_url=site.replace("127.0.0.1", "localhost") + "/index.html")
+    drop = Tab(site + "/article.html", "Dropped", home_url="https://dropped.example/")
+    space.pinned += [keep, drop]
+    today = open_page(window, site + "/links.html")
+    window.activate_tab(drop)
+    window.activate_tab(keep)
+    kept_view = keep.view
+    assert kept_view is not None and drop.view is not None
+    engine = window.feature("sync").sync
+    window.store.settings["sync"] = True
+    engine.refresh_setting()
+    engine.run()
+    folder = tmp_path / "iCloud" / sync.FOLDER
+    mine = json.loads((folder / f"{engine.state['device']}.json").read_text())
+    assert f"space:{space.id}" in mine["items"] and engine.devices == []
+    # The other Mac renames the Space, unpins one tab, pins another, and adds a Space of its own
+    other = json.loads(json.dumps(mine))
+    other.update(device="mac2", name="Other Mac", written=mine["written"] + 60)
+    item = other["items"][f"space:{space.id}"]
+    item["modified"] = mine["written"] + 60
+    item["data"]["name"] = "Renamed Elsewhere"
+    item["data"]["pinned"] = [n for n in item["data"]["pinned"] if n["id"] != drop.id] + [
+        {"id": "new-tab", "url": "https://new.example/", "title": "New", "custom_title": None}]
+    other["items"]["space:mac2-space"] = {"modified": mine["written"] + 60, "data": {
+        "name": "From the Other Mac", "color": "#22aa66", "icon": "", "theme": {},
+        "pinned": [{"id": "x1", "url": "https://x.example/", "title": "X", "custom_title": None}]}}
+    other["items"]["order"] = {"modified": mine["written"] + 60, "data": [s.id for s in window.store.spaces] + ["mac2-space"]}
+    (folder / "mac2.json").write_text(json.dumps(other))
+    engine.run()
+    assert space.name == "Renamed Elsewhere" and engine.devices == ["Other Mac"]
+    assert [t.id for t in space.pinned][-2:] == [keep.id, "new-tab"]
+    assert keep.view is kept_view  # (still there: its page stays open)
+    assert drop.view is None and window.current_tab is keep
+    assert today in list(space.today)  # (Today's tabs aren't synced)
+    added = window.store.space("mac2-space")
+    assert added is not None and window.store.spaces[-1] is added and added.pinned[0].home_url == "https://x.example/"
+    assert len(list((window.store.path.parent / "sync backups").glob("before-sync-*.zip"))) == 1
+    # It settles: nothing more to do, and this Mac's file now has what came
+    assert sync.merge(engine.state, engine.others()) == {"apply": {}, "delete": []}
+    mine = json.loads((folder / f"{engine.state['device']}.json").read_text())
+    assert mine["items"]["space:mac2-space"]["data"]["name"] == "From the Other Mac"
+    # The other Mac deletes its Space: it goes here too
+    other["items"].pop("space:mac2-space")
+    other["deleted"] = {"space:mac2-space": mine["written"] + 120}
+    (folder / "mac2.json").write_text(json.dumps(other))
+    engine.run()
+    assert window.store.space("mac2-space") is None
+    window.store.settings["sync"] = False
+    engine.refresh_setting()
+    window.close_tab(today)
+
+
+def test_turning_sync_on_can_use_the_other_macs_spaces(window, tmp_path, monkeypatch):
+    import json
+    from browser import sync
+    monkeypatch.setenv("ECLIPSE_SYNC_DIR", str(tmp_path))
+    folder = tmp_path / sync.FOLDER
+    folder.mkdir()
+    (folder / "mac2.json").write_text(json.dumps({
+        "format": "eclipse-sync", "device": "mac2", "name": "Studio Mac", "written": 100, "deleted": {},
+        "items": {"space:theirs": {"modified": 100, "data": {
+            "name": "Their Work", "color": "#aa3366", "icon": "", "theme": {},
+            "pinned": [{"id": "p1", "url": "https://their.example/", "title": "Theirs", "custom_title": None}]}},
+                  "order": {"modified": 100, "data": ["theirs"]}}}))
+    engine = window.feature("sync").sync
+    mine = [s.name for s in window.store.spaces]
+    assert engine.first_look() == {"name": "Studio Mac", "spaces": ["Their Work"]}
+    engine.adopt()
+    assert [s.name for s in window.store.spaces] == ["Their Work"] and window.store.active_space.name == "Their Work"
+    assert len(list((window.store.path.parent / "sync backups").glob("*.zip"))) == 1  # (yours: kept first)
+    assert mine and engine.first_look() is None  # (synced now: no more asking)
+    window.store.settings["sync"] = True
+    engine.refresh_setting()
+    engine.run()
+    assert sync.merge(engine.state, engine.others()) == {"apply": {}, "delete": []}
+    assert [s.name for s in window.store.spaces] == ["Their Work"]
+    window.store.settings["sync"] = False
+    engine.refresh_setting()
+
+
 def test_settings_shows_the_version_and_an_updates_progress(window):
     from PyQt6.QtWidgets import QLabel, QProgressBar, QPushButton
     updater = window.feature("self_update").updater
@@ -734,6 +1028,14 @@ def test_an_address_fills_a_checkout_but_not_a_newsletter(window, site):
     assert wait_until(lambda: run_js(tab.view, values, world=0) == [
         "Arkan", "Example", "arkan@example.com", "already typed", "1 Main St", "Apt 4", "Springfield", "12345", "US"], 5)
     assert run_js(tab.view, "document.getElementById('newsletter').value", world=0) == ""  # (another form)
+    traps = "['trap-offscreen','trap-clear','trap-tiny','trap-invisible'].map(i => document.getElementById(i).value)"
+    assert run_js(tab.view, traps, world=0) == ["", "", "", ""]  # (fields you can't see)
+    # With no form, only the fields around the one you clicked, not ones anywhere on the page
+    run_js(tab.view, press % "loose-name", world=0)
+    assert wait_until(lambda: manager.card_for(tab.view) is not None, 5), "no card for the fields without a form"
+    _click_when_ready(manager.card_for(tab.view), "Home · Arkan Example, 1 Main St")
+    loose = "['loose-name','loose-email','loose-tel','far-street'].map(i => document.getElementById(i).value)"
+    assert wait_until(lambda: run_js(tab.view, loose, world=0) == ["Arkan Example", "arkan@example.com", "555 0100", ""], 5)
     addresses.delete(addresses.all_addresses()[0]["id"])
 
 
@@ -822,10 +1124,24 @@ def test_a_download_pauses_and_resumes(window, tmp_path, monkeypatch):
         assert wait_until(lambda: any(getattr(i, "title", "") == "slow.bin" for i in downloads.items), 5)
         item = next(i for i in downloads.items if i.title == "slow.bin")
         assert item.can_pause and item.state == "running"
+        from browser import macos
+        assert downloads._badged == 1 and macos.dock_badge_text() == "↓1"  # (the Dock icon's count)
         item.toggle_pause()
         assert wait_until(lambda: item.paused and item.status.startswith("Paused"), 3)
         item.toggle_pause()
         assert wait_until(lambda: item.state == "done", 15)
         assert (tmp_path / "slow.bin").stat().st_size == size
+        assert downloads._badged == 0 and macos.dock_badge_text() == ""
+        # Click the finished one and press space: Quick Look (never really opened here: it'd come to the front)
+        from PyQt6.QtTest import QTest
+        from browser import downloads as module
+        from browser.downloads import DownloadRow
+        looked = []
+        monkeypatch.setattr(module, "quick_look", lambda path, running=None: looked.append(path))
+        row = next(r for r in downloads.findChildren(DownloadRow) if r.item is item)
+        QTest.keyClick(row, Qt.Key.Key_Space)
+        assert looked == [str(tmp_path / "slow.bin")]
+        row.removed.emit(row)
+        assert item not in downloads.items
     finally:
         server.shutdown()

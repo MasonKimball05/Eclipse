@@ -67,6 +67,7 @@ class MiniPlayerWindow(QFrame):
         row.setContentsMargins(10, 6, 6, 6)
         self.title = QLabel()
         self.title.setObjectName("MiniTitle")
+        self.title.setTextFormat(Qt.TextFormat.PlainText)
         row.addWidget(self.title, 1)
         self.play_btn = self._button("ph.pause-fill", "Play / Pause", player.toggle_play)
         row.addWidget(self.play_btn)

@@ -12,6 +12,14 @@
   <input id="zip" autocomplete="postal-code">
   <select id="country" autocomplete="country"><option value="">Choose…</option><option value="CA">Canada</option>
     <option value="US">United States</option></select>
+  <!-- Hidden beside the real ones, to collect what autofill puts there: never filled -->
+  <input id="trap-offscreen" autocomplete="tel" style="position:absolute; left:-9999px">
+  <input id="trap-clear" name="company" style="opacity:0">
+  <input id="trap-tiny" autocomplete="street-address" style="width:1px; height:1px; padding:0; border:0">
+  <div style="visibility:hidden"><input id="trap-invisible" autocomplete="organization"></div>
 </form>
 <form id="news"><input id="newsletter" type="email" placeholder="Your email"><button>Subscribe</button></form>
+<div id="loose"><input id="loose-name" autocomplete="name"><input id="loose-email" type="email">
+  <input id="loose-tel" type="tel"></div>
+<div><input id="far-street" autocomplete="street-address"></div>
 </body></html>

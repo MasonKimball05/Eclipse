@@ -29,7 +29,7 @@ from .devmode import dev_label, is_dev_url
 from .tab_titles import shown_title
 from .models import FAVORITES, PINNED, TODAY, Folder, Tab, display_host, walk_folders, walk_tabs
 from .icons import is_symbol, space_icon, symbol
-from .theme import legible, letter_icon, noise_pixmap, overlay_scrollbar
+from .theme import legible, letter_icon, noise_pixmap, overlay_scrollbar, plain_tip
 
 TAB_MIME = "application/x-eclipse-tab"
 TABS_MIME = "application/x-eclipse-tabs"  # several picked tabs dragged together: their ids, in order
@@ -594,7 +594,7 @@ class FavoriteTile(HoverFade, DraggableTab, QToolButton):
 
     def refresh(self):
         self.setIcon(tab_icon(self.tab, self.browser.theme))
-        self.setToolTip(self.tab.label)
+        self.setToolTip(plain_tip(self.tab.label))
         self.setAccessibleName(self.tab.label)
         self.update()  # the unread badge
 
@@ -1660,8 +1660,11 @@ class Sidebar(QWidget):
             self.url_pill.setToolTip(tab.url)
         elif tab and tab.url:
             secure = tab.url.startswith("https://")
-            self.url_pill.setIcon(pill_icon("ph.lock-simple" if secure else "ph.globe-simple",
-                                           color=_with_alpha(theme.text, 0.55)))
+            if secure and self.browser.certificates.overridden(tab.url):  # (you chose Visit Anyway)
+                self.url_pill.setIcon(pill_icon("ph.warning", color=QColor("#ef4444")))
+            else:
+                self.url_pill.setIcon(pill_icon("ph.lock-simple" if secure else "ph.globe-simple",
+                                               color=_with_alpha(theme.text, 0.55)))
             self._set_pill_text(display_host(tab.url) or tab.url)
             self.url_pill.setToolTip(tab.url)
         else:
@@ -1731,7 +1734,10 @@ class Sidebar(QWidget):
                     text = host = loopback.group(1)
                     text += loopback.group(2)
         room = room()
-        self.url_pill.setText(self.url_pill.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, max(room, 20)))
+        # A site's address is cut from the left, so what's kept is the end, the part that says whose site it is:
+        # "…login.evil.example", never "accounts.google.com.lo…"
+        elide = Qt.TextElideMode.ElideRight if "/" in text else Qt.TextElideMode.ElideLeft
+        self.url_pill.setText(self.url_pill.fontMetrics().elidedText(text, elide, max(room, 20)))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

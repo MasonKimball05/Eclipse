@@ -1,0 +1,31 @@
+# Eclipse on a clean Mac (GitHub's, Apple silicon) after every push: it starts, opens its window and loads a
+# page (tools/smoke.py), and the unit tests pass on a Mac that isn't the one it's made on (nothing of yours
+# installed: no Arc, no Chrome, no saved passwords). The live tests need a screen, so they stay local
+# (./run.sh --live-tests).
+name: macOS
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install Eclipse's requirements
+        run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
+      - name: Eclipse starts and loads a page
+        run: python tools/smoke.py
+      - name: Unit tests
+        run: python -X faulthandler -m pytest tests -q -rs --ignore=tests/test_spelling.py
+      - name: Spell-check dictionary download
+        if: always()
+        run: python -X faulthandler -m pytest tests/test_spelling.py -v -rs
