@@ -1,7 +1,7 @@
 # Arc Max's "Tidy Downloads": when a download finishes, Claude gives the file a name a person
 # would choose ("IMG_3847.pdf" → "Acme Invoice March 2026.pdf"), from its original name, where it
 # came from and, for PDFs and text files, how it starts. The extension never changes, nothing is
-# ever overwritten, and Claude can leave a name alone if it's already clear.
+# ever overwritten or made into something that runs, and Claude can leave a name alone if it's already clear.
 
 import re
 import unicodedata
@@ -70,6 +70,19 @@ def unique_path(folder: Path, stem: str, suffix: str, current: Path | None = Non
     return candidate
 
 
+def new_path(path: Path, reply: str) -> Path | None:
+    """Where Claude's name for the file puts it, or None to leave it. Never a name that makes it something that
+    runs when opened: the reply can be steered by the page and the file's own text, and a file with no extension
+    ("README", a script inside) named "Read Me.command" would become one, without the question a download of one
+    asks."""
+    from .downloads import risky
+    stem = clean_name(reply)
+    if stem is None or stem == path.stem:
+        return None
+    target = unique_path(path.parent, stem, path.suffix, current=path)
+    return None if risky(target.name) and not risky(path.name) else target
+
+
 def tidy(browser, item, request):
     """Ask Claude for a better name for a finished BrowserDownload, then rename it."""
     path = Path(item.path)
@@ -80,10 +93,9 @@ def tidy(browser, item, request):
     ask = browser.feature("claude").claude.ask(build_prompt(path.name, request.url().toString(), title, excerpt(path)))
 
     def rename(reply):
-        stem = clean_name(reply)
-        if stem is None or stem == path.stem or not path.exists():
+        target = new_path(path, reply)
+        if target is None or not path.exists():
             return
-        target = unique_path(path.parent, stem, path.suffix, current=path)
         try:
             path.rename(target)
         except OSError:

@@ -150,11 +150,15 @@ def _clean_node(d, depth=0):
         out = {"type": "folder", "id": d["id"][:64], "name": _text(d.get("name"), 80) or "Folder"}
         if isinstance(d.get("live"), dict):
             live = {k: v for k, v in d["live"].items() if isinstance(k, str) and isinstance(v, (str, int, float, bool))}
-            if live.get("kind") == "feed" and not _url(live.get("url")):
+            # A folder that reads an address (a feed, an app's JSON, a page, a calendar) only ever reads the web:
+            # never file:, which would read this Mac's own files into tabs and sync them back out. (Running git
+            # and sending a Keychain token wait for this Mac's say-so: live_folders.allowed_here.)
+            reads_address = live.get("kind") not in ("github", "repos")
+            if (reads_address or "url" in live) and not _url(live.get("url")):
                 return None
             out["live"] = live
         else:
-            out["children"] = [c for c in (_clean_node(c, depth + 1) for c in d.get("children") or []) if c]
+            out["children"] = [c for c in (_clean_node(c, depth + 1) for c in _list(d.get("children"))) if c]
         return out
     url = _url(d.get("url"))
     if url is None:
@@ -162,6 +166,14 @@ def _clean_node(d, depth=0):
     custom = d.get("custom_title")
     return {"id": d["id"][:64], "url": url, "title": _text(d.get("title"), 300),
             "custom_title": _text(custom, 300) if isinstance(custom, str) else None}
+
+
+def _list(value) -> list:
+    return value if isinstance(value, list) else []
+
+
+def _dict(value) -> dict:
+    return value if isinstance(value, dict) else {}
 
 
 def clean_item(key: str, data):
@@ -173,7 +185,7 @@ def clean_item(key: str, data):
     if key.startswith("space:") and isinstance(data, dict):
         return {"name": _text(data.get("name"), 60) or "Space", "color": color_of(data.get("color")) or "#6b7280",
                 "icon": icon_of(data.get("icon")), "theme": look_of(data.get("theme")),
-                "pinned": [n for n in (_clean_node(c) for c in data.get("pinned") or []) if n]}
+                "pinned": [n for n in (_clean_node(c) for c in _list(data.get("pinned"))) if n]}
     return None
 
 
@@ -185,16 +197,17 @@ def read_remotes(folder: Path, mine: str) -> list[dict]:
             continue
         try:
             data = json.loads(path.read_text(encoding="utf-8")) if path.stat().st_size < 20_000_000 else None
-        except (OSError, ValueError):
+        except (OSError, ValueError, RecursionError):  # (RecursionError: nested thousands deep, which json can't read)
             continue
         if not isinstance(data, dict) or data.get("format") != FORMAT:
             continue
+        # Each part checked for what it should be: one broken file is skipped, never stopping every device's sync
         items = {}
-        for key, item in (data.get("items") or {}).items():
+        for key, item in _dict(data.get("items")).items():
             clean = clean_item(key, item.get("data")) if isinstance(item, dict) else None
             if clean is not None and isinstance(item.get("modified"), (int, float)):
                 items[key] = {"modified": item["modified"], "data": clean}
-        deleted = {k: v for k, v in (data.get("deleted") or {}).items() if isinstance(v, (int, float))}
+        deleted = {k: v for k, v in _dict(data.get("deleted")).items() if isinstance(v, (int, float))}
         found.append({"device": data.get("device"), "name": _text(data.get("name"), 60), "items": items,
                       "deleted": deleted, "written": data.get("written", 0)})
     if sys.platform == "darwin" and os.path.exists("/usr/bin/brctl"):
