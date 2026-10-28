@@ -14,6 +14,9 @@ SETTING = "whats_new_seen"
 NOTES = """
 ## Lately
 
+- **Ask about pages you've read**: in ⌘T, ask a question and choose *Ask Claude About Pages You've Read*.
+  The answer comes from pages you've visited, with each point linked to its page. Page search results say when
+  you read them, and banks, health records and mail are never kept (Settings → Privacy → Excluded Sites…).
 - **Traffic lights drawn like Arc's**: they stay put as they light up (no more jump), and only light up once
   the pointer's right by them.
 - **Live Folders guide**: Settings → Live Folders shows every kind, what it follows and how to set it up, each

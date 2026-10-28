@@ -15,6 +15,7 @@ from .ai import Claude, looks_like_question, page_block
 from .browse import BrowseForMe, PageReader, answer_path, js_set, new_run_id, render_page
 from .features import Feature
 from .models import TODAY, Folder, Tab, display_host, walk_tabs
+from .page_index import ask_prompt, cite, question_words
 from .tidy import MIN_TABS as TIDY_MIN_TABS, build_prompt as build_tidy_prompt, parse_groups as parse_tidy_groups
 from .tidy_downloads import tidy as tidy_download
 from .translate import Translator, target_language
@@ -174,6 +175,22 @@ class ClaudeFeature(Feature):
         browse = Result(query, "Browse for Me · reads the top results", "⌘↩",
                         qta.icon("ph.compass", color=theme.accent_text), lambda: self.browse_for_me(query))
         results.insert(results.index(ask) + 1, browse)
+        index = getattr(self.window, "page_index", None)
+        if index is not None and index.enabled and question_words(query):
+            results.insert(results.index(browse) + 1, Result(
+                query, f"Ask {name} About Pages You've Read", "Pages",
+                qta.icon("ph.books", color=theme.accent_text), lambda a=ai: self.ask_pages(bar, query, a),
+                keep_open=True))
+
+    def ask_pages(self, bar, question, ai):
+        """An answer from pages you've read (page_index): the best few, with Claude's citations linked to them."""
+        found = self.window.page_index.passages(question)
+        if not found:
+            bar._cancel_answer()
+            bar._show_answer("Nothing you've read matches that. (Pages are searchable a few seconds after they "
+                             "load; private windows, sign-in pages and excluded sites aren't kept.)")
+            return
+        bar.ask(question, ai, prompt=ask_prompt(question, found), shape=lambda text: cite(text, found))
 
     def browse_for_me(self, query):
         """Arc Max's "Browse for Me": read the top search results and open one answer page."""

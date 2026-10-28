@@ -25,6 +25,7 @@ def _path_hint(url: str) -> str:
     return "" if not path else path if len(path) <= 40 else path[:38] + "…"
 from .content import answer_browser, fit_answer
 from .models import display_host, frecency
+from .page_index import read_on
 from .storage import favicon
 from .sidebar import tab_icon
 from .theme import legible, letter_icon, quiet_scrollbars
@@ -523,7 +524,8 @@ class CommandBar(QWidget):
 
     # --- Ask Claude --------------------------------------------------------------------
 
-    def ask(self, question, ai=None, prompt=None):
+    def ask(self, question, ai=None, prompt=None, shape=None):
+        """Ask, and show the answer as it comes. shape: the answer → what's shown (citations made links, say)."""
         self._cancel_answer()
         claude = self.browser.feature("claude")
         ai = ai or self.browser.assistant() or (claude.claude if claude is not None else None)
@@ -533,8 +535,9 @@ class CommandBar(QWidget):
         self.request = ai.ask(prompt or (
             "Answer this question from someone using their web browser. Be direct and concise "
             "(under 200 words unless they ask for more); use Markdown where it helps.\n\n" + question))
-        self.request.partial.connect(self._show_answer)
-        self.request.finished.connect(self._show_answer)
+        show = (lambda text: self._show_answer(shape(text))) if shape is not None else self._show_answer
+        self.request.partial.connect(show)
+        self.request.finished.connect(show)
         name = self.browser.assistant_name(ai)
         self.request.failed.connect(lambda msg: self._show_answer(f"**Couldn't ask {name}:** {msg}"))
 
@@ -682,7 +685,9 @@ class CommandBar(QWidget):
                     continue
                 seen.add(hit["url"])
                 icon = legible(favicon(hit["url"]), theme) or letter_icon(hit["host"], theme.accent)
-                results.append(Result(hit["title"] or hit["host"], hit["snippet"] or hit["host"], "Read",
+                when = read_on(hit.get("visited"))
+                results.append(Result(hit["title"] or hit["host"],
+                                      " · ".join(p for p in (when, hit["snippet"] or hit["host"]) if p), "Read",
                                       icon, self._open(hit["url"])))
 
         if q:
