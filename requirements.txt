@@ -1,6 +1,10 @@
-# Python Web Engine (Qt 6 — native on Apple Silicon)
-PyQt6>=6.9
-PyQt6-WebEngine>=6.9
+# Python Web Engine (Qt 6 — native on Apple Silicon). Pinned to one Qt release: PyQt6 and PyQt6-WebEngine come
+# out separately, and a newer PyQt6 with the older WebEngine can't load it (6.12.0 arrived first, 28 Oct 2026).
+# Move all four together, once PyQt6-WebEngine has caught up.
+PyQt6==6.11.*
+PyQt6-Qt6==6.11.*
+PyQt6-WebEngine==6.11.*
+PyQt6-WebEngine-Qt6==6.11.*
 qtawesome>=1.4
 # Passkeys Eclipse keeps (P-256 signing) and their recovery copy (AES-GCM)
 cryptography>=44
