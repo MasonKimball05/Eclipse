@@ -960,6 +960,20 @@ def test_a_folder_opens_and_closes_as_one_block(window):
     assert all(r.parentWidget() is section and r.isVisible() for r in rows)
     tops = [section._rect(r).top() for r in rows]
     assert tops == sorted(tops) and len(set(tops)) == 12  # (in order, one under another)
+    folder_row = next(r for r, n, *_ in section.entries if n is folder)
+    folder_top = section._rect(folder_row).top()
+    window.toggle_folder(folder)
+    # (its first frame, before anything else happens: the box right under the folder, the list still tall
+    # enough for it: the list was for a frame its closed height, everything in it on top of each other)
+    closing = section._reveals[0]
+    assert closing.geometry().top() == section._rect(folder_row).bottom() + 1 + section.layout_.spacing()
+    assert section.height() >= closing.geometry().bottom()
+    tops = []
+    while closing in section._reveals:
+        tops.append(section._rect(folder_row).top())
+        QApplication.processEvents()
+    assert set(tops) == {folder_top}  # (the folder's own row never moves: it bounced as its rows went)
+    window.toggle_folder(folder)
     window.toggle_folder(folder)
     pause(0.03)
     assert len(section._reveals) == 1 and len(section._reveals[0].rows) == 12

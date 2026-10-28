@@ -799,10 +799,9 @@ class RowReveal(QWidget):
             each.move(0, y)
             each.show()
             y += (each.height() or 34) + self.gap
-        self.setFixedHeight(round(self.full * self.shown))
         self.fade = QGraphicsOpacityEffect(self)
-        self.fade.setOpacity(self.shown)
         self.setGraphicsEffect(self.fade)
+        self._size(self.shown)
         target = 1.0 if growing else 0.0
         # The clock starts once this pass is over (the list laid out, its first frame drawn): started at once, the
         # time that takes was already "spent", and the first frame drawn was half-way, a leap
@@ -814,12 +813,28 @@ class RowReveal(QWidget):
         ms = max(1, round(self.MS * abs(target - self.shown)))
         motion.animate(self, self.shown, target, self._set, ms, self._done)
 
+    def _size(self, shown):
+        """The room this box takes in the list, `shown` of the way open: its height and the list's gap after it,
+        together. A box with no height still has that gap, so it's out of the list (hidden) for the last
+        point instead: closing, the rows below used to jump up those 2 points as the box came out, after
+        everything else had come to rest."""
+        spacing = self.section.layout_.spacing()
+        room = (self.full + spacing) * shown  # (what it should take, gap and all)
+        height = room - spacing
+        if room < spacing / 2:  # (nearer nothing than a gap: nothing, never more than a point out)
+            self.setFixedHeight(0)
+            self.hide()
+        else:
+            self.setFixedHeight(max(0, round(height)))
+            if self.isHidden():
+                self.show()
+        self.fade.setOpacity(shown)
+
     def _set(self, shown):
         if any(sip.isdeleted(r) for r in self.rows):
             return
         self.shown = shown
-        self.setFixedHeight(round(self.full * shown))
-        self.fade.setOpacity(shown)
+        self._size(shown)
         # (one row leaving drifts down a little as it goes, like Arc's Clear; a folder's rows, going together, don't:
         # moving down while the rows below came up looked like a wobble)
         y, drift = 0, 0 if self.growing or len(self.rows) > 1 else round(6 * (1 - shown))
@@ -899,6 +914,9 @@ class TabSection(DropZone):
         self.layout_ = QVBoxLayout(self)
         self.layout_.setContentsMargins(0, 0, 0, 0)
         self.layout_.setSpacing(2)
+        # Rows packed at the top: while a folder closes, the list is for a moment taller than its rows (its own
+        # height catches up a frame later), and spread over that room the rows bounced up and down
+        self.layout_.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.nodes: list = []
         self.entries: list[tuple] = []  # (row widget, node, parent folder, depth), in display order
         self.hint = QLabel(empty_hint)
@@ -969,6 +987,20 @@ class TabSection(DropZone):
             self._animate(old, kept, added, gone)
         self.hint.setVisible(not nodes and bool(self.hint.text()) and not (animate and gone))
         self.setMinimumHeight(0 if nodes or self.hint.text() else 12)
+        self._lay_out_now()
+
+    def _lay_out_now(self):
+        """Laid out now, before anything's drawn, this list and then what holds it: otherwise, for a frame, a
+        new box (a folder's rows on their way) sat at the list's top-left, and the list was sized from how it
+        was a moment before (a closing folder's final height, its rows still all there), everything in it
+        squeezed on top of each other."""
+        self.layout_.invalidate()
+        self.updateGeometry()
+        holder = self.parentWidget()
+        if holder is not None and holder.layout() is not None:
+            holder.layout().invalidate()
+            holder.layout().activate()
+        self.layout_.activate()
 
     def _animate(self, old, kept, added, gone):
         # Rows next to each other in the list grow in together, as one block (a folder's tabs as it opens)

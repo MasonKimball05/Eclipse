@@ -42,7 +42,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_app  # noqa: E402
-from build_app import APP, NAME, ROOT  # noqa: E402
+from build_app import NAME, ROOT  # noqa: E402
+
+APP = Path("/Applications") / f"{NAME}.app"  # (--install: the signed Eclipse; Eclipse Dev, build_app.APP, stays)
 
 DIST = ROOT / "dist"
 PY = f"python{sys.version_info.major}.{sys.version_info.minor}"

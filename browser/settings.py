@@ -7,7 +7,7 @@ import sys
 import time
 
 import qtawesome as qta
-from PyQt6.QtCore import QSize, Qt, QUrl
+from PyQt6.QtCore import QRect, QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame,
                              QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
@@ -742,6 +742,8 @@ class SettingsWindow(FadesIn, QWidget):
         self.profile_list.setObjectName("SettingsList")
         self.profile_list.setWordWrap(True)
         self.profile_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.profile_list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)  # (sized to fit: below)
+        self.profile_list.installEventFilter(self)  # (as wide as the window lets it be: its rows' heights follow)
         clear = QPushButton("Clear Cookies && Site Data…")  # && shows a literal "&" on a button
         clear.clicked.connect(self._clear_profile)
         heading = self._row("Profiles", "A profile is a separate set of cookies, logins and site data. Give Work and "
@@ -837,8 +839,7 @@ class SettingsWindow(FadesIn, QWidget):
 
     def _refresh(self):
         current = macos.default_browser()
-        mine = macos.APP_BUNDLE_ID
-        if current == mine:
+        if macos.is_ours(current):
             self.default_status.setText(f"{brand.NAME} is your default browser.")
             self.default_btn.hide()
         else:
@@ -869,13 +870,34 @@ class SettingsWindow(FadesIn, QWidget):
             item.setData(Qt.ItemDataRole.UserRole, name)
             self.profile_list.addItem(item)
         self.profile_list.setCurrentRow(0)
-        rows = [self.profile_list.sizeHintForRow(i) for i in range(min(self.profile_list.count(), 4))]
-        self.profile_list.setFixedHeight(sum(rows) + 14)  # (its rows and its padding: no empty space under them)
+        self._fit_profile_list()
         self._fill_air_rules()
         self._fill_permissions()
         self._fill_shortcuts()
         self.sync_status.setText(self._sync_text())
         self.sync_status.setVisible(bool(self.sync_status.text()))
+
+    def _fit_profile_list(self):
+        """Each profile's line as tall as its text wrapped at the list's width (a long list of Spaces takes two
+        lines), and the list as tall as all of them (up to four): nothing cut off, no scrollbar."""
+        box = self.profile_list
+        width = box.viewport().width() - 12 - 4  # (the item's padding each side, and a little room)
+        if width <= 40:
+            return
+        metrics = box.fontMetrics()
+        total = 0
+        for i in range(box.count()):
+            item = box.item(i)
+            text = metrics.boundingRect(QRect(0, 0, width, 10_000), Qt.TextFlag.TextWordWrap, item.text())
+            item.setSizeHint(QSize(width, text.height() + 12))  # (and the item's padding above and below)
+            if i < 4:
+                total += text.height() + 12
+        box.setFixedHeight(total + 2 * box.frameWidth() + 8)
+
+    def eventFilter(self, obj, event):
+        if obj is getattr(self, "profile_list", None) and event.type() == event.Type.Resize:
+            QTimer.singleShot(0, self._fit_profile_list)
+        return super().eventFilter(obj, event)
 
     def _fill_permissions(self):
         self.perm_list.clear()

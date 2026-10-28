@@ -250,7 +250,7 @@ class Welcome(FadesIn, QWidget):
         v.addWidget(self.result)
         v.addSpacing(8)
         default = QHBoxLayout()
-        already = macos.default_browser() == macos.APP_BUNDLE_ID
+        already = macos.is_ours(macos.default_browser())
         label = QLabel(f"{brand.NAME} is your default browser." if already else
                        f"Open links from other apps in {brand.NAME}.")
         label.setWordWrap(True)

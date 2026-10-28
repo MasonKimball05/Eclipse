@@ -141,12 +141,33 @@ def test_downloads_get_the_quarantine_flag(tmp_path):
     assert listed.stdout.startswith("0081;") and "Eclipse" in listed.stdout
 
 
-def test_installs_where_finder_shows_it_and_retires_the_home_folder_copy():
+def test_the_dev_copy_is_eclipse_dev_beside_the_signed_eclipse():
     from pathlib import Path
     build_app = _build_app_module()
-    assert build_app.APP == Path("/Applications/Eclipse.app")
-    assert Path.home() / "Applications" / "Eclipse.app" in build_app.OLD_APPS
+    assert build_app.APP == Path("/Applications/Eclipse Dev.app")
+    assert Path.home() / "Applications" / "Eclipse Dev.app" in build_app.OLD_APPS
     assert build_app.APP not in build_app.OLD_APPS
+    dev, release = build_app.info_plist(dev=True), build_app.info_plist()
+    assert (dev["CFBundleName"], dev["CFBundleIdentifier"]) == ("Eclipse Dev", "com.masonkimball.eclipse.dev")
+    assert (release["CFBundleName"], release["CFBundleIdentifier"]) == ("Eclipse", "com.masonkimball.eclipse")
+    from browser import macos
+    assert macos.is_ours(dev["CFBundleIdentifier"]) and macos.is_ours(release["CFBundleIdentifier"])
+    assert not macos.is_ours("company.thebrowser.browser")
+
+
+@pytest.mark.mac
+def test_building_the_dev_copy_never_takes_away_the_signed_eclipse(tmp_path, monkeypatch):
+    build_app = _build_app_module()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(build_app, "LSREGISTER", "/usr/bin/true")
+    (tmp_path / ".Trash").mkdir()
+    release, launcher = tmp_path / "A" / "Eclipse.app", tmp_path / "B" / "Eclipse.app"
+    _fake_app(release, build_app.BUNDLE_ID)
+    (release / "Contents" / "Resources" / "app").mkdir(parents=True)  # (a release carries its own code)
+    _fake_app(launcher, build_app.BUNDLE_ID)  # (a launcher, as the dev copy was before it was Eclipse Dev)
+    build_app.retire_old_app(release)
+    build_app.retire_old_app(launcher)
+    assert release.exists() and not launcher.exists()
 
 
 def test_falls_back_to_the_home_folder_when_applications_has_someone_elses_eclipse(tmp_path, monkeypatch):
@@ -156,5 +177,5 @@ def test_falls_back_to_the_home_folder_when_applications_has_someone_elses_eclip
     monkeypatch.setattr(build_app, "APP", taken)
     monkeypatch.setattr(build_app.Path, "home", lambda: tmp_path / "home")
     chosen = build_app.install_path()
-    assert chosen == tmp_path / "home" / "Applications" / "Eclipse.app" and build_app.APP == chosen
+    assert chosen == tmp_path / "home" / "Applications" / "Eclipse.app" and build_app.APP == chosen  # (as named)
     assert chosen not in build_app.OLD_APPS

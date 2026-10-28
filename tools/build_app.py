@@ -1,4 +1,7 @@
-"""Build Eclipse.app into /Applications (Finder's Applications folder).
+"""Build Eclipse Dev.app into /Applications (Finder's Applications folder): the copy of Eclipse you try changes
+in. It sits beside the signed Eclipse.app (tools/release.py makes that one), with a name, bundle ID and icon
+(marked DEV) of its own, and shares its Spaces, tabs and settings (the same data folder: so only one of the
+two is open at a time; opening the other brings the open one forward).
 
 Run it with:   ./run.sh --build-app
                ./run.sh --build-app --sign "Developer ID Application: Your Name (TEAMID)"
@@ -39,14 +42,17 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from browser.brand import NAME  # noqa: E402
 
-APP = Path("/Applications") / f"{NAME}.app"
+DEV_NAME = f"{NAME} Dev"
+APP = Path("/Applications") / f"{DEV_NAME}.app"
 # Earlier installs: under its earlier names, and in ~/Applications (where it used to go, which Finder's
-# Applications folder doesn't show)
+# Applications folder doesn't show); and an Eclipse.app that's one of these launchers (as it was called before
+# Eclipse Dev), never the signed Eclipse, which is a release (it carries its own code: Contents/Resources/app)
 OLD_APPS = [folder / f"{old}.app" for folder in (Path("/Applications"), Path.home() / "Applications")
-            for old in ("PythonBrowser", "Halo", NAME) if folder / f"{old}.app" != APP]
-BUNDLE_ID = "com.masonkimball.eclipse"  # must match browser/macos.py
+            for old in ("PythonBrowser", "Halo", NAME, DEV_NAME) if folder / f"{old}.app" != APP]
+BUNDLE_ID = "com.masonkimball.eclipse"  # must match browser/macos.py (the signed release's)
+DEV_BUNDLE_ID = BUNDLE_ID + ".dev"  # (this one's: macos.DEV_BUNDLE_ID)
 OLD_BUNDLE_IDS = ("com.masonkimball.pythonbrowser",)  # (before the rename: still ours, to replace or retire)
-OURS = (BUNDLE_ID, *OLD_BUNDLE_IDS)
+OURS = (BUNDLE_ID, DEV_BUNDLE_ID, *OLD_BUNDLE_IDS)
 LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework"
               "/Support/lsregister")
 
@@ -101,11 +107,12 @@ ENTITLEMENTS = {
 }
 
 
-def info_plist() -> dict:
+def info_plist(dev=False) -> dict:
+    """The app's Info.plist: the signed release's (tools/release.py), or Eclipse Dev's."""
     return {
-        "CFBundleName": NAME,
-        "CFBundleDisplayName": NAME,
-        "CFBundleIdentifier": BUNDLE_ID,
+        "CFBundleName": DEV_NAME if dev else NAME,
+        "CFBundleDisplayName": DEV_NAME if dev else NAME,
+        "CFBundleIdentifier": DEV_BUNDLE_ID if dev else BUNDLE_ID,
         "CFBundleExecutable": NAME,
         "CFBundleIconFile": "AppIcon",
         "CFBundlePackageType": "APPL",
@@ -163,7 +170,7 @@ def compile_launcher(dest: Path):
         ], check=True)
 
 
-def make_icon(dest: Path):
+def make_icon(dest: Path, dev=False):
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PyQt6.QtGui import QGuiApplication
 
@@ -178,8 +185,34 @@ def make_icon(dest: Path):
             for scale in (1, 2):
                 px = points * scale
                 name = f"icon_{points}x{points}{'@2x' if scale == 2 else ''}.png"
-                icon_image(px, look).save(str(iconset / name))  # drawn at each size (small ones bolder)
+                image = icon_image(px, look)  # drawn at each size (small ones bolder)
+                if dev:
+                    image = dev_badge(image)
+                image.save(str(iconset / name))
         subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(dest)], check=True)
+
+
+def dev_badge(image):
+    """Eclipse's icon with DEV across its foot, to tell Eclipse Dev from the signed Eclipse in the Dock."""
+    from PyQt6.QtCore import QRectF, Qt
+    from PyQt6.QtGui import QColor, QFont, QPainter
+    size = image.width()
+    if size < 32:
+        return image  # (too small to read: the name says it)
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pill = QRectF(size * 0.2, size * 0.7, size * 0.6, size * 0.2)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor("#f97316"))
+    painter.drawRoundedRect(pill, pill.height() / 2, pill.height() / 2)
+    font = QFont()
+    font.setBold(True)
+    font.setPixelSize(max(6, round(pill.height() * 0.62)))
+    painter.setFont(font)
+    painter.setPen(QColor("white"))
+    painter.drawText(pill, Qt.AlignmentFlag.AlignCenter, "DEV")
+    painter.end()
+    return image
 
 
 def retire_old_app(old: Path):
@@ -194,6 +227,8 @@ def retire_old_app(old: Path):
         return
     if existing not in OURS:
         return
+    if (old / "Contents" / "Resources" / "app").exists():
+        return  # (the signed Eclipse, a release: never this script's to take away)
     subprocess.run([LSREGISTER, "-u", str(old)], check=False)  # (or macOS remembers it where it was)
     trash = Path.home() / ".Trash" / old.name
     n = 2
@@ -281,7 +316,7 @@ def team_identity() -> tuple[str, str] | None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description=f"Build {NAME}.app")
+    parser = argparse.ArgumentParser(description=f"Build {DEV_NAME}.app")
     parser.add_argument("--sign", default=os.environ.get("ECLIPSE_SIGN_IDENTITY"), metavar="IDENTITY",
                         help='a codesigning identity (e.g. "Developer ID Application: …"), or - for ad hoc; '
                              "default: the best one of the maker's team on this Mac, else ad hoc")
@@ -299,8 +334,8 @@ def main():
 
 
 def install_path() -> Path:
-    """/Applications/Eclipse.app, or ~/Applications' if that can't be: another app has the name there (the
-    Eclipse IDE's is Eclipse.app too), or this account can't write to /Applications."""
+    """/Applications/Eclipse Dev.app, or ~/Applications' if that can't be: another app has the name there, or this
+    account can't write to /Applications."""
     global APP, OLD_APPS
     if _ours_or_free(APP) and os.access(APP.parent, os.W_OK):
         return APP
@@ -327,16 +362,16 @@ def build(app: Path, identity="-", notary_profile=None):
         # Only ever replace our own app
         existing = plistlib.loads((app / "Contents" / "Info.plist").read_bytes()).get("CFBundleIdentifier")
         if existing not in OURS:
-            sys.exit(f"{app} exists and isn't {NAME} ({existing}); not touching it.")
+            sys.exit(f"{app} exists and isn't {DEV_NAME} ({existing}); not touching it.")
         shutil.rmtree(app)
 
     contents = app / "Contents"
     (contents / "MacOS").mkdir(parents=True)
     (contents / "Resources").mkdir()
-    (contents / "Info.plist").write_bytes(plistlib.dumps(info_plist()))
+    (contents / "Info.plist").write_bytes(plistlib.dumps(info_plist(dev=True)))
     print("Compiling the launcher…")
     compile_launcher(contents / "MacOS" / NAME)
-    make_icon(contents / "Resources" / "AppIcon.icns")
+    make_icon(contents / "Resources" / "AppIcon.icns", dev=True)
     sign(app, identity)
     if notary_profile:
         notarize(app, notary_profile)
@@ -347,8 +382,8 @@ def build(app: Path, identity="-", notary_profile=None):
         forget_trashed()
 
     print(f"\nBuilt {app}")
-    print("Open it from your Applications folder or Spotlight.")
-    print(f"To make it your default browser: {NAME} menu → Set as Default Browser…")
+    print(f"Open {DEV_NAME} from your Applications folder or Spotlight (it runs this checkout's code: changes show")
+    print(f"up the next time it opens). It shares {NAME}'s Spaces and settings, so open one of the two at a time.")
 
 
 if __name__ == "__main__":

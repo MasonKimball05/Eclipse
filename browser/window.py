@@ -1940,14 +1940,14 @@ class MainWindow(QMainWindow):
         self.store.schedule_save()
 
     def set_as_default_browser(self):
-        if macos.bundle_identifier() != macos.APP_BUNDLE_ID:
+        if not macos.is_built_app():
             QMessageBox.information(
                 self, "Set as Default Browser",
                 "macOS only lets an installed app be the default browser.\n\n"
                 "Build it once with:   ./run.sh --build-app\n\n"
                 f"then open {brand.NAME} from your Applications folder and choose this again.")
             return
-        if macos.set_default_browser(macos.APP_BUNDLE_ID):
+        if macos.set_default_browser(macos.bundle_identifier()):  # (Eclipse, or Eclipse Dev: whichever this is)
             self.toast("macOS will ask you to confirm the change")
         else:
             self.toast("macOS didn't accept the change")

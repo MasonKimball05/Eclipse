@@ -36,3 +36,12 @@ def test_a_built_app_matches_only_the_code_it_was_built_from(tmp_path):
     (source / "browser" / "new.py").write_text("added")
     (built / "browser" / "ext" / "b.py").unlink()
     assert release.differences(built, source) == ["browser/a.py", "browser/ext/b.py", "browser/new.py"]
+
+
+def test_the_release_installs_as_eclipse_never_over_eclipse_dev():
+    release = _release()
+    import build_app
+    assert release.APP == Path("/Applications/Eclipse.app")
+    assert build_app.APP == Path("/Applications/Eclipse Dev.app") and release.APP != build_app.APP
+    plist = release.build_app.info_plist()
+    assert plist["CFBundleIdentifier"] == "com.masonkimball.eclipse" and plist["CFBundleName"] == "Eclipse"

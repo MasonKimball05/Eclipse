@@ -7,6 +7,7 @@ import sys
 
 NS_WINDOW_TITLE_HIDDEN = 1
 APP_BUNDLE_ID = "com.masonkimball.eclipse"  # must match tools/build_app.py
+DEV_BUNDLE_ID = APP_BUNDLE_ID + ".dev"  # (Eclipse Dev, the copy that runs from the checkout: ./run.sh --build-app)
 
 _objc = None
 if sys.platform == "darwin":
@@ -86,8 +87,13 @@ def bundle_identifier() -> str | None:
 
 
 def is_built_app() -> bool:
-    """Running as the built Eclipse.app (not from a terminal, where the process is Python's)."""
-    return bundle_identifier() == APP_BUNDLE_ID
+    """Running as the built Eclipse.app or Eclipse Dev.app (not from a terminal, where the process is Python's)."""
+    return bundle_identifier() in (APP_BUNDLE_ID, DEV_BUNDLE_ID)
+
+
+def is_ours(bundle_id) -> bool:
+    """Eclipse, or Eclipse Dev."""
+    return (bundle_id or "").lower() in (APP_BUNDLE_ID, DEV_BUNDLE_ID)
 
 
 def default_browser() -> str | None:
