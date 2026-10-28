@@ -414,7 +414,7 @@ class PrivateSession(QObject):
             self.profile = QWebEngineProfile(self.browser)  # no storage name: off the record
             harden(self.profile)
             self.profile.setHttpUserAgent(self.browser.profile.httpUserAgent())
-            self.browser.adblock.attach(self.profile)  # ads still blocked, cookie banners still rejected
+            self.browser.adblock.attach(self.profile, private=True)  # ads still blocked, cookie banners still rejected
             self.browser.passkeys.attach_profile(self.profile)  # (security keys work there too)
             self.browser.passwords.attach_profile(self.profile)  # (filling works; saving still asks)
             spelling.apply([self.profile], self.browser.store.settings)

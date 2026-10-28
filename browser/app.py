@@ -10,6 +10,7 @@ from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication
 
 from . import backup, brand, crash, features, macos, space_share, spelling, storage, whats_new
+from .external_links import OWN_SCHEME
 from .models import Store
 from .theme import DropdownLists
 from .webview import build_profile
@@ -57,6 +58,11 @@ class LinkReceiver(QObject):
             url = event.url()
             if url.isEmpty() and event.file():
                 url = QUrl.fromLocalFile(event.file())
+            if url.scheme().lower() == OWN_SCHEME:  # (Shortcuts and other apps: scripting.py)
+                if not any(f.app_link(url) for f in list(self.window.features.values())):
+                    self.window.bring_to_front()
+                    self.window.toast(f"{brand.NAME} doesn't know the link {url.toString()[:80]}")
+                return True
             if url.isLocalFile() and Path(url.toLocalFile()).suffix.lower() == space_share.SUFFIX:
                 self.window.import_space_file(url.toLocalFile())  # (a Space someone shared)
                 return True

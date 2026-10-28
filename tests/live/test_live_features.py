@@ -1415,3 +1415,308 @@ def test_a_download_pauses_and_resumes(window, tmp_path, monkeypatch):
         assert item not in downloads.items
     finally:
         server.shutdown()
+
+
+def test_applescript_lists_opens_focuses_and_closes_tabs(window, site, monkeypatch):
+    from browser import macos
+    from browser.scripting import IN_SPACE, SUITE, TAB_RECORD
+    if macos._objc is None:
+        import pytest
+        pytest.skip("macOS's Apple events")
+    monkeypatch.setattr(window, "bring_to_front", lambda: None)  # (a test never takes the screen)
+    ask = lambda command, **params: macos.ask_self(SUITE, command, params)
+    names = [s.name for s in window.store.spaces]
+    assert ask("LsSp") == names
+    work = window.store.spaces[1]
+    made = ask("OpTb", **{"----": site + "/article.html", IN_SPACE: work.name.upper()})  # (any case)
+    assert made[TAB_RECORD["URL"]] == site + "/article.html" and made[TAB_RECORD["space"]] == work.name
+    assert made[TAB_RECORD["section"]] == "today" and window.store.active_space is work
+    tab = window.store.find_tab(made[TAB_RECORD["id"]])
+    assert window.current_tab is tab and ask("CrTb")[TAB_RECORD["id"]] == tab.id
+    in_work = ask("LsTb", **{IN_SPACE: work.name})
+    assert tab.id in [t[TAB_RECORD["id"]] for t in in_work]
+    assert len(ask("LsTb")) == len(list(window.store.all_tabs())) > len(in_work)
+    # Back to the first Space, then focus brings the tab (and its Space) back
+    ask("SwSp", **{"----": names[0]})
+    assert wait_until(lambda: window.store.active_space is window.store.spaces[0], 3)
+    ask("FcTb", **{"----": tab.id})
+    assert wait_until(lambda: window.store.active_space is work and window.current_tab is tab, 3)
+    ask("ClTb", **{"----": tab.id})
+    assert window.store.find_tab(tab.id) is None
+    # What it can't do, it says (and does nothing)
+    for command, params, says in (("SwSp", {"----": "Nowhere"}, 'no Space called "Nowhere"'),
+                                  ("FcTb", {"----": "gone"}, 'no tab with the id "gone"'),
+                                  ("OpTb", {"----": "javascript:alert(1)"}, "web page's address"),
+                                  ("OpTb", {"----": "file:///etc/passwd"}, "web page's address")):
+        try:
+            ask(command, **params)
+            raise AssertionError(command)
+        except macos.ScriptError as error:
+            assert says in str(error), (command, str(error))
+
+
+def test_eclipse_links_from_other_apps_open_pages_and_switch_spaces(window, site, monkeypatch):
+    from PyQt6.QtNetwork import QLocalServer
+    from browser.app import LinkReceiver
+    from browser.webview import WebPage
+    monkeypatch.setattr(window, "bring_to_front", lambda: None)
+    receiver = LinkReceiver(window, QLocalServer())
+
+    class FileOpen:  # (what macOS sends, as Shortcuts opens the link; Qt won't make one of its own here)
+        def __init__(self, text):
+            self.url = lambda: QUrl(text)
+        type = staticmethod(lambda: QEvent.Type.FileOpen)
+        file = staticmethod(lambda: "")
+    link = lambda text: receiver.eventFilter(None, FileOpen(text))
+    work, first = window.store.spaces[1], window.store.spaces[0]
+    page = f"{site}/article.html?a=1&b=2"
+    assert link("eclipse-browser://open?url=" + QUrl.toPercentEncoding(page).data().decode() + "&space=" + work.name)
+    assert window.store.active_space is work and window.current_tab.url == page  # (its own & kept)
+    opened = window.current_tab
+    assert link(f"eclipse-browser://space?name={first.name}") and window.store.active_space is first
+    # Only web pages: anything else does nothing but say so
+    count = len(list(window.store.all_tabs()))
+    for bad in ("eclipse-browser://open?url=javascript:alert(1)", "eclipse-browser://open?url=file:///etc/passwd",
+                "eclipse-browser://delete-everything", "eclipse-browser://space?name=Nowhere"):
+        window.toasts.clear()
+        assert link(bad) and window.toasts, bad
+    assert len(list(window.store.all_tabs())) == count and window.store.active_space is first
+    # A page can never use them: they'd let it drive the browser it's in
+    view_page = WebPage(window.profile, window)
+    assert not view_page.acceptNavigationRequest(QUrl("eclipse-browser://open?url=https://evil.example/"),
+                                                 WebPage.NavigationType.NavigationTypeLinkClicked, True)
+    view_page.deleteLater()
+    window.close_tab(opened)
+
+
+def test_spaces_and_pinned_tabs_go_in_spotlight_and_open_from_it(window, site, monkeypatch):
+    from browser import macos
+    from browser.models import PINNED, TODAY, Tab
+    feature = window.feature("spotlight")
+    added, removed = [], []
+    monkeypatch.setattr(macos, "is_built_app", lambda: True)  # (only the built app uses Spotlight: and never
+    monkeypatch.setattr(macos, "spotlight_add", lambda items: added.append(items) or True)  # really, from a test)
+    monkeypatch.setattr(macos, "spotlight_remove", lambda ids: removed.append(ids) or True)
+    monkeypatch.setattr(window, "bring_to_front", lambda: None)
+    work = window.store.spaces[1]
+    pinned, today = Tab(site + "/article.html", "The Article"), Tab(site + "/index.html", "Today's")
+    window.store.add_tab(pinned, PINNED, work, 0)
+    window.store.add_tab(today, TODAY, work, 0)
+    feature.refresh()
+    ids = {item[0]: item for item in added[-1]}
+    assert f"space:{work.id}" in ids and ids[f"space:{work.id}"][1] == work.name
+    assert ids[f"tab:{pinned.id}"][1:3] == ("The Article", f"Pinned in {work.name} · 127.0.0.1")
+    assert f"tab:{today.id}" not in ids  # (Today's come and go)
+    assert any(i.startswith("tab:") and i[4:] in {t.id for t in window.store.favorites} for i in ids)
+    assert window.store.settings["spotlight_ids"] == sorted(ids)
+    feature.refresh()
+    assert len(added) == 1  # (nothing changed: Spotlight isn't told again)
+    # Picked in Spotlight: Eclipse comes up at it, in its Space
+    window.switch_space(window.store.spaces[0])
+    feature.open(f"tab:{pinned.id}")
+    assert wait_until(lambda: window.store.active_space is work and window.current_tab is pinned, 3)
+    feature.open(f"space:{window.store.spaces[0].id}")
+    assert wait_until(lambda: window.store.active_space is window.store.spaces[0], 3)
+    # Unpinned (closed for good): taken out of Spotlight
+    window.store.remove_tab(pinned)
+    feature.refresh()
+    assert removed[-1] == [f"tab:{pinned.id}"]
+    # Turned off: everything's taken out
+    window.store.settings["spotlight"] = False
+    feature.setting_changed()
+    assert removed[-1] is None and window.store.settings["spotlight_ids"] == []
+    window.close_tab(today)
+
+
+def test_picking_an_eclipse_item_in_spotlight_reaches_eclipse(window, monkeypatch):
+    import ctypes
+    from browser import macos
+    if not macos._cocoa():
+        import pytest
+        pytest.skip("macOS's app delegate")
+    picked = []
+    monkeypatch.setattr(window.feature("spotlight"), "open", picked.append)
+    macos.on_spotlight_open(window.feature("spotlight").open)
+    send, cls = macos._send, macos._objc.objc_getClass
+
+    def activity(kind, info=None):
+        made = send(send(cls(b"NSUserActivity"), "alloc"), "initWithActivityType:", macos._cfstr(kind),
+                    argtypes=(ctypes.c_void_p,))
+        if info:
+            send(made, "setUserInfo:", send(cls(b"NSDictionary"), "dictionaryWithObject:forKey:", macos._cfstr(info[1]),
+                                            macos._cfstr(info[0]), argtypes=(ctypes.c_void_p, ctypes.c_void_p)),
+                 restype=None, argtypes=(ctypes.c_void_p,))
+        return made
+    app = send(cls(b"NSApplication"), "sharedApplication")
+    delegate = send(app, "delegate")
+    continue_ = lambda act: send(delegate, "application:continueUserActivity:restorationHandler:", app, act, None,
+                                 restype=ctypes.c_bool, argtypes=(ctypes.c_void_p,) * 3)
+    # What macOS sends when you pick one of ours in Spotlight
+    assert continue_(activity("com.apple.corespotlightitem", ("kCSSearchableItemActivityIdentifier", "tab:abc")))
+    assert picked == ["tab:abc"]
+    # Anything else is still Qt's (which says no to an activity it doesn't know)
+    continue_(activity("com.example.something-else"))
+    assert picked == ["tab:abc"]
+
+
+def test_low_power_mode_pauses_background_tabs_and_motion(window, site, monkeypatch):
+    from PyQt6.QtWebEngineCore import QWebEnginePage
+    from browser import macos, motion, power_saver
+    feature = window.feature("power_saver")
+    low = [True]
+    monkeypatch.setattr(macos, "low_power", lambda: low[0])
+    State = QWebEnginePage.LifecycleState
+    background = open_page(window, site + "/article.html")
+    front = open_page(window, site + "/index.html")
+    background.last_active = time.time() - power_saver.FREEZE_AFTER - 5
+    window.store.settings["power_saver"] = True
+    feature.check()
+    assert feature.saving and motion.reduced() and window.saving_minutes == power_saver.SLEEP_MINUTES
+    assert window.toasts[-1].startswith("Low Power Mode")
+    assert background.view.page().lifecycleState() == State.Frozen
+    assert front.view.page().lifecycleState() == State.Active  # (the tab on screen carries on)
+    # Switched to, a frozen tab carries on
+    window.activate_tab(background)
+    assert wait_until(lambda: background.view.page().lifecycleState() == State.Active, 3)
+    assert run_js(background.view, "1 + 1") == 2
+    # Idle tabs sleep sooner: 10 minutes, where you'd said an hour
+    window.store.settings["sleep_after_minutes"] = 60
+    front.last_active = time.time() - 11 * 60
+    window.sleep_idle_tabs()
+    assert window.is_sleeping(front)
+    window.store.settings["sleep_after_minutes"] = 0  # ("Never" stays never)
+    window.activate_tab(front)
+    assert wait_until(lambda: not window.is_sleeping(front), 3)
+    background.last_active = time.time() - 3600
+    window.activate_tab(front)
+    assert window.sleep_idle_tabs() == 0
+    # Low Power Mode off: as it was
+    feature.freeze_idle()
+    assert background.view.page().lifecycleState() == State.Frozen
+    low[0] = False
+    feature.check()
+    assert not feature.saving and not motion.saving and window.saving_minutes is None
+    assert background.view.page().lifecycleState() == State.Active
+    # Turned off in Settings: Low Power Mode changes nothing
+    low[0] = True
+    window.store.settings["power_saver"] = False
+    feature.setting_changed()
+    assert not feature.saving and not motion.saving
+    window.close_tab(background)
+    window.close_tab(front)
+
+
+def test_the_privacy_report_shows_what_each_site_tried(window, site, monkeypatch):
+    from PyQt6.QtWidgets import QMenu
+    feature = window.feature("privacy_report")
+    feature.log.clear()
+    tab = open_page(window, site + "/article.html")
+    window.adblock.tracker_blocked.emit("127.0.0.1", "doubleclick.net")  # (as the blocker says, from its thread)
+    window.adblock.tracker_blocked.emit("127.0.0.1", "facebook.net")
+    window.adblock.link_cleaned.emit("127.0.0.1")
+    assert wait_until(lambda: feature.log.report("127.0.0.1")["cleaned"] == 1, 2)
+    # In the shield's menu: the report for the site on screen
+    menu = QMenu()
+    window.emit("site_menu", menu, tab)
+    item = next(a for a in menu.actions() if a.text().startswith("Privacy Report for"))
+    item.trigger()
+    text = feature.shown.text.toPlainText()
+    assert "2 trackers blocked" in text and "Google" in text and "Meta" in text and "1 link" in text
+    feature.shown.close()
+    # Clearing history clears it
+    window.emit("history_cleared")
+    assert feature.log.report()["trackers"] == {}
+    window.close_tab(tab)
+
+
+def test_a_space_comes_forward_on_its_schedule_and_blocks_its_distractions(window, site, monkeypatch):
+    import datetime
+    feature = window.feature("space_rules")
+    first, work = window.store.spaces[0], window.store.spaces[1]
+    window.switch_space(first)
+    monday_9 = datetime.datetime(2026, 10, 26, 9, 0)
+    feature.rules()[work.id] = {"days": [0, 1, 2, 3, 4], "start": "09:00", "end": "17:00"}  # (not set_rule: that
+    feature.wanted = feature.wanted_space(monday_9.replace(hour=8))  # acts on the real time) 8 am: nothing yet
+    # 9 am, you're using Eclipse: it asks
+    monkeypatch.setattr(window, "isActiveWindow", lambda: True)
+    monkeypatch.setattr("browser.space_rules.QApplication.applicationState",
+                        staticmethod(lambda: __import__("PyQt6.QtCore").QtCore.Qt.ApplicationState.ApplicationActive))
+    window.toasts.clear()
+    feature.check(monday_9)
+    assert window.toasts == [f"Time for {work.name}"] and window.store.active_space is first
+    window.toast_action()
+    assert wait_until(lambda: window.store.active_space is work, 3)
+    # Switched back by hand: it stays, until the next change
+    window.switch_space(first)
+    feature.check(monday_9.replace(minute=30))
+    assert window.store.active_space is first
+    # 9 am the next day, Eclipse in the background: it just switches
+    feature.check(monday_9.replace(hour=18))
+    monkeypatch.setattr(window, "isActiveWindow", lambda: False)
+    feature.check(monday_9 + datetime.timedelta(days=1))
+    assert wait_until(lambda: window.store.active_space is work, 3)
+    # A site blocked in Work: a quiet page, and Open Anyway lets it through
+    feature.set_rule(work, {"blocked": ["127.0.0.1"]})
+    window.toasts.clear()
+    tab = open_page(window, site + "/article.html", wait=False)
+    assert wait_until(lambda: window.toasts == [f"127.0.0.1 is blocked in {work.name}"], 5)
+    assert wait_until(lambda: "isn't in" in (run_js(tab.view, "document.body && document.body.innerText") or ""), 5)
+    window.toast_action()
+    assert wait_until(lambda: tab.view.url().toString() == site + "/article.html", 5)
+    # The same site in another Space opens as ever
+    window.switch_space(first)
+    other = open_page(window, site + "/index.html")
+    assert other.view.url().toString() == site + "/index.html"
+    feature.set_rule(work, {})
+    assert work.id not in window.store.settings.get("space_rules", {})
+    window.close_tab(tab)
+    window.close_tab(other)
+
+
+def test_a_tab_recipe_saves_and_replays_a_routine(window, site, monkeypatch):
+    from browser import macos
+    from browser.models import walk_tabs
+    from browser.scripting import SUITE
+    feature = window.feature("recipes")
+    monkeypatch.setattr(window, "bring_to_front", lambda: None)
+    space = window.store.active_space
+    for tab in list(walk_tabs(space.today)):
+        window.close_tab(tab)
+    a = open_page(window, site + "/article.html")
+    b = open_page(window, site + "/index.html")
+    recipe = feature.save_current("Morning")
+    assert set(recipe["urls"]) == {a.url, b.url} and not recipe["split"] and recipe["space"] == space.id
+    assert "Run Recipe: Morning" in [c[0] for c in window.commands()]
+    # Run with one of its pages still open: that one's reused, the other comes back
+    window.close_tab(a)
+    tabs = feature.run(recipe)
+    assert b in tabs and len(tabs) == 2 and window.current_tab is tabs[0]
+    assert [t.url for t in walk_tabs(space.today)].count(b.url) == 1
+    # Side by side
+    recipe["split"] = True
+    feature.run(recipe)
+    assert window.store.split_of(window.current_tab) and len(window.store.split_of(window.current_tab)) == 2
+    # From a link (Shortcuts) and from AppleScript
+    ran = []
+    monkeypatch.setattr(feature, "run", lambda r: ran.append(r["name"]))
+    from browser.app import LinkReceiver
+    from PyQt6.QtNetwork import QLocalServer
+
+    class FileOpen:
+        def __init__(self, text):
+            self.url = lambda: QUrl(text)
+        type = staticmethod(lambda: QEvent.Type.FileOpen)
+        file = staticmethod(lambda: "")
+    LinkReceiver(window, QLocalServer()).eventFilter(None, FileOpen("eclipse-browser://recipe?name=morning"))
+    if macos._objc is not None:
+        macos.ask_self(SUITE, "RnRc", {"----": "Morning"})
+        try:
+            macos.ask_self(SUITE, "RnRc", {"----": "Evening"})
+            raise AssertionError("no such recipe")
+        except macos.ScriptError as error:
+            assert "no recipe called" in str(error)
+    assert ran[:2] == ["Morning", "Morning"] if macos._objc is not None else ran == ["Morning"]
+    window.store.settings["recipes"] = []
+    window.separate_split() if window.store.split_of(window.current_tab) else None
+    for tab in list(walk_tabs(space.today)):
+        window.close_tab(tab)

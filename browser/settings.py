@@ -481,6 +481,12 @@ class SettingsWindow(FadesIn, QWidget):
         handoff_row = self._row("Offer pages to your iPhone and iPad (Handoff)", "The page you're on shows in "
                                 "their app switcher, to carry on reading there. Not private windows.",
                                 self.handoff_box)
+        spotlight_row = self._feature_box("spotlight", "Show Spaces and pinned tabs in Spotlight",
+                                          "Find them with ⌘Space, like apps and documents. Not Today's tabs, "
+                                          "nor private windows.")
+        saver_row = self._feature_box("power_saver", "Save energy in Low Power Mode",
+                                      "While your Mac saves its battery: background tabs pause, idle ones sleep "
+                                      "sooner, and things appear instead of moving.")
         # (hidden, never setVisible(True): with no parent yet, that would make a row a window of its own)
         if sys.platform != "darwin":
             keep_row.hide()
@@ -518,7 +524,7 @@ class SettingsWindow(FadesIn, QWidget):
                         self._row("Open links from other apps in",
                                   "Like Arc, a Little window is quick to glance at and close. ⌘O keeps it.", links),
                         self._row("Search engine", "Used by the command bar and Little windows.", engine),
-                        spell_row, keep_row, handoff_row]),
+                        spell_row, keep_row, handoff_row, spotlight_row, saver_row]),
             sync_card,
             self._card([self._row("Search shortcuts", "Your own sites to search from ⌘T: type the keyword and a "
                                                       "space (\u201cparl budget\u201d), or the keyword and Tab. "
@@ -662,6 +668,13 @@ class SettingsWindow(FadesIn, QWidget):
         pv.addWidget(self.perm_empty)
         pv.addWidget(self.perm_list)
         pv.addWidget(self.perm_remove, 0, Qt.AlignmentFlag.AlignRight)
+        report_button = QPushButton("Show Report…")
+        report_button.clicked.connect(lambda: self.browser.feature("privacy_report").show())
+        report_row = self._row("Privacy Report", "The trackers blocked over the last 30 days, by the company behind "
+                                                 "them, and the sites that tried hardest. Each site's is in the "
+                                                 "shield's menu too.", report_button)
+        if self.browser.feature("privacy_report") is None:
+            report_row.hide()
         return self._stack(
             self._card([self._row("Site permissions", "Camera, microphone, location, notifications and links that "
                                                       "open other apps you've allowed or blocked. Removing one "
@@ -679,7 +692,8 @@ class SettingsWindow(FadesIn, QWidget):
                         self._row("Clean links", "Takes tracking tags (utm_source, fbclid, gclid…) off links "
                                                  "before they open, and off links you copy.", clean_box),
                         self._row("Videos wait for a click", "Video and sound don't start by themselves: nothing "
-                                  "plays until you click it (muted background videos wait too).", self._autoplay_box())]),
+                                  "plays until you click it (muted background videos wait too).", self._autoplay_box()),
+                        report_row]),
             self._card([self._row("Browsing history", "Used for command bar suggestions. Also browsable in the "
                                                       "Library (⌘Y).", clear_history),
                         self._row("Search what you've read", "Keeps the text of pages you visit on this Mac so ⌘T "
@@ -1001,6 +1015,7 @@ class SettingsWindow(FadesIn, QWidget):
             self.store.history = []
             self.store.schedule_save()
             self.browser.page_index.clear()  # what you read goes with where you went
+            self.browser.emit("history_cleared")
 
     def _clear_profile(self):
         item = self.profile_list.currentItem()
@@ -1157,6 +1172,22 @@ class SettingsWindow(FadesIn, QWidget):
         if on:
             feature.sync.run()
         self.sync_status.setText(self._sync_text())
+
+    def _feature_box(self, name, title, hint):
+        """A row with a switch for a feature that has a setting by its own name (on unless turned off)."""
+        box = QCheckBox()
+        box.setChecked(self.store.settings.get(name, True))
+        box.toggled.connect(lambda on: self._toggle_feature(name, on))
+        row = self._row(title, hint, box)
+        if sys.platform != "darwin" or self.browser.feature(name) is None:
+            row.hide()
+        return row
+
+    def _toggle_feature(self, name, on):
+        self._setting(name, on)
+        feature = self.browser.feature(name)
+        if feature is not None:
+            feature.setting_changed()
 
     def _toggle_handoff(self, on):
         self._setting("handoff", on)

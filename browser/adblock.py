@@ -14,6 +14,7 @@
 # Block lists are downloaded in the background and refreshed weekly; a short built-in
 # list covers the biggest ad networks until the first download finishes.
 
+import ipaddress
 import time
 
 from PyQt6.QtCore import QTimer, QUrl, pyqtSignal
@@ -110,7 +111,13 @@ def _ace(host: str) -> str:
 
 
 def _site(host: str) -> str:
-    """Rough "registrable domain": news.bbc.co.uk -> bbc.co.uk, cdn.example.com -> example.com."""
+    """Rough "registrable domain": news.bbc.co.uk -> bbc.co.uk, cdn.example.com -> example.com. An IP address is
+    its own site (127.0.0.1 isn't "0.1")."""
+    host = host.strip("[]")
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        pass
     labels = _ace(host).removeprefix("www.").split(".")
     if len(labels) >= 3 and len(labels[-1]) == 2 and len(labels[-2]) <= 3:  # co.uk, com.au, ...
         return ".".join(labels[-3:])
@@ -145,6 +152,11 @@ def parse_list(text: str) -> set[str]:
 class AdBlocker(QWebEngineUrlRequestInterceptor):
     # A request was blocked on this site (the first-party host, without "www.")
     blocked = pyqtSignal(str)
+    # For the privacy report (privacy_report.py): (the site you're on, the tracker's site) as one's blocked, and
+    # the site a link's tracking was taken off on. Never from a private window (see OffTheRecord).
+    tracker_blocked = pyqtSignal(str, str)
+    link_cleaned = pyqtSignal(str)
+    reports = True
 
     def __init__(self, store, parent):
         super().__init__(parent)
@@ -157,10 +169,13 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
         self._load_cached_lists()
         QTimer.singleShot(5000, self.update_lists)
 
-    def attach(self, profile):
-        """Start blocking in a profile (every Space profile gets the same blocker)."""
+    def attach(self, profile, private=False):
+        """Start blocking in a profile (every Space profile gets the same blocker; a private window's, its twin
+        that tells nothing)."""
+        if private and getattr(self, "off_the_record", None) is None:
+            self.off_the_record = OffTheRecord(self)
         self.profiles.append(profile)
-        profile.setUrlRequestInterceptor(self)
+        profile.setUrlRequestInterceptor(self.off_the_record if private else self)
         self._install_scripts(profile)
 
     def detach(self, profile):
@@ -220,6 +235,8 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
             cleaned = self.link_cleaner.redirect_for(bytes(info.requestUrl().toEncoded()).decode())
             if cleaned:
                 info.redirect(QUrl.fromEncoded(cleaned.encode()))
+                if self.reports:
+                    self.link_cleaned.emit(_site(info.requestUrl().host()))
                 return
         if not self.enabled or info.resourceType() in _SKIPPED_TYPES:
             return
@@ -229,6 +246,8 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
             first_party = _site(first_party_host)
             self.counts[first_party] = self.counts.get(first_party, 0) + 1
             self.blocked.emit(first_party)
+            if self.reports:
+                self.tracker_blocked.emit(first_party, _site(info.requestUrl().host()))
 
     def install_scripts(self):
         for profile in self.profiles:
@@ -317,3 +336,19 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
             return  # an error page, not a block list
         path.write_text(text)
         self._load_cached_lists()
+
+
+class OffTheRecord(AdBlocker):
+    """Private windows' blocker: blocks just as the main one does (its lists, settings and extensions' rules), but
+    reports nothing, so nothing of private browsing reaches the privacy report. Its blocks still count towards
+    the shield's number, which is only kept while Eclipse runs."""
+
+    reports = False
+    domains = property(lambda self: self.main.domains)
+    counts = property(lambda self: self.main.counts)
+    extension_rules = property(lambda self: self.main.extension_rules)
+
+    def __init__(self, main):
+        QWebEngineUrlRequestInterceptor.__init__(self, main)
+        self.main, self.store, self.link_cleaner, self.profiles = main, main.store, main.link_cleaner, []
+        self.blocked.connect(main.blocked)  # (the shield's number updates)

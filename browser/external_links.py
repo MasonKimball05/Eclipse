@@ -29,6 +29,9 @@ SETTING = "external_apps"  # {origin: [schemes it may open without asking]}
 ARM_MS = 600
 QUIET_AFTER_CANCEL = 3.0   # seconds a page can't ask again about a kind of link you just turned down
 ALLOWED_GAP = 2.0          # seconds between links an allowed site opens by itself (no relaunch loops)
+# Eclipse's own links, for Shortcuts and other apps (scripting.py): never followed from a page, which mustn't
+# drive the browser it's in
+OWN_SCHEME = "eclipse-browser"
 # What the browser itself shows: anything else is another app's
 WEB_SCHEMES = {"http", "https", "file", "data", "about", "blob", "javascript", "filesystem", "pbext", "qrc",
                "chrome", "chrome-error", "devtools", "view-source", "ws", "wss"}

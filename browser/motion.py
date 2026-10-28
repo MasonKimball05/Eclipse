@@ -25,11 +25,14 @@ def _reduce_motion() -> bool:
 _reduced = None  # looked up the first time something animates (asking `defaults` costs ~10 ms)
 
 
+saving = False  # (Low Power Mode: everything just appears too. power_saver.py)
+
+
 def reduced() -> bool:
     global _reduced
     if _reduced is None:
         _reduced = _reduce_motion()
-    return _reduced
+    return _reduced or saving
 
 
 def animate(owner, start, end, on_value, ms=NORMAL, done=None, easing=QEasingCurve.Type.OutCubic):

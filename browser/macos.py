@@ -484,3 +484,310 @@ def verify_owner(reason: str, done, interactive=True) -> bool:
     _send(context, "evaluatePolicy:localizedReason:reply:", _OWNER_POLICY, _cfstr(reason), ctypes.byref(block),
           restype=None, argtypes=(ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p))
     return True
+
+
+# --- Objective-C classes of our own ------------------------------------------------------------------
+# A few things macOS only tells an object with a method of its own (an Apple event's handler): the class is
+# made at run time, its methods Python functions ctypes turns into C ones (kept alive, in _methods).
+
+_methods = []
+
+
+def _runtime():
+    for name, restype, argtypes in (
+            ("objc_allocateClassPair", ctypes.c_void_p, [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t]),
+            ("objc_registerClassPair", None, [ctypes.c_void_p]),
+            ("class_addMethod", ctypes.c_bool, [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p]),
+            ("class_getInstanceMethod", ctypes.c_void_p, [ctypes.c_void_p, ctypes.c_void_p]),
+            ("method_setImplementation", ctypes.c_void_p, [ctypes.c_void_p, ctypes.c_void_p]),
+            ("object_getClass", ctypes.c_void_p, [ctypes.c_void_p])):
+        function = getattr(_objc, name)
+        function.restype, function.argtypes = restype, argtypes
+
+
+def _make_class(name: str, methods: dict):
+    """A new NSObject subclass (or the one made already, by that name): methods {selector: (CFUNCTYPE'd function,
+    type encoding)}."""
+    _runtime()
+    existing = _objc.objc_getClass(name.encode())
+    if existing:
+        return existing
+    cls = _objc.objc_allocateClassPair(_objc.objc_getClass(b"NSObject"), name.encode(), 0)
+    for selector, (function, types) in methods.items():
+        _methods.append(function)
+        _objc.class_addMethod(cls, _objc.sel_registerName(selector.encode()), ctypes.cast(function, ctypes.c_void_p),
+                              types.encode())
+    _objc.objc_registerClassPair(cls)
+    return cls
+
+
+def _text(nsstring) -> str | None:
+    """An NSString as Python's (any length: _pystr stops at 512 bytes)."""
+    if not nsstring:
+        return None
+    raw = _send(nsstring, "UTF8String", restype=ctypes.c_char_p)
+    return raw.decode(errors="replace") if raw is not None else None
+
+
+# --- Apple events: AppleScript, and Shortcuts' "Run AppleScript" ----------------------------------------------
+# The commands' words are in the app's scripting dictionary (Eclipse.sdef, written by browser/scripting.py); a
+# script using them sends Eclipse an Apple event, answered here. macOS asks you first, the first time each app
+# (Script Editor, Shortcuts, Raycast…) wants to control Eclipse.
+
+_AE_DIRECT = "----"
+_AE_ERROR_NUMBER, _AE_ERROR_TEXT = "errn", "errs"
+_NULL_TYPE = "null"
+_events = {"handler": None, "object": None}
+
+
+def four(code: str) -> int:
+    """A four-character code ('Eclp') as macOS's number for it."""
+    return int.from_bytes(code.encode("mac-roman"), "big")
+
+
+def _descriptor(value):
+    """A Python value as an Apple event descriptor: text, a true/false, a whole number, a list, or a record
+    (a dict keyed by four-character codes). None: AppleScript's missing value."""
+    cls = _objc.objc_getClass(b"NSAppleEventDescriptor")
+    if value is None:
+        return _send(cls, "nullDescriptor")
+    if isinstance(value, bool):
+        return _send(cls, "descriptorWithBoolean:", value, argtypes=(ctypes.c_ubyte,))
+    if isinstance(value, int):
+        return _send(cls, "descriptorWithInt32:", value, argtypes=(ctypes.c_int32,))
+    if isinstance(value, (list, tuple)):
+        made = _send(cls, "listDescriptor")
+        for item in value:
+            _send(made, "insertDescriptor:atIndex:", _descriptor(item), 0, restype=None,
+                  argtypes=(ctypes.c_void_p, ctypes.c_long))  # (0: at the end)
+        return made
+    if isinstance(value, dict):
+        made = _send(cls, "recordDescriptor")
+        for code, item in value.items():
+            _send(made, "setDescriptor:forKeyword:", _descriptor(item), four(code), restype=None,
+                  argtypes=(ctypes.c_void_p, ctypes.c_uint32))
+        return made
+    text = _cfstr(str(value))
+    made = _send(cls, "descriptorWithString:", text, argtypes=(ctypes.c_void_p,))
+    _cf.CFRelease(text)
+    return made
+
+
+def _param(event, code: str) -> str | None:
+    """A parameter of an event (its direct one: "----") as text, or None if it hasn't one."""
+    found = _send(event, "paramDescriptorForKeyword:", four(code), argtypes=(ctypes.c_uint32,))
+    return _text(_send(found, "stringValue")) if found else None
+
+
+class ScriptError(Exception):
+    """What a command says when it can't do what it was asked (AppleScript shows it as the error)."""
+
+
+_EVENT_METHOD = ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)
+
+
+def _handle_event(_self, _selector, event, reply):
+    handler = _events["handler"]
+    command = _send(event, "eventID", restype=ctypes.c_uint32).to_bytes(4, "big").decode("mac-roman")
+    answer, error = None, None
+    try:
+        answer = handler(command, lambda code: _param(event, code))
+    except ScriptError as problem:
+        error = str(problem)
+    except Exception:  # (a command must never take the browser down)
+        import traceback
+        traceback.print_exc()
+        error = "Eclipse couldn't do that."
+    kind = _send(reply, "descriptorType", restype=ctypes.c_uint32) if reply else 0
+    if not reply or kind == four(_NULL_TYPE):
+        return  # (the script didn't wait for an answer)
+    put = lambda value, code: _send(reply, "setParamDescriptor:forKeyword:", _descriptor(value), four(code),
+                                    restype=None, argtypes=(ctypes.c_void_p, ctypes.c_uint32))
+    if error is not None:
+        put(-10000, _AE_ERROR_NUMBER)  # (errAEEventFailed)
+        put(error, _AE_ERROR_TEXT)
+    elif answer is not None:
+        put(answer, _AE_DIRECT)
+
+
+def listen_for_commands(suite: str, commands, handler) -> bool:
+    """Answer the Apple events of `suite` (a four-character code) with ids in `commands`: handler(command id,
+    param) returns the answer (see _descriptor), or raises ScriptError. param(code) is one of the event's
+    parameters as text ("----": its direct one), or None."""
+    if _objc is None:
+        return False
+    _events["handler"] = handler
+    if _events["object"] is None:
+        cls = _make_class("EclipseScriptCommands",
+                          {"handleEvent:withReplyEvent:": (_EVENT_METHOD(_handle_event), "v@:@@")})
+        _events["object"] = _send(_send(cls, "alloc"), "init")
+    manager = _send(_objc.objc_getClass(b"NSAppleEventManager"), "sharedAppleEventManager")
+    selector = _objc.sel_registerName(b"handleEvent:withReplyEvent:")
+    for command in commands:
+        _send(manager, "setEventHandler:andSelector:forEventClass:andEventID:", _events["object"], selector,
+              four(suite), four(command), restype=None,
+              argtypes=(ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32))
+    return True
+
+
+def ask_self(suite: str, command: str, params: dict | None = None):
+    """Send this app one of its own commands, as a script would, and return the answer as Python (text, lists
+    and records of text: a record as a dict by code), or raise ScriptError with its error. For tests."""
+    cls = _objc.objc_getClass(b"NSAppleEventDescriptor")
+    event = _send(cls, "appleEventWithEventClass:eventID:targetDescriptor:returnID:transactionID:",
+                  four(suite), four(command), _send(cls, "currentProcessDescriptor"), -1, 0,
+                  argtypes=(ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_int16, ctypes.c_int32))
+    for code, value in (params or {}).items():
+        _send(event, "setParamDescriptor:forKeyword:", _descriptor(value), four(code), restype=None,
+              argtypes=(ctypes.c_void_p, ctypes.c_uint32))
+    reply = _send(event, "sendEventWithOptions:timeout:error:", 3, ctypes.c_double(10), None,
+                  argtypes=(ctypes.c_ulong, ctypes.c_double, ctypes.c_void_p))  # (3: wait for the answer)
+    if not reply:
+        raise ScriptError("no answer")
+    if _send(reply, "paramDescriptorForKeyword:", four(_AE_ERROR_NUMBER), argtypes=(ctypes.c_uint32,)):
+        raise ScriptError(_param(reply, _AE_ERROR_TEXT) or "")
+    found = _send(reply, "paramDescriptorForKeyword:", four(_AE_DIRECT), argtypes=(ctypes.c_uint32,))
+    return _python(found) if found else None
+
+
+def _python(descriptor):
+    kind = _send(descriptor, "descriptorType", restype=ctypes.c_uint32).to_bytes(4, "big").decode("mac-roman")
+    count = lambda: _send(descriptor, "numberOfItems", restype=ctypes.c_long)
+    if kind == "list":
+        return [_python(_send(descriptor, "descriptorAtIndex:", i, argtypes=(ctypes.c_long,)))
+                for i in range(1, count() + 1)]
+    if kind == "reco":
+        keys = [_send(descriptor, "keywordForDescriptorAtIndex:", i, restype=ctypes.c_uint32, argtypes=(ctypes.c_long,))
+                for i in range(1, count() + 1)]
+        return {k.to_bytes(4, "big").decode("mac-roman"): _python(_send(descriptor, "descriptorForKeyword:", k,
+                                                                          argtypes=(ctypes.c_uint32,))) for k in keys}
+    if kind == _NULL_TYPE:
+        return None
+    if kind in ("true", "fals", "bool"):
+        return _send(descriptor, "booleanValue", restype=ctypes.c_ubyte) != 0
+    if kind == "long":
+        return _send(descriptor, "int32Value", restype=ctypes.c_int32)
+    return _text(_send(descriptor, "stringValue"))
+
+
+# --- Spotlight ---------------------------------------------------------------------------------------
+# Your pinned tabs and Spaces, found from Spotlight (⌘Space). Picking one opens Eclipse at it: macOS hands the
+# app delegate (Qt's) an activity naming the item; we take ours before Qt sees the rest.
+
+_SPOTLIGHT_ACTIVITY = "com.apple.corespotlightitem"
+_SPOTLIGHT_ID_KEY = "kCSSearchableItemActivityIdentifier"
+_spotlight = {"index": None, "opened": None, "pending": [], "qt": None}
+_CONTINUE = ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+                             ctypes.c_void_p)
+
+
+def _spotlight_index():
+    if _spotlight["index"] is None and _objc is not None:
+        try:
+            ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreSpotlight.framework/CoreSpotlight")
+        except OSError:
+            return None
+        cls = _objc.objc_getClass(b"CSSearchableIndex")
+        if cls and _send(cls, "isIndexingAvailable", restype=ctypes.c_bool):
+            _spotlight["index"] = _send(cls, "defaultSearchableIndex")
+    return _spotlight["index"]
+
+
+def _strings(texts):
+    made = _send(_objc.objc_getClass(b"NSMutableArray"), "array")
+    for text in texts:
+        string = _cfstr(text)
+        _send(made, "addObject:", string, restype=None, argtypes=(ctypes.c_void_p,))
+        _cf.CFRelease(string)
+    return made
+
+
+def spotlight_add(items) -> bool:
+    """Put items in Spotlight (or update them, by id): each (id, title, description, keywords)."""
+    index = _spotlight_index()
+    if not index:
+        return False
+    made = _send(_objc.objc_getClass(b"NSMutableArray"), "array")
+    attribute_set, item_class = _objc.objc_getClass(b"CSSearchableItemAttributeSet"), _objc.objc_getClass(b"CSSearchableItem")
+    for item_id, title, description, keywords in items:
+        kind = _cfstr("public.item")
+        attributes = _send(_send(attribute_set, "alloc"), "initWithItemContentType:", kind, argtypes=(ctypes.c_void_p,))
+        _cf.CFRelease(kind)
+        for setter, value in (("setTitle:", title), ("setDisplayName:", title), ("setContentDescription:", description)):
+            text = _cfstr(value)
+            _send(attributes, setter, text, restype=None, argtypes=(ctypes.c_void_p,))
+            _cf.CFRelease(text)
+        _send(attributes, "setKeywords:", _strings(keywords), restype=None, argtypes=(ctypes.c_void_p,))
+        identifier, domain = _cfstr(item_id), _cfstr(item_id.split(":", 1)[0])
+        item = _send(_send(item_class, "alloc"), "initWithUniqueIdentifier:domainIdentifier:attributeSet:",
+                     identifier, domain, attributes, argtypes=(ctypes.c_void_p,) * 3)
+        _cf.CFRelease(identifier), _cf.CFRelease(domain)
+        _send(made, "addObject:", item, restype=None, argtypes=(ctypes.c_void_p,))
+        _send(item, "release", restype=None)
+        _send(attributes, "release", restype=None)
+    _send(index, "indexSearchableItems:completionHandler:", made, None, restype=None,
+          argtypes=(ctypes.c_void_p, ctypes.c_void_p))
+    return True
+
+
+def spotlight_remove(ids=None) -> bool:
+    """Take items out of Spotlight by id (None: all of Eclipse's)."""
+    index = _spotlight_index()
+    if not index:
+        return False
+    if ids is None:
+        _send(index, "deleteAllSearchableItemsWithCompletionHandler:", None, restype=None, argtypes=(ctypes.c_void_p,))
+    elif ids:
+        _send(index, "deleteSearchableItemsWithIdentifiers:completionHandler:", _strings(ids), None, restype=None,
+              argtypes=(ctypes.c_void_p, ctypes.c_void_p))
+    return True
+
+
+def _continue_activity(delegate, selector, app, activity, restore):
+    kind = _text(_send(activity, "activityType")) if activity else None
+    if kind == _SPOTLIGHT_ACTIVITY:
+        key = _cfstr(_SPOTLIGHT_ID_KEY)
+        item_id = _text(_send(_send(activity, "userInfo"), "objectForKey:", key, argtypes=(ctypes.c_void_p,)))
+        _cf.CFRelease(key)
+        if item_id:
+            opened = _spotlight["opened"]
+            opened(item_id) if opened else _spotlight["pending"].append(item_id)
+            return True
+    return _spotlight["qt"](delegate, selector, app, activity, restore)  # (anything else is Qt's: Handoff, say)
+
+
+def on_spotlight_open(opened) -> bool:
+    """opened(item id) when you pick one of Eclipse's items in Spotlight (and for any picked before this)."""
+    if not _cocoa():
+        return False
+    _spotlight["opened"] = opened
+    if _spotlight["qt"] is None:
+        _runtime()
+        delegate = _send(_send(_objc.objc_getClass(b"NSApplication"), "sharedApplication"), "delegate")
+        method = _objc.class_getInstanceMethod(_objc.object_getClass(delegate), _objc.sel_registerName(
+            b"application:continueUserActivity:restorationHandler:")) if delegate else None
+        if not method:
+            return False
+        ours = _CONTINUE(_continue_activity)
+        _methods.append(ours)
+        _spotlight["qt"] = _CONTINUE(_objc.method_setImplementation(method, ctypes.cast(ours, ctypes.c_void_p)))
+    for item_id in _spotlight["pending"]:
+        opened(item_id)
+    _spotlight["pending"].clear()
+    return True
+
+
+# --- Power ---------------------------------------------------------------------------------------------
+
+_THERMAL_SERIOUS = 2  # NSProcessInfoThermalStateSerious: the Mac's hot enough to be slowing itself down
+
+
+def low_power() -> bool:
+    """Low Power Mode is on (System Settings → Battery), or the Mac is running hot."""
+    if _objc is None:
+        return False
+    info = _send(_objc.objc_getClass(b"NSProcessInfo"), "processInfo")
+    saving = _send(info, "respondsToSelector:", _objc.sel_registerName(b"isLowPowerModeEnabled"),
+                   restype=ctypes.c_bool, argtypes=(ctypes.c_void_p,)) and \
+        _send(info, "isLowPowerModeEnabled", restype=ctypes.c_bool)
+    return bool(saving) or _send(info, "thermalState", restype=ctypes.c_long) >= _THERMAL_SERIOUS

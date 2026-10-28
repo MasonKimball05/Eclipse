@@ -1014,6 +1014,28 @@ def test_the_top_row_never_runs_into_the_traffic_lights(window, site):
         assert reload_end <= bar.mapTo(window, QPoint(bar.width(), 0)).x(), width  # (and nothing falls off the end)
 
 
+def test_traffic_lights_light_up_in_place(window, site, monkeypatch):
+    from browser import macos, traffic_lights
+    if not macos._cocoa():
+        pytest.skip("macOS's own window buttons")
+    open_page(window, f"{site}/index.html")
+    pause(0.3)
+    calls, real = [], macos.style_traffic_lights
+    monkeypatch.setattr(macos, "style_traffic_lights",
+                        lambda w, hidden, alpha=1.0, animate=False: calls.append((alpha, animate)) or real(w, hidden, alpha, animate))
+    home = _lights_state(window)[2:]
+    seen = set()
+    monkeypatch.setattr(window.traffic_lights, "near", lambda: True)
+    window.traffic_lights._check()
+    assert wait_until(lambda: seen.add(_lights_state(window)[2:]) or _lights_state(window)[1] == 1.0, 2)
+    # (macOS's animator drew them a few points off while it faded them: the fade is ours, in steps)
+    assert calls and not any(animate for _alpha, animate in calls)
+    assert len({alpha for alpha, _ in calls}) > 2 and seen == {home}
+    monkeypatch.setattr(window.traffic_lights, "near", lambda: False)
+    window.traffic_lights._check()
+    assert wait_until(lambda: _lights_state(window)[1] == traffic_lights.DIM, 2)
+
+
 def test_traffic_lights_go_with_the_sidebar(window, site, monkeypatch):
     from browser import floating_sidebar, macos, traffic_lights
     if not macos._cocoa():

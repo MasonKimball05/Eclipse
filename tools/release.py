@@ -545,6 +545,7 @@ def release(identity: str, notary_profile: str | None, install: bool, publishing
     bring_in_libraries(contents)
     compile_launcher(contents)
     build_app.make_icon(contents / "Resources" / "AppIcon.icns")
+    build_app.write_scripting(contents / "Resources")
     print("Checking it runs (offscreen: no windows)…")
     check_runs(contents)
     print("Compiling the Python ahead of time…")

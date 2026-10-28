@@ -6,7 +6,7 @@ from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineS
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 from . import storage
-from .external_links import is_external
+from .external_links import OWN_SCHEME, is_external
 
 
 DEFAULT_PROFILE = "default"
@@ -74,6 +74,8 @@ class WebPage(QWebEnginePage):
     console_entry = pyqtSignal(int, str, int, str)
     # Set by the extension runtime: (url, is_main_frame) -> allow? (catches .user.js installs)
     navigation_filter = None
+    # Features' say over where any page goes, as it goes (Space rules' blocked sites): (page, url) -> allow?
+    blockers = []
     # Set by the extension runtime: receives EXTENSION_CALL messages
     extension_messages = None
     # Set by passwords.py: receives PASSWORD_CALL messages (never shown in the console)
@@ -95,6 +97,8 @@ class WebPage(QWebEnginePage):
         self.settings().setUnknownUrlSchemePolicy(QWebEngineSettings.UnknownUrlSchemePolicy.AllowAllUnknownUrlSchemes)
 
     def acceptNavigationRequest(self, url, nav_type, is_main_frame):
+        if url.scheme().lower() == OWN_SCHEME:
+            return False  # (Eclipse's own links are for other apps, never a page: external_links.py)
         if is_external(url):
             # Another app's link: never opened from here; the window asks you (external_links.py)
             if WebPage.external_link is not None:
@@ -102,6 +106,8 @@ class WebPage(QWebEnginePage):
                                       nav_type == QWebEnginePage.NavigationType.NavigationTypeRedirect)
             return False
         if self.navigation_filter is not None and not self.navigation_filter(url, is_main_frame):
+            return False
+        if is_main_frame and not all(allow(self, url) for allow in list(WebPage.blockers)):
             return False
         if is_main_frame and self.dark_rule is not None:
             self.settings().setAttribute(QWebEngineSettings.WebAttribute.ForceDarkMode, self.dark_rule(url))

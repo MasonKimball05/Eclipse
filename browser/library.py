@@ -351,6 +351,7 @@ class LibraryWindow(FadesIn, QWidget):
             if answer == QMessageBox.StandardButton.Yes:
                 self.store.history = []
                 self.browser.page_index.clear()  # what you read goes with where you went
+                self.browser.emit("history_cleared")
         elif self.section == "archive":
             answer = QMessageBox.question(self, "Empty Archive", f"Delete all {len(self.store.archive):,} archived "
                                                                  "tabs?")

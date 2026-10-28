@@ -134,8 +134,10 @@ class SpaceEditor(QWidget):
         line.setObjectName("EditorLine")
         line.setFixedHeight(1)
         layout.addWidget(line)
+        extra = [(icon, text, lambda _=False, act=act: (self.close(), act()), False)
+                 for icon, text, act in browser.gather("space_actions", space)]  # (Space Rules…)
         for icon, text, slot, danger in (("ph.folder-plus", "New Folder", self._new_folder, False),
-                                         ("ph.share-network", "Share Space…", self._share, False),
+                                         ("ph.share-network", "Share Space…", self._share, False), *extra,
                                          ("ph.trash", "Delete Space…", self._delete, True)):
             btn = QPushButton(text)
             btn.setObjectName("DangerRow" if danger else "ActionRow")

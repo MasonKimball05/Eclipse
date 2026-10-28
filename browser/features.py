@@ -19,7 +19,7 @@ import traceback
 FEATURE_MODULES = [
     "self_update", "arc_import", "welcome", "addresses", "member_card", "notes", "easel", "gestures", "now_playing", "upnext",
     "integrations_ui", "github_status", "live_folder_dialog", "boosts", "claude_feature", "page_chat",
-    "handoff", "sync", "ext.ui",
+    "handoff", "sync", "scripting", "spotlight", "power_saver", "privacy_report", "space_rules", "recipes", "ext.ui",
 ]
 CORE_ONLY = "ECLIPSE_CORE_ONLY"
 
@@ -158,6 +158,20 @@ class Feature:
     def menus(self, add, menus, bar) -> None:
         """Items for the menu bar: add(menus["File"], title, shortcut, action). bar: the menu bar itself, for a
         menu of the feature's own."""
+
+    def space_actions(self, space) -> list:
+        """Rows for a Space's editor (right-click a Space), beside New Folder and Share Space: (icon, text, action)."""
+        return []
+
+    def site_menu(self, menu, tab):
+        """The shield's menu in the address pill (Site Controls, ad blocking), for the site on screen: for adding to."""
+
+    def history_cleared(self):
+        """You cleared your history: forget what goes with it."""
+
+    def app_link(self, url) -> bool:
+        """A link to Eclipse itself (eclipse-browser://…) from another app or Shortcuts. True: it was this feature's."""
+        return False
 
     def put_away(self) -> None:
         """The window was closed while Eclipse keeps running (hidden: it comes back from the Dock)."""

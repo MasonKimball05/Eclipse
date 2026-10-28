@@ -41,6 +41,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from browser.brand import NAME  # noqa: E402
+from browser.external_links import OWN_SCHEME  # noqa: E402
 
 DEV_NAME = f"{NAME} Dev"
 APP = Path("/Applications") / f"{DEV_NAME}.app"
@@ -51,6 +52,7 @@ OLD_APPS = [folder / f"{old}.app" for folder in (Path("/Applications"), Path.hom
             for old in ("PythonBrowser", "Halo", NAME, DEV_NAME) if folder / f"{old}.app" != APP]
 BUNDLE_ID = "com.masonkimball.eclipse"  # must match browser/macos.py (the signed release's)
 DEV_BUNDLE_ID = BUNDLE_ID + ".dev"  # (this one's: macos.DEV_BUNDLE_ID)
+SDEF = f"{NAME}.sdef"
 OLD_BUNDLE_IDS = ("com.masonkimball.pythonbrowser",)  # (before the rename: still ours, to replace or retire)
 OURS = (BUNDLE_ID, DEV_BUNDLE_ID, *OLD_BUNDLE_IDS)
 LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework"
@@ -128,7 +130,11 @@ def info_plist(dev=False) -> dict:
         "NSLocationWhenInUseUsageDescription": "Websites you allow can know your location.",
         "NSSupportsAutomaticGraphicsSwitching": True,
         # What makes it a browser in macOS's eyes: it can open web links...
-        "CFBundleURLTypes": [{"CFBundleURLName": "Web site URL", "CFBundleURLSchemes": ["http", "https"]}],
+        "CFBundleURLTypes": [{"CFBundleURLName": "Web site URL", "CFBundleURLSchemes": ["http", "https"]},
+                             # ...and links to Eclipse itself, for Shortcuts and other apps (browser/scripting.py)
+                             {"CFBundleURLName": "Eclipse", "CFBundleURLSchemes": [OWN_SCHEME]}],
+        # AppleScript's words for Eclipse (written by write_scripting)
+        "OSAScriptingDefinition": SDEF,
         # ...and web pages from Finder ("Open With")
         "CFBundleDocumentTypes": [{
             "CFBundleTypeName": "Web page",
@@ -147,6 +153,12 @@ def info_plist(dev=False) -> dict:
             "UTTypeTagSpecification": {"public.filename-extension": ["eclipse-space"]},
         }],
     }
+
+
+def write_scripting(resources: Path):
+    """The scripting dictionary, in the app's Resources (AppleScript reads it from there)."""
+    from browser.scripting import sdef
+    (resources / SDEF).write_text(sdef())
 
 
 def c_string(path) -> str:
@@ -372,6 +384,7 @@ def build(app: Path, identity="-", notary_profile=None):
     print("Compiling the launcher…")
     compile_launcher(contents / "MacOS" / NAME)
     make_icon(contents / "Resources" / "AppIcon.icns", dev=True)
+    write_scripting(contents / "Resources")
     sign(app, identity)
     if notary_profile:
         notarize(app, notary_profile)

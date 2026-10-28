@@ -34,6 +34,13 @@ def test_a_shared_hosts_customers_are_separate_sites():
     assert related("google.com", "accounts.google.com") and same_site("shop.example.com", "accounts.example.com")
 
 
+def test_an_ip_address_is_its_own_site_to_the_blocker():
+    from browser.adblock import _site, should_block
+    assert _site("127.0.0.1") == "127.0.0.1" and _site("[::1]") == "::1" and _site("news.bbc.co.uk") == "bbc.co.uk"
+    assert should_block("ads.example", "10.0.0.1", {"ads.example"})
+    assert not should_block("192.168.0.1", "192.168.0.1", {"192.168.0.1"})  # (the site you're on never)
+
+
 def test_an_extensions_own_files_are_never_exposed_to_websites():
     ext = ChromeExtension("abc", None, {"name": "x", "version": "1", "manifest_version": 3, "web_accessible_resources": [
         {"resources": ["*"], "matches": ["https://allowed.example/*"]},

@@ -213,6 +213,7 @@ class MainWindow(QMainWindow):
 
         self._archive_timer = QTimer(self, interval=15 * 60 * 1000, timeout=self.archive_stale_tabs)
         self._archive_timer.start()
+        self.saving_minutes = None  # (Low Power Mode's shorter wait before idle tabs sleep: power_saver.py)
         self._sleep_timer = QTimer(self, interval=60 * 1000, timeout=self.sleep_idle_tabs)
         self._sleep_timer.start()
         # Like Arc, a launch opens on your Space's colours, not on whatever you had open last: every tab's in
@@ -1148,6 +1149,7 @@ class MainWindow(QMainWindow):
             here.setChecked(not blocker.is_allowed(host))
             here.setEnabled(blocker.enabled)
             here.triggered.connect(lambda on: self._allow_site(host, not on))
+            self.emit("site_menu", menu, tab)  # (the Privacy Report…)
             menu.addSeparator()
         everywhere = menu.addAction("Block Ads & Trackers")
         everywhere.setCheckable(True)
@@ -2093,15 +2095,10 @@ class MainWindow(QMainWindow):
         if self.is_sleeping(tab):
             tab.view.page().setLifecycleState(QWebEnginePage.LifecycleState.Active)  # reloads the page
 
-    def sleep_idle_tabs(self, force=False):
-        """Discard background pages nobody has looked at for a while, freeing their memory.
-        They reload when clicked. Never: the current tab, visible split panes, or anything playing audio."""
-        minutes = self.store.settings.get("sleep_after_minutes", DEFAULT_SLEEP_MINUTES)
-        if not minutes and not force:
-            return 0
-        cutoff = time.time() - minutes * 60
+    def resting_tabs(self):
+        """Background pages that could be let go: never the current tab, visible split panes, a tab you asked to
+        keep awake, or one playing audio, on a call, or allowed to notify you (asleep, it couldn't)."""
         keep_awake = self.store.split_of(self.current_tab) or [self.current_tab] if self.current_tab else []
-        slept = 0
         for tab in self.store.all_tabs():
             view = tab.view
             if not isinstance(view, QWebEngineView) or any(tab is t for t in keep_awake) or view.isVisible():
@@ -2109,17 +2106,30 @@ class MainWindow(QMainWindow):
             if tab.awake:  # you asked for it to stay awake
                 continue
             page = view.page()
-            if page.lifecycleState() != QWebEnginePage.LifecycleState.Active or page.recentlyAudible():
+            if page.lifecycleState() == QWebEnginePage.LifecycleState.Discarded or page.recentlyAudible():
                 continue
             if self.permissions.is_capturing(view):  # on a call, or sharing the screen
                 continue
             notifier = page.profile().queryPermission(QUrl(origin_key(QUrl(tab.url))),
                                                        QWebEnginePermission.PermissionType.Notifications)
-            if notifier.state() == QWebEnginePermission.State.Granted:  # asleep, it couldn't notify you
+            if notifier.state() == QWebEnginePermission.State.Granted:
                 continue
+            yield tab
+
+    def sleep_idle_tabs(self, force=False):
+        """Discard background pages nobody has looked at for a while, freeing their memory.
+        They reload when clicked."""
+        minutes = self.store.settings.get("sleep_after_minutes", DEFAULT_SLEEP_MINUTES)
+        if not minutes and not force:
+            return 0
+        if self.saving_minutes:  # (Low Power Mode: sooner. power_saver.py)
+            minutes = min(minutes, self.saving_minutes)
+        cutoff = time.time() - minutes * 60
+        slept = 0
+        for tab in list(self.resting_tabs()):
             if force or tab.last_active < cutoff:
                 self._note_scroll(tab)
-                page.setLifecycleState(QWebEnginePage.LifecycleState.Discarded)
+                tab.view.page().setLifecycleState(QWebEnginePage.LifecycleState.Discarded)
                 slept += 1
         return slept
 

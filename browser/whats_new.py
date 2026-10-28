@@ -8,12 +8,27 @@ from . import brand
 from .motion import FadesIn
 from .theme import quiet_scrollbars, stylesheet
 
-EDITION = 19
+EDITION = 20
 SETTING = "whats_new_seen"
 
 NOTES = """
 ## Lately
 
+- **Privacy Report**: see which trackers each site tried to load and the companies behind them, over the last
+  30 days. It's in the shield's menu in the address pill, and the whole report is in Settings → Privacy or ⌘T.
+- **Space Rules**: right-click a Space → Space Rules… to bring it forward on a schedule (Work on weekdays, 9 to 5)
+  or when a display's connected, and to block distracting sites while you're in it.
+- **Tab Recipes**: open the tabs for a routine, then ⌘T → Save Tabs as Recipe… Run it again with one click from
+  ⌘T, side by side if you like, finishing with a Browse for Me question if you want.
+- **AppleScript and Shortcuts**: other apps can list your tabs and Spaces, open pages, switch Space and close
+  tabs (`tell application "Eclipse" to list tabs`). Script Editor shows them all (File → Open Dictionary).
+  Shortcuts can use them through "Run AppleScript", or open links like
+  eclipse-browser://open?url=https://example.com&space=Work with "Open URLs".
+- **Spotlight**: your Spaces, pinned tabs and Favorites show up in ⌘Space, and picking one takes you there
+  (Settings → General turns it off).
+- **Low Power Mode**: while your Mac saves its battery, Eclipse does too: background tabs pause, idle ones sleep
+  sooner, and things appear instead of moving (Settings → General turns it off).
+- **The traffic lights** no longer twitch as they light up when the pointer comes near.
 - **Signing in to Google works**: no more "This browser or app may not be secure".
 - **Folders open and close smoothly**, without the hitch at the start or the jiggle at the end.
 - **Switching Spaces slides** with the sidebar hidden or no tab open, too (it used to jump).
