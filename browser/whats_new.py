@@ -14,6 +14,14 @@ SETTING = "whats_new_seen"
 NOTES = """
 ## Lately
 
+- **Signing in to Google works**: no more "This browser or app may not be secure".
+- **Folders open and close smoothly**, without the hitch at the start or the jiggle at the end.
+- **Switching Spaces slides** with the sidebar hidden or no tab open, too (it used to jump).
+- **A narrow sidebar fits**: Space buttons shrink instead of piling on top of each other (swipe over them to see
+  the rest when they don't all fit), and the search pill says "Search…" when there's no room for more.
+- **More from Arc**: importing now brings your Arc settings (how long before tabs archive, links from other apps),
+  your archived tabs, Air Traffic Control rules and profiles too. If you'd opened Eclipse before and never saw
+  the welcome, it asks about Arc once.
 - **Fixes from testing**: clicking a tab quickly while switching could leave the page (and folders) not taking
   clicks until Eclipse restarted; folders now open and close in one smooth motion, at any size; switching to a
   Space for the first time no longer flashes white on a dark Space; and fewer YouTube ads get through (their

@@ -124,6 +124,10 @@ def spoken(text: str) -> str:
     return re.sub(r"\s*\((?:[⌘⌥⇧⌃]+.*?|.*?⌘.*?)\)\s*$", "", text).strip()
 
 
+PILL_PLACEHOLDER = "Search or Enter URL…"
+SPACE_BUTTON = 26  # (a Space's button in the bottom bar, when there's room)
+SPACE_BUTTON_SMALLEST = 18  # (with many Spaces in a narrow sidebar: fewer show, rather than smaller)
+
 class SpokenTooltips(QObject):
     """Keeps an icon-only button's name for VoiceOver in step with its tooltip."""
 
@@ -783,7 +787,10 @@ class RowReveal(QWidget):
         self.rows = list(row) if isinstance(row, (list, tuple)) else [row]
         self.row = self.rows[0]
         self.section, self.keep = section, keep
-        self.full = sum(r.height() or 34 for r in self.rows)
+        # Rows of a block sit as far apart as the list puts them (its spacing between them too), so when they go
+        # back into it at the end nothing moves: without it they were a few pixels short, and jumped into place
+        self.gap = section.layout_.spacing() if len(self.rows) > 1 else 0
+        self.full = sum(r.height() or 34 for r in self.rows) + self.gap * (len(self.rows) - 1)
         self.shown = 0.0 if growing else 1.0
         self.growing = growing
         y = 0
@@ -791,16 +798,15 @@ class RowReveal(QWidget):
             each.setParent(self)
             each.move(0, y)
             each.show()
-            y += each.height() or 34
+            y += (each.height() or 34) + self.gap
         self.setFixedHeight(round(self.full * self.shown))
         self.fade = QGraphicsOpacityEffect(self)
         self.fade.setOpacity(self.shown)
         self.setGraphicsEffect(self.fade)
         target = 1.0 if growing else 0.0
-        if delay:
-            QTimer.singleShot(delay, lambda: not sip.isdeleted(self) and self._go(target))
-        else:
-            self._go(target)
+        # The clock starts once this pass is over (the list laid out, its first frame drawn): started at once, the
+        # time that takes was already "spent", and the first frame drawn was half-way, a leap
+        QTimer.singleShot(delay, lambda: not sip.isdeleted(self) and self._go(target))
 
     def _go(self, target):
         from . import motion
@@ -814,10 +820,12 @@ class RowReveal(QWidget):
         self.shown = shown
         self.setFixedHeight(round(self.full * shown))
         self.fade.setOpacity(shown)
-        y, drift = 0, 0 if self.growing else round(6 * (1 - shown))
+        # (one row leaving drifts down a little as it goes, like Arc's Clear; a folder's rows, going together, don't:
+        # moving down while the rows below came up looked like a wobble)
+        y, drift = 0, 0 if self.growing or len(self.rows) > 1 else round(6 * (1 - shown))
         for each in self.rows:
             each.move(0, y + drift)
-            y += each.height() or 34
+            y += (each.height() or 34) + self.gap
 
     def unfold(self):
         """A dragged row that wasn't dropped anywhere: back where it was."""
@@ -909,7 +917,9 @@ class TabSection(DropZone):
     def rows(self) -> list[TabRow]:
         return [row for row, *_ in self.entries if isinstance(row, TabRow)]
 
-    def set_tabs(self, nodes):
+    def set_tabs(self, nodes, refresh=True):
+        """The list's rows for these tabs and folders. refresh=False: the rows still here are left as they are
+        (opening a folder changes nothing about them)."""
         for reveal in list(self._reveals):
             reveal.settle()
         self._remove_gaps()  # (a dropped tab takes its gap's place in this same pass: nothing jumps)
@@ -921,12 +931,19 @@ class TabSection(DropZone):
         reusable = {id(node): (row, depth) for row, node, _parent, depth in old}
         self.nodes = nodes
         self.entries = []
-        self._add_rows(nodes, None, 0, reusable)
+        self._add_rows(nodes, None, 0, reusable, refresh)
         reused = {id(row) for row, *_ in self.entries}
-        for row, *_ in self.entries:
-            self.layout_.removeWidget(row)
-        for row, *_ in self.entries:
-            self.layout_.addWidget(row)
+        listed = {id(row) for row, *_ in self.entries}
+        for row, *_ in old:  # (rows going: out of the order first, so the ones staying keep their places)
+            if id(row) not in listed and not sip.isdeleted(row):
+                self.layout_.removeWidget(row)
+        # Into order, moving only the rows not already where they belong (taking every row out and putting it
+        # back was most of the time it took a folder to open)
+        first = self.layout_.indexOf(self.hint) + 1
+        for i, (row, *_) in enumerate(self.entries):
+            if self.layout_.indexOf(row) != first + i:
+                self.layout_.removeWidget(row)
+                self.layout_.insertWidget(first + i, row)
             if row.isHidden() and self.isVisible():
                 row.show()  # now, in the same pass the old rows went (a layout would only show it on the next)
         kept = {id(node) for _, node, *_ in self.entries}
@@ -996,6 +1013,10 @@ class TabSection(DropZone):
             return
         self._reveals.remove(reveal)
         index = self.layout_.indexOf(reveal)
+        # The box out of the list first, then its rows in its place, and the list laid out now: the other way
+        # round, for a frame both took up room and everything below dropped a block's height and came back
+        reveal.hide()
+        self.layout_.removeWidget(reveal)
         listed = {id(r) for r, *_ in self.entries}
         for row in reveal.rows:
             if sip.isdeleted(row):
@@ -1009,26 +1030,26 @@ class TabSection(DropZone):
                 row.hide()
                 row._pb_gone = True  # (deleted on a later pass: set_tabs mustn't count it as still here)
                 row.deleteLater()
-        reveal.hide()
-        self.layout_.removeWidget(reveal)
+        self.layout_.activate()
         reveal.setGraphicsEffect(None)
         reveal.deleteLater()
         if not self._reveals:
             self.hint.setVisible(not self.nodes and bool(self.hint.text()))
 
-    def _add_rows(self, nodes, parent, depth, reusable=None):
+    def _add_rows(self, nodes, parent, depth, reusable=None, refresh=True):
         for node in nodes:
             kind = FolderRow if isinstance(node, Folder) else TabRow
             row, was_depth = (reusable or {}).get(id(node), (None, None))
             if row is not None and isinstance(row, kind) and was_depth == depth and row.parentWidget() is self:
-                row.refresh()
+                if refresh or isinstance(row, FolderRow):  # (a folder's own row shows it open or closed)
+                    row.refresh()
             elif kind is FolderRow:
                 row = FolderRow(self.browser, node, depth, self)
             else:
                 row = TabRow(self.browser, node, self.kind, depth, self)
             self.entries.append((row, node, parent, depth))
             if isinstance(node, Folder) and node.expanded:
-                self._add_rows(node.children, node, depth + 1, reusable)
+                self._add_rows(node.children, node, depth + 1, reusable, refresh)
 
     def _line(self, y, depth):
         x = 6 + depth * INDENT
@@ -1184,6 +1205,15 @@ class FavoritesGrid(DropZone):
         self.hint.setFixedHeight(32)
 
     def set_tabs(self, tabs):
+        # The same Favorites in the same look: kept, just refreshed (making them again is most of a rebuild's time)
+        self._tabs = tabs
+        same = (tuple(map(id, tabs)), self.browser.theme.text.name(), self.browser.theme.accent.name(),
+                self._columns_that_fit())
+        if self.tiles and same == getattr(self, "_built", None) and all(not sip.isdeleted(t) for t in self.tiles):
+            for tile in self.tiles:
+                tile.refresh()
+            return
+        self._built = same
         for tile in self.tiles:
             tile.hide()  # (see TabSection.set_tabs: gone now, not on a later pass)
             self.grid.removeWidget(tile)
@@ -1196,7 +1226,8 @@ class FavoritesGrid(DropZone):
         self.grid.setContentsMargins(0, 0, 0, 0)
         self.grid.setSpacing(6)
         self.tiles = [FavoriteTile(self.browser, t, self) for t in tabs]
-        columns = max(1, min(len(self.tiles), FAVORITE_COLUMNS))  # (fewer than a row's worth share the row)
+        # (fewer than a row's worth share the row; a narrow sidebar has fewer columns, never tiles cut off)
+        columns = max(1, min(len(self.tiles), self._columns_that_fit()))
         for i, tile in enumerate(self.tiles):
             self.grid.addWidget(tile, i // columns, i % columns)
             if self.isVisible():
@@ -1208,6 +1239,26 @@ class FavoritesGrid(DropZone):
         else:
             self.grid.addWidget(self.hint, 0, 0)
             self.hint.show()
+
+    def _columns_that_fit(self) -> int:
+        """How many tiles fit side by side at this width (up to FAVORITE_COLUMNS)."""
+        sidebar = self.browser.sidebar if hasattr(self.browser, "sidebar") else None
+        if sidebar is None or sidebar.width() <= 0 or not self.tiles:
+            return FAVORITE_COLUMNS
+        margins = sidebar.layout().contentsMargins()
+        room = sidebar.width() - margins.left() - margins.right()  # (not this grid's own: too many columns widen it)
+        tile = max(t.minimumSizeHint().width() for t in self.tiles if not sip.isdeleted(t)) if any(
+            not sip.isdeleted(t) for t in self.tiles) else 0
+        if tile <= 0:
+            return FAVORITE_COLUMNS
+        return max(1, min(FAVORITE_COLUMNS, (room + 6) // (tile + 6)))
+
+    def refit(self):
+        """The sidebar changed width: as many columns as fit now."""
+        tabs = getattr(self, "_tabs", None)
+        built = getattr(self, "_built", None)
+        if tabs is not None and built is not None and built[-1] != self._columns_that_fit():
+            QTimer.singleShot(0, lambda: not sip.isdeleted(self) and self.set_tabs(self._tabs))
 
     def drop_target(self, pos):
         index = self._drop_index(pos)
@@ -1488,8 +1539,10 @@ class Sidebar(QWidget):
         self.space_buttons: list[QToolButton] = []
         bottom.addWidget(self.archive_btn)
         bottom.addWidget(self.downloads_btn)
+        self._bottom_buttons = [self.archive_btn, self.downloads_btn, self.new_space_btn]
         for button in browser.gather("sidebar_buttons"):  # (Homebase…)
             bottom.addWidget(button)
+            self._bottom_buttons.append(button)
         bottom.addStretch(1)
         bottom.addLayout(self.switcher)
         bottom.addStretch(1)
@@ -1584,6 +1637,12 @@ class Sidebar(QWidget):
             claude.tidy_today()
 
     def _rebuild_switcher(self):
+        store = self.browser.store
+        same = (tuple((s.id, s.name, s.icon, s.color) for s in store.spaces), store.active_space_id,
+                self.browser.theme.text.name())
+        if self.space_buttons and same == getattr(self, "_switcher_built", None):
+            return  # (nothing about the Spaces changed: the buttons stay)
+        self._switcher_built = same
         for btn in self.space_buttons:
             btn.hide()  # (gone now, not on a later pass: see TabSection.set_tabs)
             btn.setParent(None)
@@ -1595,9 +1654,11 @@ class Sidebar(QWidget):
             active = space.id == store.active_space_id
             btn = QToolButton()
             btn.setObjectName("SpaceDot")
-            btn.setFixedSize(26, 26)
+            btn.setFixedSize(SPACE_BUTTON, SPACE_BUTTON)
+            btn.setProperty("has_icon", bool(space.icon))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setToolTip(f"{space.name}  (⌃{i + 1})" if i < 9 else space.name)
+            btn.setProperty("name_tip", btn.toolTip())
             btn.setAccessibleName(f"{space.name} Space" + (", current" if active else ""))
             # Quiet when inactive, full strength when it's the Space you're in
             icon = space_icon(space, text if active else _with_alpha(text, 0.5), 32)
@@ -1612,6 +1673,7 @@ class Sidebar(QWidget):
             if self.isVisible():
                 btn.show()  # (see TabSection.set_tabs)
             self.space_buttons.append(btn)
+        self._fit_switcher()
 
     # --- Several tabs at once (⌘-click, ⇧-click), as in Arc ---------------------------
 
@@ -1718,11 +1780,11 @@ class Sidebar(QWidget):
             else:
                 self.url_pill.setIcon(pill_icon("ph.lock-simple" if secure else "ph.globe-simple",
                                                color=_with_alpha(theme.text, 0.55)))
-            self._set_pill_text(display_host(tab.url) or tab.url)
+            self._set_pill_text(display_host(tab.url) or tab.url, host=bool(display_host(tab.url)))
             self.url_pill.setToolTip(tab.url)
         else:
             self.url_pill.setIcon(pill_icon("ph.magnifying-glass", color=_with_alpha(theme.text, 0.55)))
-            self._set_pill_text("Search or Enter URL…")
+            self._set_pill_text(PILL_PLACEHOLDER)
             self.url_pill.setToolTip("")
         self.update_shield()
         self.update_zoom()
@@ -1754,8 +1816,10 @@ class Sidebar(QWidget):
         """A feature's chip came or went: the address makes room."""
         self._fit_pill_text()
 
-    def _set_pill_text(self, text):
+    def _set_pill_text(self, text, host=False):
+        """host: it's a site's address (cut from the left when it doesn't fit, so whose site it is shows)."""
         self._pill_text = text
+        self._pill_host = host
         self.url_pill.setText(text)
 
     def _fit_pill_text(self):
@@ -1787,14 +1851,55 @@ class Sidebar(QWidget):
                     text = host = loopback.group(1)
                     text += loopback.group(2)
         room = room()
+        if text == PILL_PLACEHOLDER and self.url_pill.fontMetrics().horizontalAdvance(text) > room:
+            text = "Search…"  # (a narrow sidebar: a whole word, not half a sentence)
         # A site's address is cut from the left, so what's kept is the end, the part that says whose site it is:
         # "…login.evil.example", never "accounts.google.com.lo…"
-        elide = Qt.TextElideMode.ElideRight if "/" in text else Qt.TextElideMode.ElideLeft
+        host = getattr(self, "_pill_host", False) and "/" not in text
+        elide = Qt.TextElideMode.ElideLeft if host else Qt.TextElideMode.ElideRight
         self.url_pill.setText(self.url_pill.fontMetrics().elidedText(text, elide, max(room, 20)))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._fit_pill_text()
+        self._fit_switcher()
+        self.favorites.refit()
+
+    def _fit_switcher(self):
+        """The Space buttons share what room the bottom bar has: full size when there's room, smaller and closer
+        together (to two-thirds of it) when there are many Spaces or the sidebar's narrow, never on top of each
+        other. With too many to fit even so, the ones round the Space you're in show."""
+        buttons = [b for b in self.space_buttons if not sip.isdeleted(b)]
+        if not buttons:
+            return
+        margins = self.layout().contentsMargins()
+        others = [b for b in self._bottom_buttons if not sip.isdeleted(b) and b.isVisibleTo(self)]
+        room = self.width() - margins.left() - margins.right() - sum(b.sizeHint().width() for b in others) \
+            - 2 * (len(others) + 1)
+        crowded = room < len(buttons) * (SPACE_BUTTON + 2)
+        self.switcher.setSpacing(1 if crowded else 2)
+        fit = max(1, room // (SPACE_BUTTON_SMALLEST + 1))  # (how many fit at the smallest)
+        self._switcher_fit = fit
+        active = next((i for i, b in enumerate(buttons) if b.property("selected")), 0)
+        if active != getattr(self, "_switcher_active", None):
+            self._switcher_active, self._switcher_first = active, None  # (a new Space: its page shows)
+        first = self._switcher_first
+        if first is None:
+            first = (active // fit) * fit  # (in pages: 1–3, 4–6…)
+        first = max(0, min(first, len(buttons) - fit))
+        self._switcher_first = first
+        shown = buttons[first:first + fit]
+        for button in buttons:
+            more = len(buttons) - len(shown)
+            button.setToolTip(button.property("name_tip") + (f"\nSwipe here for the other {more} Space"
+                                                              f"{'s' if more != 1 else ''}" if more else ""))
+        size = max(SPACE_BUTTON_SMALLEST, min(SPACE_BUTTON, room // len(shown) - (1 if crowded else 2)))
+        for button in buttons:
+            button.setVisible(button in shown)
+            button.setFixedSize(size, size)
+            full = 16 if button.property("has_icon") else 10
+            small = max(12, min(full, size - 4))  # (less room round it, but never too small to tell apart)
+            button.setIconSize(QSize(full, full) if not crowded else QSize(small, small))
 
     def refresh_folder(self, folder):
         for row in self.findChildren(FolderRow):
@@ -1836,5 +1941,58 @@ class Sidebar(QWidget):
             super().wheelEvent(event)
 
     def _handle_swipe(self, event) -> bool:
+        if self._page_switcher(event):
+            return True
         gestures = self.browser.feature("gestures")  # (the sidebar follows your fingers to the next Space)
         return gestures is not None and gestures.space_swipe.wheel(event)
+
+    def _switcher_area(self) -> QRect:
+        """Where the Space buttons showing are, with a little room round them."""
+        shown = [b for b in self.space_buttons if not sip.isdeleted(b) and b.isVisible()]
+        if not shown:
+            return QRect()
+        area = QRect()
+        for button in shown:
+            area = area.united(QRect(button.mapTo(self, QPoint(0, 0)), button.size()))
+        return area.adjusted(-8, -6, 8, 6)
+
+    def _page_switcher(self, event) -> bool:
+        """Sideways over the Space buttons, when some are hidden (a narrow sidebar, many Spaces): the next or
+        last page of them, without switching Space. One page a swipe; the buttons go the way your fingers do."""
+        buttons = [b for b in self.space_buttons if not sip.isdeleted(b)]
+        fit = getattr(self, "_switcher_fit", len(buttons))
+        phase = event.phase()
+        if phase == Qt.ScrollPhase.ScrollBegin:
+            here = self.mapFromGlobal(event.globalPosition().toPoint())
+            self._paging = len(buttons) > fit and self._switcher_area().contains(here)
+            self._paged, self._page_dx = False, 0.0
+            return self._paging
+        if phase == Qt.ScrollPhase.NoScrollPhase:  # (a mouse wheel: a step, a page)
+            here = self.mapFromGlobal(event.globalPosition().toPoint())
+            if len(buttons) <= fit or not self._switcher_area().contains(here):
+                return False
+            delta = event.angleDelta()
+            step = delta.x() if abs(delta.x()) > abs(delta.y()) else delta.y()
+            if step:
+                self._turn_switcher_page(1 if step < 0 else -1)
+            return True
+        if not getattr(self, "_paging", False):
+            return False
+        if phase in (Qt.ScrollPhase.ScrollEnd, Qt.ScrollPhase.ScrollMomentum):
+            if phase == Qt.ScrollPhase.ScrollEnd:
+                self._paging = False
+            return True
+        self._page_dx += event.pixelDelta().x()
+        if not self._paged and abs(self._page_dx) >= 24:
+            self._paged = True
+            self._turn_switcher_page(1 if self._page_dx < 0 else -1)  # (fingers to the left: the ones on the right)
+        return True
+
+    def _turn_switcher_page(self, step):
+        buttons = [b for b in self.space_buttons if not sip.isdeleted(b)]
+        fit = getattr(self, "_switcher_fit", len(buttons))
+        first = getattr(self, "_switcher_first", 0) or 0
+        pages = list(range(0, len(buttons), fit))
+        page = min(range(len(pages)), key=lambda i: abs(pages[i] - first))
+        self._switcher_first = pages[max(0, min(page + step, len(pages) - 1))]
+        self._fit_switcher()

@@ -40,18 +40,28 @@ class SpaceSlide(QWidget):
         self.window_ = window
         self.direction = direction  # 1: the next Space comes in from the right
         self.width_ = window.sidebar.width()  # how far the tabs travel
-        page = content_rect(window)
-        everything = QRectF(window.rect())
-        # The window round the page: the sidebar's column and the thin frame above, beside and below
-        self.regions = [r for r in (
-            QRectF(0, 0, page.left(), everything.height()),
-            QRectF(page.left(), 0, everything.width() - page.left(), page.top()),
-            QRectF(page.right(), page.top(), everything.width() - page.right(), page.height()),
-            QRectF(page.left(), page.bottom(), everything.width() - page.left(), everything.height() - page.bottom()),
-        ) if r.width() > 0 and r.height() > 0]
-        hole = QPainterPath()
-        hole.addRoundedRect(page, CONTENT_RADIUS, CONTENT_RADIUS)
-        self.setMask(QRegion(window.rect()).subtracted(QRegion(hole.toFillPolygon().toPolygon())))
+        floating = getattr(window, "floating_sidebar", None) is not None and window.floating_sidebar.active
+        if floating:
+            # Out over the page (no tab open, or the hidden sidebar come out): the cover is the sidebar's card,
+            # the page all round it left live
+            side = _in_window(window, window.sidebar)
+            self.regions = [side]
+            card = QPainterPath()
+            card.addRoundedRect(side, CONTENT_RADIUS, CONTENT_RADIUS)
+            self.setMask(QRegion(card.toFillPolygon().toPolygon()))
+        else:
+            page = content_rect(window)
+            everything = QRectF(window.rect())
+            # The window round the page: the sidebar's column and the thin frame above, beside and below
+            self.regions = [r for r in (
+                QRectF(0, 0, page.left(), everything.height()),
+                QRectF(page.left(), 0, everything.width() - page.left(), page.top()),
+                QRectF(page.right(), page.top(), everything.width() - page.right(), page.height()),
+                QRectF(page.left(), page.bottom(), everything.width() - page.left(), everything.height() - page.bottom()),
+            ) if r.width() > 0 and r.height() > 0]
+            hole = QPainterPath()
+            hole.addRoundedRect(page, CONTENT_RADIUS, CONTENT_RADIUS)
+            self.setMask(QRegion(window.rect()).subtracted(QRegion(hole.toFillPolygon().toPolygon())))
         self.lanes = [space_rect(window, w) for w in self._sliding_parts()]  # where each part slides
         self.before = self._capture()
         self.after = None
@@ -113,6 +123,11 @@ class SpaceSlide(QWidget):
         from .motion import FAST, animate
         if not self.isVisible():
             return  # (already put away: a newer switch took over)
+        if self.after is not None and self.progress >= 1.0:
+            # The new Space's picture again, as the sidebar is now: taken as the switch began, it can be a few
+            # points off what's under it by now (the sidebar still settling), and fading one over the other
+            # showed everything twice for a moment
+            self.take_after()
 
         def step(value):
             self.opacity = value

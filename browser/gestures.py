@@ -612,8 +612,7 @@ class SpaceSwipe(QObject):
 
     def _can_slide(self):
         b = self.browser
-        floating = getattr(b, "floating_sidebar", None) is not None and b.floating_sidebar.active
-        return b.sidebar.isVisible() and b.isVisible() and not floating  # (floating: over the page, no lane)
+        return b.sidebar.isVisible() and b.isVisible()  # (docked, or floating over the page: SpaceSlide covers either)
 
     def _begin(self, direction):
         from .motion import reduced

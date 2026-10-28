@@ -938,8 +938,24 @@ def test_a_folder_opens_and_closes_as_one_block(window):
     pause(0.03)
     reveals = [r for r in section._reveals if not r.keep]
     assert len(reveals) == 1 and len(reveals[0].rows) == 12  # (one block, not twelve: and it animates, though it's big)
-    assert wait_until(lambda: not section._reveals, 2)
+    block = reveals[0]
+    animation = getattr(block, "_pb_animation", None)
+    if animation is not None:
+        animation.stop()  # (held at its last frame: where each row is then must be where it stays)
+    block._set(1.0)
+    pause(0.1)
+    sliding = [section._rect(r).top() for r in block.rows]
+    inserted = []
+    real_insert = section.layout_.insertWidget
+    # (when its rows go back into the list, their box must be out of it already: both in, for a frame
+    # everything below dropped a block's height)
+    section.layout_.insertWidget = lambda i, w: (inserted.append(section.layout_.indexOf(block)), real_insert(i, w))
+    block._done()
+    del section.layout_.insertWidget
+    assert inserted and set(inserted) == {-1}
+    pause(0.1)
     rows = [r for r, node, *_ in section.entries if node in folder.children]
+    assert [section._rect(r).top() for r in rows] == sliding  # (no jump into place)
     assert [r.tab.title for r in rows] == [f"Tab {n}" for n in range(12)]
     assert all(r.parentWidget() is section and r.isVisible() for r in rows)
     tops = [section._rect(r).top() for r in rows]
@@ -990,6 +1006,150 @@ def test_youtubes_ads_are_taken_out_before_its_player_sees_them(window, site):
     assert wait_until(lambda: run_js(tab.view, "window.fetched", world=0) == "videoDetails", 3)
     assert "native code" in run_js(tab.view, "JSON.parse.toString()", world=0)  # (looks untouched)
     window.close_tab(tab)
+
+
+def test_a_narrow_sidebar_fits_its_search_pill_space_buttons_and_favorites(window):
+    from browser.models import Tab
+    from browser.sidebar import PILL_PLACEHOLDER, SPACE_BUTTON
+    store, sidebar = window.store, window.sidebar
+    for n in range(5):
+        store.add_space(f"Space {n}", "#3366aa", "ph.code")
+    store.favorites[:] = [Tab(f"https://f{n}.example/", f"F{n}", home_url=f"https://f{n}.example/") for n in range(5)]
+    store._changed()
+    sidebar.setFixedWidth(187)
+    pause(0.5)
+    # The placeholder is never cut from the left (only a site's address is): a narrow pill says "Search…"
+    if window.current_tab is None:
+        assert sidebar.url_pill.text() in (PILL_PLACEHOLDER, "Search…") and not sidebar.url_pill.text().startswith("…")
+    # The Space buttons share the room: smaller, never on top of each other
+    buttons = [b for b in sidebar.space_buttons if b.isVisible()]
+    assert any(b.property("selected") for b in buttons)  # (the Space you're in always shows)
+    assert all(b.width() < SPACE_BUTTON for b in buttons) and min(b.iconSize().width() for b in buttons) >= 12
+    assert min(b.width() for b in buttons) >= 18
+    lefts = [b.geometry().left() for b in buttons]
+    rights = [b.geometry().right() for b in buttons]
+    assert all(rights[i] < lefts[i + 1] for i in range(len(buttons) - 1))
+    sidebar.setFixedWidth(420)
+    pause(0.5)
+    assert all(b.width() == SPACE_BUTTON and b.isVisible() for b in sidebar.space_buttons)
+    sidebar.setMinimumWidth(0)
+    sidebar.setMaximumWidth(16777215)
+
+
+def test_a_swipe_over_the_space_buttons_shows_the_hidden_ones(window):
+    from PyQt6.QtCore import QPoint, QPointF
+    from PyQt6.QtGui import QWheelEvent
+    store, sidebar = window.store, window.sidebar
+    while len(store.spaces) < 6:
+        store.add_space(f"Space {len(store.spaces) + 1}", "#3366aa", "ph.code")
+    store._changed()
+    sidebar.setFixedWidth(187)
+    pause(0.5)
+    active = store.active_space
+
+    def shown():
+        return [i for i, b in enumerate(sidebar.space_buttons) if b.isVisible()]
+
+    def swipe(dx):
+        at = sidebar._switcher_area().center()
+        for phase, delta in ((Qt.ScrollPhase.ScrollBegin, 0), (Qt.ScrollPhase.ScrollUpdate, dx),
+                             (Qt.ScrollPhase.ScrollUpdate, dx), (Qt.ScrollPhase.ScrollEnd, 0)):
+            event = QWheelEvent(QPointF(at), QPointF(sidebar.mapToGlobal(at)), QPoint(int(delta), 0),
+                                QPoint(int(delta) * 4, 0), Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                                phase, False)
+            assert sidebar._handle_swipe(event)
+    first = shown()
+    assert 0 < len(first) < 6 and first[0] == 0
+    swipe(-30)  # (fingers to the left: the ones on the right)
+    second = shown()
+    assert second and second[0] == len(first) and store.active_space is active  # (no Space switched)
+    swipe(-30)
+    assert shown()[-1] == 5  # (the last page, and no further)
+    swipe(30)
+    swipe(30)
+    swipe(30)
+    assert shown() == first
+    sidebar.setMinimumWidth(0)
+    sidebar.setMaximumWidth(16777215)
+
+
+def test_switching_spaces_slides_with_no_tab_open_too(window):
+    # With no tab open the sidebar floats over the page (it stays out), and switching Spaces didn't slide at all
+    # then: it just jumped. It slides over a floating sidebar as over a docked one.
+    import time
+    from browser.space_slide import SpaceSlide
+    store = window.store
+    second = store.spaces[1] if len(store.spaces) > 1 else store.add_space("Two", "#22aa66")
+    if not window.sidebar.isHidden():
+        window.toggle_sidebar()  # (the hidden sidebar: with no tab open, it floats out over the page and stays)
+        pause(0.4)
+    for tab in list(store.visible_tabs()):
+        window.close_tab(tab)
+    window._float_if_empty()
+    pause(0.6)
+    assert window.current_tab is None and window.floating_sidebar.active
+    first = store.active_space
+    window.switch_space(second)
+    slides = [w for w in window.findChildren(SpaceSlide) if w.isVisible()]
+    assert len(slides) == 1 and not slides[0].mask().isEmpty()
+    side = window.sidebar.geometry()
+    assert slides[0].mask().boundingRect().intersects(side)  # (over the sidebar's card, the page left live)
+    travels = []
+    end = time.monotonic() + 0.5
+    from PyQt6 import sip
+    while time.monotonic() < end and not sip.isdeleted(slides[0]):
+        travels.append(slides[0].travel)
+        QApplication.processEvents()
+    width = window.sidebar.width()
+    assert any(0 < t < width for t in travels)  # (frames part of the way across: a slide)
+    assert store.active_space is second
+    window.switch_space(first)
+    pause(0.6)
+    window.toggle_sidebar()
+    pause(0.4)
+
+
+def test_a_folder_opening_or_closing_never_moves_the_rows_below_the_wrong_way(window):
+    # Seen in a screen recording: as a folder finished opening, everything below it dropped a block's height for a
+    # frame and came back (its rows went back into the list before their sliding box came out)
+    import time
+    from PyQt6.QtCore import QEvent, QObject
+    from browser.models import Folder, Tab
+
+    class Frames(QObject):
+        def __init__(self):
+            super().__init__()
+            self.ys = []
+
+        def eventFilter(self, obj, event):
+            if event.type() == QEvent.Type.Paint:
+                now = time.perf_counter()
+                if not self.ys or now - self.ys[-1][0] > 0.004:  # (one a frame, whichever part paints first)
+                    self.ys.append((now, section._rect(row).top()))
+            return False
+    store = window.store
+    space = store.active_space
+    folder = Folder("Six", [Tab(f"https://f{n}.example/", f"Tab {n}") for n in range(6)], expanded=True)
+    after = Tab("https://after.example/", "After", home_url="https://after.example/")
+    space.pinned = [Tab("https://a.example/", "A", home_url="https://a.example/"), folder, after]
+    store._changed()
+    pause(0.6)
+    section = window.sidebar.pinned
+    row = next(r for r, n, *_ in section.entries if n is after)
+    frames = Frames()
+    for widget in (section, window.sidebar.scroll.viewport(), window.sidebar):
+        widget.installEventFilter(frames)
+    for closing in (True, False, True, False):
+        frames.ys = []
+        window.toggle_folder(folder)
+        pause(0.4)
+        ys = [y for _t, y in frames.ys]
+        assert ys == (sorted(ys, reverse=True) if closing else sorted(ys)), ys  # (only ever the one way)
+        assert len(set(ys)) > 3  # (and gradually: an animation, not a jump)
+    for widget in (section, window.sidebar.scroll.viewport(), window.sidebar):
+        widget.removeEventFilter(frames)
+    space.pinned = []
+    store._changed()
 
 
 def test_settings_shows_the_version_and_an_updates_progress(window):

@@ -1449,7 +1449,20 @@ class MainWindow(QMainWindow):
     # --- Folders -----------------------------------------------------------------------------
 
     def toggle_folder(self, folder):
-        self.store.set_folder_expanded(folder, not folder.expanded)
+        """Open or close a folder: only its own list is redone (the whole sidebar, Favorites and Space buttons and
+        all, took long enough to cost the animation its first frames)."""
+        found = self.store.locate(folder)
+        if not found or found[1] is not self.store.active_space or self._rebuild_pending \
+                or getattr(self.sidebar, "drag_active", False):
+            self.store.set_folder_expanded(folder, not folder.expanded)
+            return
+        kind, space = found
+        folder.expanded = not folder.expanded
+        self.store.schedule_save()
+        section = self.sidebar.pinned if kind == PINNED else self.sidebar.today
+        section.animate_changes = True
+        section.set_tabs(space.pinned if kind == PINNED else space.today, refresh=False)
+        self.sidebar.update_selection()
 
     def new_folder(self, tab=None):
         name, ok = QInputDialog.getText(self, "New Folder", "Folder name:")
@@ -2262,8 +2275,7 @@ class MainWindow(QMainWindow):
         gestures = self.feature("gestures")
         if gestures is not None:
             gestures.space_swipe.abandon()  # (a swipe under way gives way to this switch)
-        if (self.sidebar.isVisible() and self.isVisible() and self.store.active_space in spaces
-                and not self.floating_sidebar.active):
+        if self.sidebar.isVisible() and self.isVisible() and self.store.active_space in spaces:
             # The sidebar slides over to the new Space, like Arc's
             direction = direction or (1 if spaces.index(space) > spaces.index(self.store.active_space) else -1)
             slide_region(self, self.sidebar, change, direction)

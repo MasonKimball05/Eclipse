@@ -48,6 +48,15 @@ def harden(profile):
         painted.setWorldId(QWebEngineScript.ScriptWorldId.ApplicationWorld)
         painted.setRunsOnSubFrames(False)
         profile.scripts().insert(painted)
+    if not profile.scripts().find("eclipse-quirks"):
+        from . import site_quirks
+        quirks = QWebEngineScript()  # (sites that need to see another browser: Google's sign-in)
+        quirks.setName("eclipse-quirks")
+        quirks.setSourceCode(site_quirks.script_source())
+        quirks.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+        quirks.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
+        quirks.setRunsOnSubFrames(True)
+        profile.scripts().insert(quirks)
 
 
 # Content scripts and userscripts call the extension runtime with console messages starting with

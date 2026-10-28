@@ -1,6 +1,7 @@
 """Arc import, against a fake Arc folder (never your real one)."""
 
 import json
+import plistlib
 import sqlite3
 
 import pytest
@@ -68,6 +69,33 @@ def _arc_folder(tmp_path):
 @pytest.fixture
 def fake_arc(tmp_path, monkeypatch):
     monkeypatch.setattr(arc_import, "ARC_DIR", _arc_folder(tmp_path))
+    monkeypatch.setattr(arc_import, "ARC_PREFERENCES", tmp_path / "company.thebrowser.Browser.plist")  # (nor yours)
+
+
+def _arc_extras(tmp_path):
+    """Arc's settings, archive, routing rules and a second profile, in the fake folder."""
+    arc = tmp_path / "Arc"
+    (tmp_path / "company.thebrowser.Browser.plist").write_bytes(plistlib.dumps({
+        "autoArchiveTimeThreshold": "sevenDays", "openExternalLinksInLittleBrowserEnabled": False,
+        "renameDownloadsEnabled": True, "renamePinnedTabsEnabled": False, "somethingElse": 3}))
+    (arc / "StorableArchiveItems.json").write_text(json.dumps({"version": 1, "items": [
+        "a1", {"archivedAt": 800_000_000.0, "source": {"space": {"_0": "s1"}},
+               "sidebarItem": {"data": {"tab": {"savedURL": "https://old.example/", "savedTitle": "Old"}}}},
+        "a2", {"archivedAt": 810_000_000.0, "source": {"space": {"_0": "s2"}},
+               "sidebarItem": {"data": {"tab": {"savedURL": "https://newer.example/", "savedTitle": "Newer"}}}},
+        "a3", {"archivedAt": 805_000_000.0, "sidebarItem": {"data": {"tab": {"savedURL": "javascript:x"}}}}]}))
+    (arc / "StorableLinkRouting.json").write_text(json.dumps({"version": 1, "rules": [
+        {"destination": {"space": {"_0": "s2"}}, "sourceComponents": [
+            {"componentType": {"urlMatch": {"_0": {"contains": {}}, "_1": "zoom.us"}}}]},
+        {"destination": {"space": {"_0": {"mostRecent": {}}}}, "sourceComponents": [
+            {"componentType": {"urlMatch": {"_0": {"contains": {}}, "_1": "meet.google.com"}}}]}]}))
+    (arc / "User Data" / "Local State").write_text(json.dumps({"profile": {"info_cache": {
+        "Default": {"name": "Your Chromium"}, "Profile 1": {"name": "School Stuff"}}}}))
+    sidebar = json.loads((arc / "StorableSidebar.json").read_text())
+    spaces = sidebar["sidebar"]["containers"][1]["spaces"]
+    spaces[3]["profile"] = {"custom": {"_0": {"directoryBasename": "Profile 1"}}}
+    spaces[1]["profile"] = {"default": True}
+    (arc / "StorableSidebar.json").write_text(json.dumps(sidebar))
 
 
 def test_arc_import_reads_everything(fake_arc):
@@ -97,3 +125,49 @@ def test_arc_import_apply_is_repeatable(fake_arc, store):
     arc_import.apply(store, arc_import.read_arc())  # importing again replaces, not duplicates
     assert len(store.spaces) == 2
     assert len(list(walk_tabs(store.spaces[0].pinned))) == 3
+
+
+def test_arcs_settings_archive_rules_and_profiles_come_too(fake_arc, store, tmp_path):
+    _arc_extras(tmp_path)
+    arc = arc_import.read_arc()
+    assert arc.settings == {"archive_after_hours": 168, "external_links": "tab", "tidy_downloads": True,
+                            "tidy_titles": False}
+    assert [(e["url"], e["space_id"]) for e in arc.archive] == [("https://newer.example/", "arc-s2"),
+                                                               ("https://old.example/", "arc-s1")]
+    assert arc.archive[0]["archived_at"] == 810_000_000 + arc_import.APPLE_EPOCH_OFFSET  # (Arc counts from 2001)
+    assert arc.routes == [{"match": "zoom.us", "space": "arc-s2"}]  # (not "whichever Space is open")
+    assert [s.profile for s in arc.spaces] == ["default", "school-stuff"]
+    store.settings["air_traffic"] = [{"match": "mine.example", "space": "x"}]
+    arc_import.apply(store, arc)
+    assert store.settings["archive_after_hours"] == 168 and store.settings["external_links"] == "tab"
+    assert [e["url"] for e in store.archive[:2]] == ["https://newer.example/", "https://old.example/"]
+    assert store.settings["air_traffic"] == [{"match": "mine.example", "space": "x"}, {"match": "zoom.us", "space": "arc-s2"}]
+    assert store.settings[arc_import.OFFERED] is True
+    arc_import.apply(store, arc_import.read_arc())  # (again: nothing doubles)
+    assert len(store.archive) == 2 and len(store.settings["air_traffic"]) == 2
+
+
+def test_no_arc_settings_or_archive_is_fine(fake_arc):
+    arc = arc_import.read_arc()  # (the fake folder has neither, and no preferences file)
+    assert arc.settings == {} and arc.archive == [] and arc.routes == []
+    assert {s.profile for s in arc.spaces} == {"default"}
+
+
+def test_a_launch_that_missed_the_welcome_still_offers_arc_once(fake_arc, store, monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(storage, "throwaway", lambda: False)
+    asked = []
+    monkeypatch.setattr(arc_import.QTimer, "singleShot", lambda ms, slot: asked.append(slot))
+    store.is_new = False  # (Eclipse had been opened before: no welcome)
+    feature = arc_import.ArcImportFeature.__new__(arc_import.ArcImportFeature)
+    feature.window = SimpleNamespace(store=store)
+    feature.ready()
+    assert len(asked) == 1 and store.settings[arc_import.OFFERED]
+    feature.ready()  # (once: not every launch)
+    assert len(asked) == 1
+    # Not when you've Spaces of your own already
+    del store.settings[arc_import.OFFERED]
+    from browser.models import Tab
+    store.spaces[0].pinned.append(Tab("https://mine.example/", "Mine"))
+    feature.ready()
+    assert len(asked) == 1

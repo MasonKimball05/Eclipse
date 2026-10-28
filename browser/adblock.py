@@ -20,7 +20,7 @@ from PyQt6.QtCore import QTimer, QUrl, pyqtSignal
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PyQt6.QtWebEngineCore import QWebEngineScript, QWebEngineUrlRequestInfo, QWebEngineUrlRequestInterceptor
 
-from . import clean_links, cookies, storage
+from . import clean_links, cookies, site_quirks, storage
 
 BLOCK_LISTS = {
     # Peter Lowe's ad & tracking server list: small and careful about false positives
@@ -210,6 +210,9 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
     extension_rules = None
 
     def interceptRequest(self, info):
+        agent = site_quirks.user_agent_for(info.requestUrl().host())
+        if agent is not None:
+            info.setHttpHeader(b"User-Agent", agent.encode())  # (Google's sign-in: see site_quirks.py)
         if self.extension_rules is not None and self.extension_rules(info):
             return
         if (info.resourceType() == QWebEngineUrlRequestInfo.ResourceType.ResourceTypeMainFrame

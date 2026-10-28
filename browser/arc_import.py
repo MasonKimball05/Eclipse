@@ -1,15 +1,22 @@
 # Import your setup from Arc before it shuts down.
 #
 # Arc keeps everything locally in ~/Library/Application Support/Arc:
-#   StorableSidebar.json      Spaces, pinned tabs, folders, favorites, today tabs
+#   StorableSidebar.json        Spaces, pinned tabs, folders, favorites, today tabs, each Space's profile
+#   StorableArchiveItems.json   archived tabs
+#   StorableLinkRouting.json    Air Traffic Control's rules
+#   User Data/Local State       the profiles' names
 #   User Data/Default/History   Chromium history (SQLite)
 #   User Data/Default/Favicons  Chromium favicon cache (SQLite)
-# We only ever read these. The databases are copied first, since Arc may have them open.
+# and its settings in ~/Library/Preferences/company.thebrowser.Browser.plist (auto-archive, links from other
+# apps, tidier download names and tab titles). We only ever read these. The databases are copied first, since
+# Arc may have them open.
 #
 # Not imported: logins/cookies (they're encrypted with Arc's own keychain key; just
 # sign in again) and extensions (Qt 6.11's extension support crashes when enabling one).
 
 import json
+import plistlib
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -18,15 +25,21 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from PyQt6.QtCore import QUrl
+from PyQt6.QtCore import QTimer, QUrl
 from PyQt6.QtWidgets import QMessageBox
 
 from . import brand, storage
 from .features import Feature
-from .models import DEFAULT_FAVORITES, Folder, Space, Tab, walk_tabs
+from .models import ARCHIVE_LIMIT, DEFAULT_FAVORITES, Folder, Space, Tab, walk_tabs
+from .webview import DEFAULT_PROFILE
 from .theme import PALETTE
 
 ARC_DIR = Path.home() / "Library" / "Application Support" / "Arc"
+ARC_PREFERENCES = Path.home() / "Library" / "Preferences" / "company.thebrowser.Browser.plist"
+APPLE_EPOCH_OFFSET = 978_307_200  # seconds between 1970-01-01 and 2001-01-01 (Arc's times count from 2001)
+OFFERED = "arc_import_offered"  # (asked once, on a launch that missed the welcome: see ArcImportFeature.ready)
+ARCHIVE_HOURS = {"twelveHours": 12, "twentyFourHours": 24, "oneDay": 24, "sevenDays": 24 * 7, "oneWeek": 24 * 7,
+                 "thirtyDays": 24 * 30, "oneMonth": 24 * 30, "never": 0}
 CHROME_EPOCH_OFFSET = 11_644_473_600  # seconds between 1601-01-01 and 1970-01-01
 HISTORY_IMPORT_LIMIT = 5000
 
@@ -54,6 +67,9 @@ class ArcImport:
     history: list[dict] = field(default_factory=list)
     extensions: list[str] = field(default_factory=list)  # names only; reported as skipped
     favicons: dict[str, bytes] = field(default_factory=dict)  # page URL -> PNG
+    settings: dict = field(default_factory=dict)  # Eclipse's settings, from Arc's
+    archive: list[dict] = field(default_factory=list)  # archived tabs, newest first, as Store.archive keeps them
+    routes: list[dict] = field(default_factory=list)  # Air Traffic Control rules: {"match", "space"}
 
     @property
     def tab_count(self) -> int:
@@ -73,6 +89,9 @@ def arc_installed() -> bool:
 def read_arc() -> ArcImport:
     result = ArcImport()
     _read_sidebar(result)
+    result.settings = _read_settings()
+    result.archive = _read_archive()
+    result.routes = _read_routes({s.id for s in result.spaces})
     profile = ARC_DIR / "User Data" / "Default"
     with tempfile.TemporaryDirectory() as tmp:
         result.history = _read_history(profile / "History", Path(tmp))
@@ -138,6 +157,7 @@ def _read_sidebar(result: ArcImport):
                     nodes.extend(walk_tabs(children))  # Today has no folders
         return nodes
 
+    names = _profile_names()
     for index, (space_id, space) in enumerate(_pairs(container.get("spaces", [])).items()):
         containers = _pairs(space.get("containerIDs", []))
         result.spaces.append(Space(
@@ -145,12 +165,94 @@ def _read_sidebar(result: ArcImport):
             space_id=f"arc-{space_id}",
             pinned=build(containers.get("pinned"), pinned=True),
             today=build(containers.get("unpinned"), pinned=False),
+            profile=_profile(space, names),
         ))
 
     for entry in container.get("topAppsContainerIDs", []):
         if isinstance(entry, str):
             result.favorites = [n for n in build(entry, pinned=True) if isinstance(n, Tab)]
             break
+
+
+def _profile_names() -> dict[str, str]:
+    """Arc's profiles: {folder ("Profile 1"): its name ("Work")}."""
+    try:
+        state = json.loads((ARC_DIR / "User Data" / "Local State").read_text())
+    except (OSError, ValueError):
+        return {}
+    cache = state.get("profile", {}).get("info_cache", {})
+    return {folder: info.get("name") or folder for folder, info in cache.items() if isinstance(info, dict)}
+
+
+def _profile(space: dict, names: dict) -> str:
+    """The Eclipse profile for an Arc Space: "default" for Arc's own, else one named like Arc's ("work")."""
+    profile = space.get("profile") or {}
+    custom = profile.get("custom", {}).get("_0", {}) if isinstance(profile.get("custom"), dict) else {}
+    folder = custom.get("directoryBasename") if isinstance(custom, dict) else None
+    if not folder or folder == "Default":
+        return DEFAULT_PROFILE
+    name = re.sub(r"[^a-z0-9_-]+", "-", str(names.get(folder, folder)).lower()).strip("-")
+    return name or DEFAULT_PROFILE
+
+
+def _read_settings() -> dict:
+    """Arc's settings that Eclipse has too, as Eclipse's."""
+    try:
+        prefs = plistlib.loads(ARC_PREFERENCES.read_bytes())
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return {}
+    found = {}
+    if prefs.get("autoArchiveTimeThreshold") in ARCHIVE_HOURS:
+        found["archive_after_hours"] = ARCHIVE_HOURS[prefs["autoArchiveTimeThreshold"]]
+    if isinstance(prefs.get("openExternalLinksInLittleBrowserEnabled"), bool):
+        found["external_links"] = "little" if prefs["openExternalLinksInLittleBrowserEnabled"] else "tab"
+    if isinstance(prefs.get("renameDownloadsEnabled"), bool):
+        found["tidy_downloads"] = prefs["renameDownloadsEnabled"]
+    if isinstance(prefs.get("renamePinnedTabsEnabled"), bool):
+        found["tidy_titles"] = prefs["renamePinnedTabsEnabled"]
+    return found
+
+
+def _read_archive() -> list[dict]:
+    """Arc's archived tabs, newest first (as many as Eclipse keeps)."""
+    try:
+        data = json.loads((ARC_DIR / "StorableArchiveItems.json").read_text())
+    except (OSError, ValueError):
+        return []
+    found = []
+    for entry in _pairs(data.get("items", [])).values():
+        if not isinstance(entry, dict):
+            continue
+        tab = (entry.get("sidebarItem") or {}).get("data", {}).get("tab", {})
+        url = tab.get("savedURL") or ""
+        if not url.startswith(("https://", "http://")):
+            continue
+        space = (entry.get("source") or {}).get("space", {}).get("_0")
+        when = entry.get("archivedAt")
+        found.append({"url": url, "title": tab.get("savedTitle") or url,
+                      "space_id": f"arc-{space}" if isinstance(space, str) else "",
+                      "archived_at": when + APPLE_EPOCH_OFFSET if isinstance(when, (int, float)) else 0})
+    found.sort(key=lambda e: e["archived_at"], reverse=True)
+    return found[:ARCHIVE_LIMIT]
+
+
+def _read_routes(space_ids: set[str]) -> list[dict]:
+    """Air Traffic Control's rules that send a site to a particular Space (not "whichever's open", which
+    Eclipse's rules don't have)."""
+    try:
+        data = json.loads((ARC_DIR / "StorableLinkRouting.json").read_text())
+    except (OSError, ValueError):
+        return []
+    found = []
+    for rule in data.get("rules", []) if isinstance(data.get("rules"), list) else []:
+        space = (rule.get("destination") or {}).get("space", {}).get("_0")
+        if not isinstance(space, str) or f"arc-{space}" not in space_ids:
+            continue
+        for part in rule.get("sourceComponents") or []:
+            match = (part.get("componentType") or {}).get("urlMatch", {}).get("_1")
+            if isinstance(match, str) and match.strip():
+                found.append({"match": match.strip(), "space": f"arc-{space}"})
+    return found
 
 
 # --- Chromium databases ------------------------------------------------------------------
@@ -227,15 +329,50 @@ def apply(store, arc: ArcImport):
         store.favorites = arc.favorites + keep
 
     store.merge_history(arc.history)
+    store.settings.update(arc.settings)
+    known = {(e.get("url"), e.get("archived_at")) for e in store.archive}
+    store.archive[:] = sorted(store.archive + [e for e in arc.archive if (e["url"], e["archived_at"]) not in known],
+                              key=lambda e: e.get("archived_at") or 0, reverse=True)[:ARCHIVE_LIMIT]
+    rules = store.settings.setdefault("air_traffic", [])
+    rules += [r for r in arc.routes if r not in rules]
+    store.settings[OFFERED] = True
     if arc.spaces:
         store.active_space_id = arc.spaces[0].id
     store._changed()
+
+
+def _settings_summary(settings: dict) -> str:
+    parts = []
+    if "archive_after_hours" in settings:
+        hours = settings["archive_after_hours"]
+        parts.append("tabs archive " + ("never" if not hours else f"after {hours // 24} days" if hours >= 48
+                                        else f"after {hours} hours"))
+    if "external_links" in settings:
+        parts.append("links from other apps open in " + ("a Little window" if settings["external_links"] == "little"
+                                                         else "a new tab"))
+    if settings.get("tidy_downloads") is not None:
+        parts.append("tidier download names " + ("on" if settings["tidy_downloads"] else "off"))
+    if settings.get("tidy_titles") is not None:
+        parts.append("tidier tab titles " + ("on" if settings["tidy_titles"] else "off"))
+    return "; ".join(parts)
 
 
 class ArcImportFeature(Feature):
     """Bring Spaces, tabs, Favorites, history and icons over from Arc: from the welcome on a first launch
     (welcome.py), and any time from the File menu or ⌘T."""
     name = "arc_import"
+
+    def ready(self):
+        """A launch that missed the welcome (Eclipse had been opened before, from source say, with nothing of
+        yours in it yet) still gets asked about Arc: once."""
+        store = self.window.store
+        if store.is_new or store.settings.get(OFFERED) or storage.throwaway() or not arc_installed():
+            return
+        if any(s.pinned or s.today for s in store.spaces) or any(s.id.startswith("arc-") for s in store.spaces):
+            return  # (your own Spaces are here already: File → Import from Arc… whenever you like)
+        store.settings[OFFERED] = True
+        store.schedule_save()
+        QTimer.singleShot(1500, self.import_from_arc)
 
     def commands(self):
         return [("Import from Arc", "ph.arrow-square-in", self.import_from_arc)]
@@ -259,6 +396,15 @@ class ArcImportFeature(Feature):
             f"• {arc.tab_count} tabs, including {len(arc.favorites)} Favorites, in {arc.folder_count} folders",
             f"• {len(arc.history):,} history entries (for ⌘T suggestions) and site icons",
         ]
+        if arc.archive:
+            lines.append(f"• {len(arc.archive)} archived tabs (the latest), in Library → Archived Tabs")
+        if arc.settings:
+            lines.append("• Your settings: " + _settings_summary(arc.settings))
+        if arc.routes:
+            lines.append(f"• {len(arc.routes)} Air Traffic Control rule{'s' if len(arc.routes) != 1 else ''}")
+        profiles = sorted({s.profile for s in arc.spaces} - {DEFAULT_PROFILE})
+        if profiles:
+            lines.append("• Profiles (their Spaces' own sign-ins, empty to start): " + ", ".join(profiles))
         note = ("You'll need to sign in to sites again: Arc's logins and cookies are encrypted "
                 "with its own key and can't be copied.")
         if arc.extensions and window.feature("extensions") is not None:  # (somewhere for them to go)
