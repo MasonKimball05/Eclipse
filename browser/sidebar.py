@@ -300,18 +300,22 @@ def start_drag(widget, node_id, press_pos):
     drag.setPixmap(stack_picture(widget, len(together)) if together else widget.grab())
     drag.setHotSpot(press_pos)
     split_drop = widget.browser.content.split_drop
-    split_drop.activate(True)  # the page area accepts tabs too: drop one there to split
-    lifted = [(r, r.parentWidget()) for r in together or [widget]]
-    for row, section in lifted:
-        if isinstance(section, TabSection):
-            # (once the drag has its picture of the row)
-            QTimer.singleShot(0, lambda s=section, r=row: not sip.isdeleted(r) and s.lift(r))
-    section = widget.parentWidget()
     sidebar = widget.browser.sidebar
-    sidebar.drag_active = True  # rebuilds wait till it's over (they'd delete the row being dragged)
-    drag.exec(Qt.DropAction.MoveAction)
-    sidebar.drag_active = False
-    split_drop.activate(False)
+    lifted = []
+    # Whatever happens, the drag's clean-up happens: left up, the page area's drop zone would take every click
+    # meant for the page, and the sidebar would wait for ever to rebuild (folders wouldn't open), until a restart
+    try:
+        split_drop.activate(True)  # the page area accepts tabs too: drop one there to split
+        lifted = [(r, r.parentWidget()) for r in together or [widget] if not sip.isdeleted(r)]
+        for row, section in lifted:
+            if isinstance(section, TabSection):
+                # (once the drag has its picture of the row)
+                QTimer.singleShot(0, lambda s=section, r=row: not sip.isdeleted(r) and s.lift(r))
+        sidebar.drag_active = True  # rebuilds wait till it's over (they'd delete the row being dragged)
+        drag.exec(Qt.DropAction.MoveAction)
+    finally:
+        sidebar.drag_active = False
+        split_drop.activate(False)
     if getattr(sidebar, "_rebuild_after_drag", False):
         sidebar._rebuild_after_drag = False
         QTimer.singleShot(0, sidebar.rebuild)
@@ -756,24 +760,38 @@ class DropZone(QWidget):
             QTimer.singleShot(0, lambda: self.browser.move_tab(node, self.kind, index, folder))
 
 
+def _runs(indices) -> int:
+    """How many separate runs of neighbouring positions: [3, 4, 5, 9] is two."""
+    indices = sorted(indices)
+    return sum(1 for n, i in enumerate(indices) if n == 0 or i != indices[n - 1] + 1)
+
+
 class RowReveal(QWidget):
     """A row growing into the list (a new tab, a folder opening) or shrinking out of it (closed,
     archived, picked up to drag): the row keeps its full size inside, clipped, while this box's height
     changes, so the rows below glide instead of jumping. Fades as it goes; a row leaving also drifts
     down a little, the way Arc's Clear sweeps tabs away. `keep`: stay folded up when done (a row
-    being dragged), ready to unfold again if it isn't dropped anywhere."""
+    being dragged), ready to unfold again if it isn't dropped anywhere.
+
+    Several rows that come or go together (a folder's tabs, as it opens or closes) move as one block, in one
+    box: one height changing a frame, not one per row (which made a folder of tabs judder open)."""
 
     MS = 190
 
     def __init__(self, section, row, growing, delay=0, keep=False):
         super().__init__(section)
-        self.section, self.row, self.keep = section, row, keep
-        self.full = row.height() or 34
+        self.rows = list(row) if isinstance(row, (list, tuple)) else [row]
+        self.row = self.rows[0]
+        self.section, self.keep = section, keep
+        self.full = sum(r.height() or 34 for r in self.rows)
         self.shown = 0.0 if growing else 1.0
         self.growing = growing
-        row.setParent(self)
-        row.move(0, 0)
-        row.show()
+        y = 0
+        for each in self.rows:
+            each.setParent(self)
+            each.move(0, y)
+            each.show()
+            y += each.height() or 34
         self.setFixedHeight(round(self.full * self.shown))
         self.fade = QGraphicsOpacityEffect(self)
         self.fade.setOpacity(self.shown)
@@ -791,12 +809,15 @@ class RowReveal(QWidget):
         motion.animate(self, self.shown, target, self._set, ms, self._done)
 
     def _set(self, shown):
-        if sip.isdeleted(self.row):
+        if any(sip.isdeleted(r) for r in self.rows):
             return
         self.shown = shown
         self.setFixedHeight(round(self.full * shown))
         self.fade.setOpacity(shown)
-        self.row.move(0, 0 if self.growing else round(6 * (1 - shown)))
+        y, drift = 0, 0 if self.growing else round(6 * (1 - shown))
+        for each in self.rows:
+            each.move(0, y + drift)
+            y += each.height() or 34
 
     def unfold(self):
         """A dragged row that wasn't dropped anywhere: back where it was."""
@@ -804,8 +825,9 @@ class RowReveal(QWidget):
         self._go(1.0)
 
     def resizeEvent(self, event):
-        if not sip.isdeleted(self.row):
-            self.row.resize(self.width(), self.full)
+        for each in self.rows:
+            if not sip.isdeleted(each):
+                each.resize(self.width(), each.height() or 34)
 
     def _done(self):
         if self.keep and self.shown == 0:
@@ -913,8 +935,11 @@ class TabSection(DropZone):
         added = [row for row, node, *_ in self.entries if id(node) not in before and node is not dropped]
         gone = [(i, row) for i, (row, node, *_) in enumerate(old) if id(node) not in kept]
         from . import motion
+        # (a big change, many rows in many places, just shows; a folder of any size opening or closing is one
+        # block, and glides)
         animate = (self.animate_changes and old and not motion.reduced() and self.isVisible()
-                   and len(added) <= 8 and (len(gone) <= 8 or not self.entries))  # (more: a big change, just show it)
+                   and _runs([self.layout_.indexOf(r) for r in added]) <= 8 and len(added) <= 60
+                   and (_runs([i for i, _ in gone]) <= 8 or not self.entries) and len(gone) <= 60)
         for i, (row, node, *_) in enumerate(old):
             if id(row) in reused or (animate and (i, row) in gone):
                 continue  # still in the list, or shrinks away below
@@ -929,23 +954,40 @@ class TabSection(DropZone):
         self.setMinimumHeight(0 if nodes or self.hint.text() else 12)
 
     def _animate(self, old, kept, added, gone):
+        # Rows next to each other in the list grow in together, as one block (a folder's tabs as it opens)
+        blocks = []
         for row in added:
             index = self.layout_.indexOf(row)
-            self.layout_.removeWidget(row)
-            reveal = RowReveal(self, row, growing=True)
+            if blocks and blocks[-1][0] + len(blocks[-1][1]) == index:
+                blocks[-1][1].append(row)
+            else:
+                blocks.append((index, [row]))
+        for index, rows in reversed(blocks):  # (from the bottom up: the indices above stay true)
+            for row in rows:
+                self.layout_.removeWidget(row)
+            reveal = RowReveal(self, rows, growing=True)
             self.layout_.insertWidget(index, reveal)
             self._reveals.append(reveal)
         # A row that's gone shrinks where it was: after the nearest row above it that's still here
         position = {id(node): row for row, node, *_ in self.entries}
         clearing = not self.entries  # everything going at once (Clear): a quick sweep, top to bottom
         inserted_after = {}
-        for n, (i, row) in enumerate(gone):
+        # Rows that were next to each other and go together shrink away as one block (a folder closing); Clear's
+        # sweep keeps them one at a time
+        groups = []
+        for i, row in gone:
+            if not clearing and groups and groups[-1][0] + len(groups[-1][1]) == i:
+                groups[-1][1].append(row)
+            else:
+                groups.append((i, [row]))
+        for n, (i, rows) in enumerate(groups):
             anchor = next((position[id(old[k][1])] for k in range(i - 1, -1, -1) if id(old[k][1]) in kept), None)
-            self.layout_.removeWidget(row)
+            for row in rows:
+                self.layout_.removeWidget(row)
             base = self.layout_.indexOf(anchor) + 1 if anchor is not None else 1  # (1: after the hint)
             offset = inserted_after.get(id(anchor), 0)
             inserted_after[id(anchor)] = offset + 1
-            reveal = RowReveal(self, row, growing=False, delay=n * 22 if clearing else 0)
+            reveal = RowReveal(self, rows, growing=False, delay=n * 22 if clearing else 0)
             self.layout_.insertWidget(base + offset, reveal)
             self._reveals.append(reveal)
 
@@ -954,15 +996,19 @@ class TabSection(DropZone):
             return
         self._reveals.remove(reveal)
         index = self.layout_.indexOf(reveal)
-        row = reveal.row
-        if reveal.growing and not sip.isdeleted(row) and any(r is row for r, *_ in self.entries):
-            row.setParent(self)
-            self.layout_.insertWidget(index, row)  # back into the list where it grew in
-            row.show()
-        elif not sip.isdeleted(row):
-            row.hide()
-            row._pb_gone = True  # (deleted on a later pass: set_tabs mustn't count it as still here)
-            row.deleteLater()
+        listed = {id(r) for r, *_ in self.entries}
+        for row in reveal.rows:
+            if sip.isdeleted(row):
+                continue
+            if reveal.growing and id(row) in listed:
+                row.setParent(self)
+                self.layout_.insertWidget(index, row)  # back into the list where it grew in
+                index += 1
+                row.show()
+            else:
+                row.hide()
+                row._pb_gone = True  # (deleted on a later pass: set_tabs mustn't count it as still here)
+                row.deleteLater()
         reveal.hide()
         self.layout_.removeWidget(reveal)
         reveal.setGraphicsEffect(None)
@@ -1016,6 +1062,13 @@ class TabSection(DropZone):
         parent = row.parentWidget()
         return parent if isinstance(parent, RowReveal) else row
 
+    def _rect(self, row):
+        """Where a row is in this list, even while it's in a block growing in or shrinking away."""
+        holder = self._holder(row)
+        if holder is row:
+            return row.geometry()
+        return QRect(holder.geometry().topLeft() + row.pos(), QSize(holder.width(), row.height()))
+
     def _places(self):
         """[(row, node, parent, depth, rect)] where each row would be with no gap open (so the target
         doesn't jump about as the gap moves the rows), leaving out the one being dragged."""
@@ -1024,7 +1077,7 @@ class TabSection(DropZone):
         for row, node, parent, depth in self.entries:
             if any(node is n for n in self.dragging) or sip.isdeleted(row):
                 continue
-            rect = self._holder(row).geometry()
+            rect = self._rect(row)
             above = sum(g.height() + self.layout_.spacing() * (g.height() > 0) for g in gaps
                         if g.geometry().top() < rect.top())
             out.append((row, node, parent, depth, rect.translated(0, -above)))

@@ -468,6 +468,13 @@ class SplitDropZone(QWidget):
         self._hot = False
         self.hide()
 
+    def mousePressEvent(self, event):
+        # A click can't come while a tab's being dragged (the button's held for the drag), so one here means the
+        # zone was left up: out of the way at once, never between you and the page
+        self.activate(False)
+        self.browser.focus_current()
+        event.ignore()
+
     def activate(self, on):
         if on and self.browser.current_tab is not None:
             self.setGeometry(self.parentWidget().rect())

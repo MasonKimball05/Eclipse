@@ -8,12 +8,16 @@ from . import brand
 from .motion import FadesIn
 from .theme import quiet_scrollbars, stylesheet
 
-EDITION = 18
+EDITION = 19
 SETTING = "whats_new_seen"
 
 NOTES = """
 ## Lately
 
+- **Fixes from testing**: clicking a tab quickly while switching could leave the page (and folders) not taking
+  clicks until Eclipse restarted; folders now open and close in one smooth motion, at any size; switching to a
+  Space for the first time no longer flashes white on a dark Space; and fewer YouTube ads get through (their
+  ads are taken out before the player plans them, and feed and banner ads are hidden).
 - **Sync**: turn it on in Settings → General, and your Spaces, pinned tabs and Favorites stay the same on each Mac
   (and PC) you use, through iCloud Drive. Today's tabs stay on each computer.
 - **Handoff**: the page you're on shows on your iPhone and iPad, to carry on reading there (Settings → General

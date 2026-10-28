@@ -6,7 +6,10 @@
 #      which is what keeps sites from breaking.
 #   2. Cosmetic: a few conservative CSS rules hide the empty boxes ads leave behind.
 #   3. YouTube: its ads come from the same servers as the videos, so no domain list can
-#      stop them; a small script skips them instead (mutes, jumps to the end, clicks Skip).
+#      stop them. Instead, before YouTube's player reads a video's details, the part that
+#      schedules its ads is taken out (as uBlock Origin does), so none are planned; the ad
+#      slots in the feed, banners and overlays are hidden; and should an ad play anyway, a
+#      small script skips it (mutes it, jumps to its end or plays it at 16×, clicks Skip).
 #
 # Block lists are downloaded in the background and refreshed weekly; a short built-in
 # list covers the biggest ad networks until the first download finishes.
@@ -56,8 +59,46 @@ setInterval(() => {
   const skip = document.querySelector('.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern');
   if (skip) { skip.click(); return; }
   const video = player.querySelector('video');
-  if (video && isFinite(video.duration)) { video.muted = true; video.currentTime = video.duration; }
-}, 300);
+  if (!video) return;
+  video.muted = true;
+  if (isFinite(video.duration) && video.duration > 0) video.currentTime = video.duration;
+  else video.playbackRate = 16;  // (not seekable yet: over in a moment anyway)
+}, 100);
+"""
+
+# YouTube's ads in the feed and around the player (hidden; the video's own are taken out before they're planned)
+YOUTUBE_CSS = (
+    "ytd-ad-slot-renderer, ytd-in-feed-ad-layout-renderer, ytd-promoted-sparkles-web-renderer, "
+    "ytd-promoted-video-renderer, ytd-display-ad-renderer, ytd-banner-promo-renderer, ytd-statement-banner-renderer, "
+    "ytd-compact-promoted-video-renderer, ytd-player-legacy-desktop-watch-ads-renderer, #masthead-ad, #player-ads, "
+    ".ytp-ad-overlay-container, .ytp-ad-image-overlay, ytd-rich-item-renderer:has(> #content > ytd-ad-slot-renderer), "
+    "ytd-rich-section-renderer:has(ytd-statement-banner-renderer)"
+    " { display: none !important; }"
+)
+
+# In the page's own world, before YouTube's scripts: the details of a video (the page's first, and each one
+# fetched as you go to the next) lose the parts that plan its ads. Everything else in them is left alone.
+YOUTUBE_PRUNER = r"""
+(() => {
+  if (!/(^|\.)youtube\.com$/.test(location.hostname) || window.__eclipseNoAds) return;
+  Object.defineProperty(window, '__eclipseNoAds', {value: true});
+  const KEYS = ['adPlacements', 'adSlots', 'playerAds', 'adBreakHeartbeatParams'];
+  const prune = data => {
+    if (data && typeof data === 'object') {
+      for (const key of KEYS) if (key in data) delete data[key];
+      if (data.playerResponse && typeof data.playerResponse === 'object') prune(data.playerResponse);
+    }
+    return data;
+  };
+  const native = (fake, real) => { fake.toString = real.toString.bind(real); return fake; };
+  const parse = JSON.parse;
+  JSON.parse = native(function () { return prune(parse.apply(this, arguments)); }, parse);
+  const json = Response.prototype.json;
+  Response.prototype.json = native(function () { return json.apply(this, arguments).then(prune); }, json);
+  let initial;
+  Object.defineProperty(window, 'ytInitialPlayerResponse', {configurable: true,
+    get: () => initial, set: value => { initial = prune(value); }});
+})();
 """
 
 
@@ -217,7 +258,13 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
           style.textContent = {COSMETIC_CSS!r};
           const add = () => (document.head || document.documentElement).appendChild(style);
           document.documentElement ? add() : document.addEventListener('DOMContentLoaded', add);
-          if (/(^|\\.)youtube\\.com$/.test(location.hostname)) {{ {YOUTUBE_SKIPPER} }}
+          if (/(^|\\.)youtube\\.com$/.test(location.hostname)) {{
+            const yt = document.createElement('style');
+            yt.textContent = {YOUTUBE_CSS!r};
+            document.documentElement ? (document.head || document.documentElement).appendChild(yt)
+              : document.addEventListener('DOMContentLoaded', () => document.head.appendChild(yt));
+            {YOUTUBE_SKIPPER}
+          }}
         }})();
         """
         script = QWebEngineScript()
@@ -227,6 +274,14 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
         script.setWorldId(QWebEngineScript.ScriptWorldId.ApplicationWorld)  # isolated from page scripts
         script.setRunsOnSubFrames(False)
         scripts.insert(script)
+        if not self.is_allowed("youtube.com"):
+            pruner = QWebEngineScript()
+            pruner.setName("eclipse-adblock")  # (the same name: removed with the rest when blocking's turned off)
+            pruner.setSourceCode(YOUTUBE_PRUNER)
+            pruner.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+            pruner.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)  # (YouTube's own JSON and fetch: theirs)
+            pruner.setRunsOnSubFrames(True)  # (videos embedded in other sites too)
+            scripts.insert(pruner)
 
     # --- Block lists ------------------------------------------------------------------
 

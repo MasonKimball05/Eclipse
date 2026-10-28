@@ -215,6 +215,10 @@ Set up in *Settings → My Apps* (addresses default to your setup: homebase and 
 - **Site icons:** an icon that would vanish against the sidebar (GitHub's all-white one on a light Space, an all-black one on a dark Space) gets a small contrasting tile.
 - **Empty page:** with nothing open, the page area is just a faint shade of your Space's colours, like Arc, so the sidebar stands apart: no page, nothing in the way. ⌘T opens something.
 
+- **Folders** open and close as one block: their rows grow in (or shrink away) together in one box (`RowReveal` with several rows), one height change a frame, so even a big folder glides. Before, each row had its own animation and a folder of 8 juddered (and one of 9 or more just popped open).
+- **A new page on a dark Space** is blank in the page area's dark colour, not Chromium's white, until it's about to draw its first frame (a tiny script in every page, `eclipse-painted` in `webview.harden`, says so; a page in the background, which doesn't draw, goes back 0.6 s after it's loaded) (`MainWindow._dark_until_painted`): switching to a Space whose tab had no page yet (each one the first time, or a sleeping one) flashed white for half a second or more.
+- **Dragging a tab** always cleans up after itself (`sidebar.start_drag`'s `finally`): the page area's drop zone (which takes clicks, to take a dropped tab) going away and the sidebar's rebuilds resuming. A drag that failed half-way (clicking a tab quickly while switching) left the page not taking clicks, and folders not opening, until a restart. Should the zone ever be left up anyway, the first click on it puts it away.
+
 ### Settings, shortcuts & Library
 
 - **Settings** (⌘,, or *Eclipse → Settings…*) has a search box at the top ("sleep", "cookie", "qwen"): pages without a match step aside and matching settings light up; Return scrolls to the first. It has one page each for:
@@ -364,6 +368,7 @@ The answer comes from macOS's own tools, not from Eclipse. Anyone can also check
 
 Pages are kept to their own business. What stops them, and where (reviewed 27 Oct 2026; `tests/test_security.py` and the live tests check it):
 
+- **YouTube's ads:** besides skipping an ad that plays (now every 0.1 s, muted, jumped to its end or played at 16×), a script in the page's own world takes `adPlacements`, `adSlots`, `playerAds` and `adBreakHeartbeatParams` out of a video's details before YouTube's player reads them (`ytInitialPlayerResponse`, `JSON.parse`, `Response.json`), as uBlock Origin does, so no ads are planned; feed, banner and overlay ads are hidden with CSS. In `adblock.py` (`YOUTUBE_PRUNER`, `YOUTUBE_CSS`); off for YouTube if it's an allowed site. YouTube changes often: if ads come back, the keys are what to check first.
 - **Windows:** a page can't open a pop-up by itself, at load or from a timer (`JavascriptCanOpenWindows` off in `webview.harden`, every profile). After a click, `window.open()` still works, for sign-in pop-ups. Nor can it open your notes, easels, an extension's own pages or `file://` addresses as a new window (`window.handle_new_window`).
 - **Full screen:** only the page you're looking at can go full screen, a toast says *host is full screen. Press Esc to leave.* every time, and Esc always leaves, so a page can't pass off a drawing of a browser or a password box as the real thing.
 - **The address:** a long address is cut from the left in the URL pill, so the end (whose site it is) always shows: `…login.evil.example`, never `accounts.google.com.lo…`. After *Visit Anyway* on a certificate warning, the pill shows a red warning instead of the lock for that site, for the rest of the session.

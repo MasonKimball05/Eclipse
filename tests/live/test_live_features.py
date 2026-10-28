@@ -896,6 +896,102 @@ def test_turning_sync_on_can_use_the_other_macs_spaces(window, tmp_path, monkeyp
     engine.refresh_setting()
 
 
+def test_a_drag_that_goes_wrong_never_leaves_the_page_unclickable(window, site, monkeypatch):
+    # Clicking a tab quickly while switching could start a drag that failed half-way: the page area's drop zone
+    # (which takes clicks, to take a dropped tab) stayed up over the page, and the sidebar stopped rebuilding
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtGui import QDrag
+    from PyQt6.QtTest import QTest
+    from browser import sidebar as module
+    first = open_page(window, site + "/index.html")
+    second = open_page(window, site + "/links.html")
+    zone = window.content.split_drop
+
+    def broken(*_):
+        raise RuntimeError("the row went while it was being dragged")
+    monkeypatch.setattr(QDrag, "exec", broken)
+    row = next(r for r in window.sidebar.today.rows if r.tab is first)
+    try:
+        module.start_drag(row, first.id, QPoint(5, 5))
+    except RuntimeError:
+        pass
+    assert zone.isHidden() and not window.sidebar.drag_active
+    # And should the zone ever be left up anyway, the first click on it puts it away
+    zone.activate(True)
+    assert not zone.isHidden()
+    QTest.mouseClick(zone, Qt.MouseButton.LeftButton, pos=QPoint(50, 50))
+    assert zone.isHidden()
+    for tab in (first, second):
+        window.close_tab(tab)
+
+
+def test_a_folder_opens_and_closes_as_one_block(window):
+    from browser.models import Folder, Tab
+    from browser.sidebar import RowReveal
+    space = window.store.active_space
+    folder = Folder("Many", [Tab(f"https://example{n}.com/", f"Tab {n}") for n in range(12)], expanded=False)
+    space.pinned.append(folder)
+    window.store._changed()
+    pause(0.3)
+    section = window.sidebar.pinned
+    window.toggle_folder(folder)
+    pause(0.03)
+    reveals = [r for r in section._reveals if not r.keep]
+    assert len(reveals) == 1 and len(reveals[0].rows) == 12  # (one block, not twelve: and it animates, though it's big)
+    assert wait_until(lambda: not section._reveals, 2)
+    rows = [r for r, node, *_ in section.entries if node in folder.children]
+    assert [r.tab.title for r in rows] == [f"Tab {n}" for n in range(12)]
+    assert all(r.parentWidget() is section and r.isVisible() for r in rows)
+    tops = [section._rect(r).top() for r in rows]
+    assert tops == sorted(tops) and len(set(tops)) == 12  # (in order, one under another)
+    window.toggle_folder(folder)
+    pause(0.03)
+    assert len(section._reveals) == 1 and len(section._reveals[0].rows) == 12
+    assert wait_until(lambda: not section._reveals, 2)
+    assert not any(isinstance(r.parentWidget(), RowReveal) for r, *_ in section.entries)
+    space.pinned.remove(folder)
+    window.store._changed()
+
+
+def test_a_page_opening_on_a_dark_space_is_never_a_white_flash(window, site):
+    # Switching to a Space whose tab had no page yet (each one, the first time after launch; or asleep) showed
+    # the page area white for half a second or more, until the page drew: a flash, on a dark Space
+    from browser.window import DARK_PAGE_BLANK
+    space = window.store.active_space
+    space.theme = {**space.theme, "mode": "dark"}
+    window.apply_theme()
+    assert window.theme.dark
+    tab = open_page(window, site + "/index.html")
+    window._destroy_view(tab)
+    view = window._ensure_view(tab, load=False)
+    assert view.page().backgroundColor().name() == DARK_PAGE_BLANK
+    view.load(QUrl(tab.url))
+    assert wait_until(lambda: view.page().backgroundColor().name() == "#ffffff", 5)  # (then the web's own white)
+    space.theme.pop("mode")
+    window.apply_theme()
+    window.close_tab(tab)
+
+
+def test_youtubes_ads_are_taken_out_before_its_player_sees_them(window, site):
+    from browser import adblock
+    names = [(sc.name(), sc.worldId()) for sc in window.profile.scripts().toList()]
+    assert ("eclipse-adblock", 0) in names  # (the pruner, in the page's own world, where YouTube's scripts are)
+    tab = open_page(window, site + "/index.html")
+    # (run here as if this were youtube.com)
+    run_js(tab.view, adblock.YOUTUBE_PRUNER.replace("!/(^|\\.)youtube\\.com$/.test(location.hostname)", "false"),
+           world=0)
+    video = '{"videoDetails": {"title": "A video"}, "adPlacements": [1], "playerAds": [2], "adSlots": [3]}'
+    assert run_js(tab.view, f"Object.keys(JSON.parse('{video}')).join()", world=0) == "videoDetails"
+    assert run_js(tab.view, f"Object.keys(JSON.parse('{{\"playerResponse\": {video}}}').playerResponse).join()",
+                  world=0) == "videoDetails"
+    run_js(tab.view, f"window.ytInitialPlayerResponse = JSON.parse('{video}'.replace('adPlacements', 'x')); "
+                     f"new Response('{video}').json().then(d => window.fetched = Object.keys(d).join()); 1", world=0)
+    assert run_js(tab.view, "Object.keys(window.ytInitialPlayerResponse).join()", world=0) == "videoDetails,x"
+    assert wait_until(lambda: run_js(tab.view, "window.fetched", world=0) == "videoDetails", 3)
+    assert "native code" in run_js(tab.view, "JSON.parse.toString()", world=0)  # (looks untouched)
+    window.close_tab(tab)
+
+
 def test_settings_shows_the_version_and_an_updates_progress(window):
     from PyQt6.QtWidgets import QLabel, QProgressBar, QPushButton
     updater = window.feature("self_update").updater

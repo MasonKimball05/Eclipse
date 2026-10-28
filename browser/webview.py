@@ -2,7 +2,7 @@ import re
 import traceback
 
 from PyQt6.QtCore import QStandardPaths, Qt, pyqtSignal
-from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
+from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineScript, QWebEngineSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 
 from . import storage
@@ -40,12 +40,21 @@ def harden(profile):
     profile.settings().setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanOpenWindows, False)
     # Nor open another app (zoommtg:, vscode:…) by itself: the browser's visible pages ask first (WebPage)
     profile.settings().setUnknownUrlSchemePolicy(QWebEngineSettings.UnknownUrlSchemePolicy.DisallowUnknownUrlSchemes)
+    if not profile.scripts().find("eclipse-painted"):
+        painted = QWebEngineScript()  # (each page says when it's about to draw its first frame)
+        painted.setName("eclipse-painted")
+        painted.setSourceCode(f"requestAnimationFrame(() => console.debug({PAINTED_CALL!r}));")
+        painted.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+        painted.setWorldId(QWebEngineScript.ScriptWorldId.ApplicationWorld)
+        painted.setRunsOnSubFrames(False)
+        profile.scripts().insert(painted)
 
 
 # Content scripts and userscripts call the extension runtime with console messages starting with
 # this (see ext/host.py); an invisible character, so it can't collide with a site's own logging
 EXTENSION_CALL = "\u2063pbx:"
-PASSWORD_CALL = "\u2063pbp:"  # (the password script's messages: they can hold a password, so never logged)
+PASSWORD_CALL = "\u2063pbp:"
+PAINTED_CALL = "\u2063pb-painted"  # (a page's about to draw its first frame: see MainWindow._dark_until_painted)  # (the password script's messages: they can hold a password, so never logged)
 ADDRESS_CALL = "\u2063pba:"  # (the address script's: never logged either, they're about you)
 
 
@@ -62,6 +71,8 @@ class WebPage(QWebEnginePage):
     password_messages = None
     # Set by addresses.py: receives ADDRESS_CALL messages (never shown in the console)
     address_messages = None
+    # Set by the window: called when the page is about to draw its first frame (PAINTED_CALL)
+    first_paint = None
     # Set by the window: url -> darken this page? (dark_pages.py), decided as each page starts loading
     dark_rule = None
     # Set by the window, for every page: (page, url, main_frame, redirect) when a page tries to open
@@ -88,6 +99,10 @@ class WebPage(QWebEnginePage):
         return super().acceptNavigationRequest(url, nav_type, is_main_frame)
 
     def javaScriptConsoleMessage(self, level, message, line, source):
+        if message == PAINTED_CALL:
+            if self.first_paint is not None:
+                self.first_paint()
+            return
         if message.startswith(PASSWORD_CALL):
             if self.password_messages is not None:
                 try:

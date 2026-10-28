@@ -71,6 +71,7 @@ MAC = sys.platform == "darwin"
 # Qt maps "Ctrl" to ⌘ on macOS; the physical Control key is "Meta" there
 CONTROL = "Meta" if MAC else "Ctrl"
 RECENT_PAGES = 12  # (at the bottom of the History menu)
+DARK_PAGE_BLANK = "#1b1b1e"  # (theme.py's page-area colour on a dark Space)
 KEEP_RUNNING = "keep_running"  # (closing the window leaves Eclipse open, on a Mac)
 AUTOPLAY_SETTING = "media_waits_for_click"  # (Settings → Privacy: videos don't play until you click)
 SIDEBAR_WIDTH = 250  # default; drag the sidebar's edge to change it
@@ -493,7 +494,29 @@ class MainWindow(QMainWindow):
         view.printRequestedByFrame.connect(lambda _frame, v=view: self.print_page(v))
         view.context_menu_hook = self._extend_context_menu
         self._count_loading(view)
+        self._dark_until_painted(view)
         return view
+
+    def _dark_until_painted(self, view):
+        """A new page is blank until its first frame (half a second or more: longer for a big site), and Qt
+        paints that blank white: on a dark Space, a white flash each time a Space's tab (or a sleeping one) opens.
+        So until it's about to draw its first frame, the blank is the page area's own dark colour; from then it's
+        the web's white again (the colour of pages that leave their background to the browser)."""
+        if not self.theme.dark:
+            return
+        page = view.page()
+        page.setBackgroundColor(QColor(DARK_PAGE_BLANK))
+
+        def white():
+            page.first_paint = None
+            if not sip.isdeleted(page):
+                page.setBackgroundColor(QColor(Qt.GlobalColor.white))
+        page.first_paint = white
+
+        def loaded(_ok):  # (a page in the background doesn't draw: white once it's loaded, whatever)
+            view.loadFinished.disconnect(loaded)
+            QTimer.singleShot(600, lambda: page.first_paint is not None and white())
+        view.loadFinished.connect(loaded)
 
     @staticmethod
     def _count_loading(view):
