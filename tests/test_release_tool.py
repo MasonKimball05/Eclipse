@@ -45,3 +45,25 @@ def test_the_release_installs_as_eclipse_never_over_eclipse_dev():
     assert build_app.APP == Path("/Applications/Eclipse Dev.app") and release.APP != build_app.APP
     plist = release.build_app.info_plist()
     assert plist["CFBundleIdentifier"] == "com.masonkimball.eclipse" and plist["CFBundleName"] == "Eclipse"
+
+
+def test_a_failing_command_says_why():
+    import pytest
+    release = _release()
+    with pytest.raises(SystemExit) as stopped:
+        release.run(sys.executable, "-c", "import sys; sys.stderr.write('HTTP 502: upload cut off'); sys.exit(1)")
+    assert "upload cut off" in str(stopped.value)
+
+
+def test_publishing_finishes_a_draft_an_earlier_try_left(monkeypatch, tmp_path):
+    release = _release()
+    calls = []
+    monkeypatch.setattr(release, "run", lambda *args, **_: calls.append(args[:3]) or "")
+    monkeypatch.setattr(release, "git", lambda *args: "abc123" if args[0] == "rev-parse" else "")
+    monkeypatch.setattr(release, "draft_of", lambda tag: True)
+    release.publish(tmp_path / "Eclipse.zip", "202610281556", "2026.10.28", tmp_path / "missing.dmg")
+    assert calls == [("gh", "release", "upload"), ("gh", "release", "edit")]
+    calls.clear()
+    monkeypatch.setattr(release, "draft_of", lambda tag: False)
+    release.publish(tmp_path / "Eclipse.zip", "202610281556", "2026.10.28")
+    assert calls == [("gh", "release", "create")]

@@ -112,7 +112,14 @@ HELPER_ENTITLEMENTS = {"com.apple.security.cs.allow-jit": True,
 
 
 def run(*args, **kwargs):
-    return subprocess.run([str(a) for a in args], check=True, capture_output=True, text=True, **kwargs).stdout
+    """A command's output; if it fails, stop with what it said (gh's reason, codesign's complaint), not just its
+    exit status."""
+    try:
+        return subprocess.run([str(a) for a in args], check=True, capture_output=True, text=True, **kwargs).stdout
+    except subprocess.CalledProcessError as error:
+        said = (error.stderr or error.stdout or "").strip()
+        raise SystemExit(f"{Path(str(args[0])).name} {' '.join(str(a) for a in args[1:3])} failed"
+                         + (f":\n{said[-3000:]}" if said else f" (exit status {error.returncode})")) from error
 
 
 # --- Copying it in ----------------------------------------------------------------------------------------
@@ -479,12 +486,26 @@ def release_notes() -> str:
     return log or "- Small fixes"
 
 
+def draft_of(tag: str) -> bool:
+    """Whether GitHub has an unpublished draft of this release (gh makes one first, then uploads into it)."""
+    found = subprocess.run(["gh", "release", "view", tag, "--json", "isDraft", "--jq", ".isDraft"],
+                           capture_output=True, text=True)
+    return found.returncode == 0 and found.stdout.strip() == "true"
+
+
 def publish(archive: Path, build: str, version: str, dmg: Path | None = None):
     """The release on GitHub: the zip (what updates download) and the DMG (what people download)."""
     tag = f"release-{build}"
+    files = [archive, *([dmg] if dmg and dmg.exists() else [])]
     print(f"Publishing {tag} on GitHub…")
-    run("gh", "release", "create", tag, archive, *([dmg] if dmg and dmg.exists() else []),
-        "--target", git("rev-parse", "HEAD"), "--title", f"{NAME} {version}", "--notes", release_notes())
+    if draft_of(tag):  # (an earlier try stopped partway, its upload cut off: that draft's finished, not doubled)
+        print("Finishing the draft an earlier try left (uploading again)…")
+        run("gh", "release", "upload", tag, *files, "--clobber")
+        run("gh", "release", "edit", tag, "--draft=false", "--latest", "--tag", tag,
+            "--target", git("rev-parse", "HEAD"), "--title", f"{NAME} {version}", "--notes", release_notes())
+    else:
+        run("gh", "release", "create", tag, *files,
+            "--target", git("rev-parse", "HEAD"), "--title", f"{NAME} {version}", "--notes", release_notes())
     print(f"Published: every release copy of {NAME} will offer it within a day")
 
 
