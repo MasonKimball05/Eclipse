@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import pytest
 
@@ -32,7 +33,7 @@ def test_project_files_skip_dependencies(tmp_path):
     (tmp_path / ".git").mkdir()
     (tmp_path / ".git" / "HEAD").write_text("x")
     (tmp_path / "index.html.swp").write_text("x")
-    assert [os.path.relpath(p, tmp_path) for p in project_files(str(tmp_path))] == ["src/app.js"]
+    assert [Path(os.path.relpath(p, tmp_path)).as_posix() for p in project_files(str(tmp_path))] == ["src/app.js"]
 
 
 # --- Translate ----------------------------------------------------------------------------------

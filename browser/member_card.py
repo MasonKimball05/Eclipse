@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import (QHBoxLayout, QLabel, QLineEdit, QPushButton, QSizeP
 
 from . import brand, storage
 from .features import Feature
+from .timefmt import portable
 
 SETTING = "member_card"   # your Eclipse card
 ARC_SETTING = "arc_card"  # your Arc card, kept
@@ -331,7 +332,7 @@ def paint_card(p: QPainter, rect: QRectF, card: dict, today: date | None = None)
     label = ("ARC" if card.get("origin") == "arc" else  # (a card from Arc says so, as it did there)
              "MAKER" if card.get("maker") else "SINCE")
     try:
-        when = date.fromisoformat(card.get("since", "")).strftime("%b %-d, %Y")
+        when = date.fromisoformat(card.get("since", "")).strftime(portable("%b %-d, %Y"))
     except (TypeError, ValueError):
         when = ""
     p.setFont(_font("", 10, QFont.Weight.Bold, 0.3))
@@ -517,7 +518,7 @@ def build_page(self):
             button.setChecked(button.value == card.get("shape"))
         try:
             from datetime import date
-            when = date.fromisoformat(card.get("since", "")).strftime("%B %-d, %Y")
+            when = date.fromisoformat(card.get("since", "")).strftime(portable("%B %-d, %Y"))
         except ValueError:
             when = ""
         since.setText(f"Since {when}" if when else "")
@@ -579,7 +580,7 @@ def build_page(self):
         self.store.schedule_save()
         try:
             from datetime import date
-            joined = date.fromisoformat(arc.get("since", "")).strftime("%B %-d, %Y")
+            joined = date.fromisoformat(arc.get("since", "")).strftime(portable("%B %-d, %Y"))
         except ValueError:
             joined = "—"
         kept = [self._row("Kept as it was", f"Your card from Arc: {arc.get('name', '')}, {arc['title'].title()}. "

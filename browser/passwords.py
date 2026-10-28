@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import QPushButton
 from . import macos, net, password_store, passkey_store, recovery
 from .passkeys import PageCard, _Answer, _escape, _gone
 from .webview import PASSWORD_CALL
+from .timefmt import portable
 
 SCRIPT_NAME = "eclipse-passwords"
 FILL_SETTING, SAVE_SETTING, NEVER_SETTING, UNLOCK_SETTING = ("fill_passwords", "save_passwords",
@@ -988,7 +989,7 @@ def settings_page(settings):
         for passkey in passkeys:
             remove_button = QPushButton("Remove")
             remove_button.clicked.connect(lambda _=False, p=passkey: remove_passkey(p))
-            when = time.strftime("%b %-d, %Y", time.localtime(passkey.get("created") or 0))
+            when = time.strftime(portable("%b %-d, %Y"), time.localtime(passkey.get("created") or 0))
             note = ("" if passkey_store.has_key(passkey) else " · needs your recovery PIN" if recovery.is_set()
                     else " · not on this Mac (no recovery PIN was set)")
             listed.append(settings._row(f"Passkey · {passkey['rp_id']}",

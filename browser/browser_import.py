@@ -15,6 +15,7 @@ import plistlib
 import shutil
 import sqlite3
 import tempfile
+from contextlib import closing
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
@@ -171,7 +172,7 @@ def safari_history(path: Path | None = None) -> list[dict]:
         for extra in ("-wal", "-shm"):  # (Safari writes ahead: the newest visits are in these)
             if Path(f"{db}{extra}").exists():
                 shutil.copy2(f"{db}{extra}", f"{copy}{extra}")
-        with sqlite3.connect(copy) as conn:
+        with closing(sqlite3.connect(copy)) as conn:  # (closed: Windows can't delete an open copy)
             rows = conn.execute(
                 "SELECT i.url, v.title, MAX(v.visit_time), i.visit_count FROM history_items i "
                 "JOIN history_visits v ON v.history_item = i.id GROUP BY i.id ORDER BY MAX(v.visit_time) DESC "

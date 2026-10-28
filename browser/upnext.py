@@ -15,6 +15,7 @@ from PyQt6.QtCore import QObject, QSize, Qt, QTimer, QUrl
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from .features import Feature
+from .timefmt import portable
 
 import qtawesome as qta
 
@@ -53,9 +54,9 @@ def next_event(feed: dict, now: datetime.datetime) -> dict | None:
 def when_text(event: dict, now: datetime.datetime) -> str:
     if event["live"]:
         left = int((event["end"] - now).total_seconds() // 60)
-        return f"Now · {left} min left" if left < 60 else f"Now · until {event['end'].strftime('%-I:%M %p')}"
+        return f"Now · {left} min left" if left < 60 else f"Now · until {event['end'].strftime(portable('%-I:%M %p'))}"
     minutes = int((event["start"] - now).total_seconds() // 60)
-    at = event["start"].strftime("%-I:%M %p")
+    at = event["start"].strftime(portable("%-I:%M %p"))
     if minutes < 1:
         return f"{at} · starting now"
     if minutes < 60:

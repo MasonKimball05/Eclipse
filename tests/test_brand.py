@@ -104,6 +104,7 @@ def test_building_the_app_uses_the_icon_picked_in_settings(qapp, data_dir):
     assert a.pixelColor(20, 20) != b.pixelColor(20, 20)  # they really are different pictures
 
 
+@pytest.mark.mac  # (clang and the macOS launcher)
 def test_the_launcher_compiles(tmp_path):
     import shutil
     if shutil.which("clang") is None:
@@ -113,6 +114,7 @@ def test_the_launcher_compiles(tmp_path):
     assert (tmp_path / "Eclipse").stat().st_size > 0
 
 
+@pytest.mark.mac  # (clang and the macOS launcher)
 def test_the_launcher_compiles_from_a_folder_with_quotes_and_backslashes(tmp_path, monkeypatch):
     import shutil
     if shutil.which("clang") is None:

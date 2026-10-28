@@ -14,6 +14,7 @@ import shutil
 import sqlite3
 import tempfile
 import time
+from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -159,7 +160,8 @@ def _query(db: Path, tmp: Path, sql: str, params=()) -> list:
         return []
     copy = tmp / db.name
     shutil.copy2(db, copy)
-    with sqlite3.connect(f"file:{copy}?mode=ro", uri=True) as conn:
+    # (closed after: `with sqlite3.connect()` only ends a transaction, and Windows can't delete an open copy)
+    with closing(sqlite3.connect(f"file:{copy}?mode=ro", uri=True)) as conn:
         return conn.execute(sql, params).fetchall()
 
 

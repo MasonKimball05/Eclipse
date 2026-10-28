@@ -25,6 +25,7 @@ import subprocess
 import tempfile
 import time
 import urllib.parse
+from contextlib import closing
 from pathlib import Path
 
 from PyQt6.QtCore import QUrl
@@ -466,7 +467,7 @@ def read_browser(name: str, secret: bytes, folder: Path | None = None) -> list[d
                     continue
                 copy = Path(scratch) / f"{profile.name}-{name}"
                 shutil.copy2(profile / name, copy)
-                with sqlite3.connect(copy) as db:
+                with closing(sqlite3.connect(copy)) as db:  # (closed: Windows can't delete an open copy)
                     found = db.execute("SELECT origin_url, username_value, password_value FROM logins "
                                        "WHERE blacklisted_by_user = 0").fetchall()
                 for url, username, value in found:

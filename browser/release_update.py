@@ -63,7 +63,7 @@ def notes(body: str, limit=8) -> list[str]:
 
 def inspect(bundle: Path, fetch=_fetch_json) -> dict:
     """Like self_update.inspect, for a release: {"state": …, "build": n, "url": …, "subjects": […], …}."""
-    if TRANSLOCATED in str(bundle):
+    if TRANSLOCATED in bundle.as_posix():
         return {"state": "unavailable", "reason": f"Move {brand.NAME} to the Applications folder to get updates."}
     try:
         release = fetch(LATEST)

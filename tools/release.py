@@ -411,7 +411,7 @@ def differences(built: Path, source: Path) -> list[str]:
     or are only in one. (Compiled .pyc files left out: the app has its own.)"""
     def code(root):
         files = [root / "main.py", *(p for p in (root / "browser").rglob("*") if p.is_file())]
-        return {str(p.relative_to(root)): p for p in files
+        return {p.relative_to(root).as_posix(): p for p in files
                 if p.exists() and p.suffix != ".pyc" and "__pycache__" not in p.parts and p.name != ".DS_Store"}
     ours, theirs = code(built), code(source)
     return sorted(name for name in ours.keys() | theirs.keys()

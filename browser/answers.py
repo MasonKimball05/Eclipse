@@ -14,6 +14,7 @@ import operator
 import re
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo, available_timezones
+from .timefmt import portable
 
 
 @dataclass
@@ -246,7 +247,7 @@ def world_time(text: str, now: datetime.datetime | None = None) -> Answer | None
                                               f"{'ahead' if offset > 0 else 'behind'}"
     place = m.group(1).strip()
     place = place.upper() if len(place) <= 3 or isinstance(zone, datetime.timezone) else place.title()
-    return Answer(now.strftime("%-I:%M %p · %a %b %-d"), f"Time in {place} ({diff})", "time")
+    return Answer(now.strftime(portable("%-I:%M %p · %a %b %-d")), f"Time in {place} ({diff})", "time")
 
 
 # --- Colours ---------------------------------------------------------------------------------------

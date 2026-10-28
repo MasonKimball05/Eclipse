@@ -26,7 +26,7 @@ def test_excerpt_reads_pdfs_and_text(tmp_path):
     painter = QPainter(writer)
     painter.drawText(200, 400, "Invoice 1042 from Acme Corporation")
     painter.end()
-    assert "Acme Corporation" in excerpt(pdf)
+    assert "acme corporation" in excerpt(pdf).lower()  # (offscreen on Windows, the stand-in font reads back in capitals)
     notes = tmp_path / "x.txt"
     notes.write_text("Meeting notes for the launch")
     assert excerpt(notes).startswith("Meeting notes")

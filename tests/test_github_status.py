@@ -151,6 +151,7 @@ def test_repo_list_through_a_real_process(qapp, tmp_path, monkeypatch, data_dir)
     assert again.repos == repos.repos
 
 
+@pytest.mark.mac  # (a /bin/sh stand-in for gh)
 def test_live_folders_run_gh_for_real(qapp, tmp_path, monkeypatch):
     import json
     import browser.live_folders as lf

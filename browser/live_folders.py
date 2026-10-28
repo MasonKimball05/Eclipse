@@ -35,6 +35,7 @@ from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineScript
 from . import keychain, macos
 from .downloads import find_tool
 from .models import TODAY, Folder, Tab, walk_folders, walk_tabs
+from .timefmt import portable
 
 REFRESH_MS = 30 * 60 * 1000
 GH_TIMEOUT_MS = 30_000  # gh stuck on the network that long is given up on
@@ -781,7 +782,8 @@ def upcoming_events(text: str, base_url: str = "", now=None, days=60) -> list[tu
         if start is None or not (now - datetime.timedelta(hours=12) <= start <= now + datetime.timedelta(days=days)):
             continue
         summary = event.get("SUMMARY", "Event").replace("\\,", ",").replace("\\;", ";").replace("\\n", " ")
-        when = start.strftime("%b %-d") + ("" if (start.hour, start.minute) == (0, 0) else start.strftime(" %-I:%M %p"))
+        when = start.strftime(portable("%b %-d")) + ("" if (start.hour, start.minute) == (0, 0) else
+                                                start.strftime(portable(" %-I:%M %p")))
         link = event.get("URL", "").strip()
         if not link.lower().startswith(("http://", "https://")):
             uid = QUrl.toPercentEncoding(event.get("UID", summary + when)).data().decode()

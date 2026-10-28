@@ -62,6 +62,7 @@ from .space_editor import SpaceEditor
 from .theme import PALETTE, PlainMenu, ThemedBackground, dot_icon, stylesheet, theme_for_space
 from .theme_editor import ThemeEditor
 from .webview import DEFAULT_PROFILE, WebPage, WebView, build_profile
+from .timefmt import portable
 
 MAC = sys.platform == "darwin"
 # Qt maps "Ctrl" to ⌘ on macOS; the physical Control key is "Meta" there
@@ -2092,7 +2093,7 @@ class MainWindow(QMainWindow):
         except ValueError as error:
             QMessageBox.warning(self, "Can't Restore", str(error))
             return
-        made = time.strftime("%-d %B %Y at %-I:%M %p", time.localtime(info["created"]))
+        made = time.strftime(portable("%-d %B %Y at %-I:%M %p"), time.localtime(info["created"]))
         answer = QMessageBox.question(
             self, "Restore from Backup",
             f"Replace your Spaces, tabs, settings, notes and extensions with this backup from {made}?\n\n"

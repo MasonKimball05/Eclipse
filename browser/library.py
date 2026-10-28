@@ -16,6 +16,7 @@ from . import clean_links, storage
 from .motion import FadesIn
 from .models import display_host
 from .theme import letter_icon, quiet_scrollbars, stylesheet
+from .timefmt import portable
 
 SECTIONS = [
     ("history", "ph.clock-counter-clockwise", "History"),
@@ -29,13 +30,13 @@ ENTRY, HEADER = Qt.ItemDataRole.UserRole, Qt.ItemDataRole.UserRole + 1
 
 def when(ts: float) -> str:
     moment = datetime.fromtimestamp(ts)
-    clock = moment.strftime("%-I:%M %p")
+    clock = moment.strftime(portable("%-I:%M %p"))
     today = datetime.now().date()
     if moment.date() == today:
         return clock
     if moment.date() == today - timedelta(days=1):
         return "Yesterday " + clock
-    return moment.strftime("%b %-d, %Y" if moment.year != today.year else "%b %-d")
+    return moment.strftime(portable("%b %-d, %Y" if moment.year != today.year else "%b %-d"))
 
 
 def day_label(ts: float) -> str:
@@ -47,7 +48,7 @@ def day_label(ts: float) -> str:
         return "Yesterday"
     if (today - day).days < 7:
         return day.strftime("%A")
-    return day.strftime("%A, %B %-d" + (", %Y" if day.year != today.year else ""))
+    return day.strftime(portable("%A, %B %-d" + (", %Y" if day.year != today.year else "")))
 
 
 class EntryDelegate(QStyledItemDelegate):
