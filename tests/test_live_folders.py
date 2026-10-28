@@ -2,6 +2,7 @@ import pytest
 
 from browser.models import Folder, Tab, node_from_dict, walk_tabs
 from browser.live_folders import apply_items, find_feed_link, mark_seen, parse_feed
+from browser.timefmt import portable
 
 
 RSS = b"""<?xml version="1.0"?><rss version="2.0"><channel><title>Example Blog</title>
@@ -240,8 +241,8 @@ END:VCALENDAR"""
     assert len(items) == 1 and "Standup" in items[0][0]  # (the daily one ran out long ago)
     # Next: Wednesday Oct 28, 9:00 New York time, shown in this Mac's time
     expected = datetime.datetime(2026, 10, 28, 9, 0, tzinfo=ZoneInfo("America/New_York")).astimezone()
-    assert items[0][0].startswith(expected.strftime("%b %-d"))
-    assert expected.strftime("%-I:%M %p") in items[0][0]
+    assert items[0][0].startswith(expected.strftime(portable("%b %-d")))
+    assert expected.strftime(portable("%-I:%M %p")) in items[0][0]
 
 
 def test_notifications_that_cant_be_read_are_kept():
