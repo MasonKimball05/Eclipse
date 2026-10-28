@@ -4,3 +4,5 @@ PyQt6-WebEngine>=6.9
 qtawesome>=1.4
 # Passkeys Eclipse keeps (P-256 signing) and their recovery copy (AES-GCM)
 cryptography>=44
+# Time zones (world clocks, calendars): macOS has the database built in, Windows needs it from PyPI
+tzdata; sys_platform == "win32"

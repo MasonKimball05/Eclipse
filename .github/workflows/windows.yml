@@ -26,4 +26,8 @@ jobs:
       - name: Eclipse starts and loads a page
         run: python tools/smoke.py
       - name: Unit tests
-        run: python -m pytest tests -q -rs
+        run: python -X faulthandler -m pytest tests -q -rs --ignore=tests/test_spelling.py
+      # (on its own, with crash tracing: Qt's networking crashed here once, taking the whole run down with it)
+      - name: Spell-check dictionary download
+        if: always()
+        run: python -X faulthandler -m pytest tests/test_spelling.py -v -rs
