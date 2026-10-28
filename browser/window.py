@@ -28,7 +28,7 @@ from . import (backup, brand, clean_links, dark_pages, macos, motion, screenshot
 from .adblock import AdBlocker
 from .command_bar import CUSTOM_SETTING, CommandBar, use_custom_sites
 from .content import ContentFrame
-from .downloads import (BrowserDownload, DownloadSettings, DownloadsWindow, reveal_in_finder,
+from .downloads import (BrowserDownload, DownloadSettings, DownloadsWindow, mark_downloaded, reveal_in_finder,
                         risky as downloads_risky, ytdlp_settings)
 from .library import LibraryWindow
 from .air_traffic import route
@@ -932,7 +932,7 @@ class MainWindow(QMainWindow):
         # send where it came from to Claude)
         private = getattr(item, "private", False)
         if download.state() == download.DownloadState.DownloadCompleted:
-            macos.quarantine(item.path)  # (from the internet: Gatekeeper checks it before it opens; Qt doesn't mark it)
+            mark_downloaded(item.path)  # (from the internet: checked before it opens; Qt doesn't mark it)
         if download.state() == download.DownloadState.DownloadCompleted:
             self.emit("download_done", item, download)  # (Claude's readable names, say)
 

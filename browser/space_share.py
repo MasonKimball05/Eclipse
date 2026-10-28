@@ -127,7 +127,7 @@ def read(path: Path) -> dict:
         if path.stat().st_size > MAX_BYTES:
             raise ValueError("That file is too big to be a shared Space.")
         return parse(json.loads(path.read_text(encoding="utf-8")))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:  # (nested too deep to read)
         raise ValueError("That isn't a shared Space.") from error
 
 
