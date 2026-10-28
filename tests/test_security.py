@@ -187,6 +187,7 @@ def test_more_files_that_can_run_something_ask_first(monkeypatch):
     for name in ("Tool.app.tar", "x.command.tbz2", "Installer.xip", "a.app.cpgz", "Pretty.saver",
                  "invoice.scr", "update.vbs", "run.hta", "setup.msix", "Tool.com", "fix.reg", "Open.url"):
         assert downloads.risky(name), name
+    monkeypatch.setattr(downloads.sys, "platform", "darwin")  # (on a Mac, a .js just opens as text)
     for name in ("photos.tar", "data.json", "page.html", "notes.txt", "app.js"):
         assert not downloads.risky(name), name
     monkeypatch.setattr(downloads.sys, "platform", "win32")  # (Windows runs a .js itself, double-clicked)
@@ -202,10 +203,14 @@ def test_downloads_are_marked_as_from_the_internet_on_windows(tmp_path, monkeypa
     assert "ZoneId=3" in (tmp_path / "setup.exe:Zone.Identifier").read_text()  # (on NTFS, the file's own stream)
 
 
-def test_a_shared_space_nested_too_deep_is_just_not_one(tmp_path):
-    import pytest
+def test_a_shared_space_nested_too_deep_is_refused_or_empty(tmp_path):
     from browser import space_share
     deep = tmp_path / "Deep.eclipse-space"
     deep.write_text('{"format": "eclipse-space", "pinned": ' + "[" * 100_000 + "]" * 100_000 + "}")
-    with pytest.raises(ValueError):
-        space_share.read(deep)
+    # Older Pythons can't read nesting this deep (RecursionError, which read() turns into "not a shared Space");
+    # 3.14's reader can, and parse() keeps none of it. Either way it's refused or empty, never a crash.
+    try:
+        space = space_share.read(deep)
+    except ValueError:
+        return
+    assert space["pinned"] == []
