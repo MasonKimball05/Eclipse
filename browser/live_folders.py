@@ -690,37 +690,51 @@ def _ics_lines(text: str) -> list[str]:
     return lines
 
 
-def _ics_date(value: str, tzid: str = ""):
-    """An .ics date or time as a naive local time: in UTC ("Z") or in its TZID's zone, converted."""
+def _ics_moment(value: str, tzid: str = ""):
+    """An .ics date or time as (the clock time it says, its zone): the zone UTC ("Z"), its TZID's, or None (a date,
+    or a "floating" time: this Mac's). (None, None) when it isn't one."""
     value = value.strip()
     try:
         if len(value) == 8:
-            return datetime.datetime.strptime(value, "%Y%m%d")
+            return datetime.datetime.strptime(value, "%Y%m%d"), None
         moment = datetime.datetime.strptime(value[:15], "%Y%m%dT%H%M%S")
-        zone = None
-        if value.endswith("Z"):
-            zone = datetime.timezone.utc
-        elif tzid:
-            try:
-                zone = ZoneInfo(tzid.strip('"'))
-            except (ValueError, KeyError, ZoneInfoNotFoundError):
-                zone = None  # (a Windows zone name, say: taken as local time)
-        if zone is not None:
-            moment = moment.replace(tzinfo=zone).astimezone().replace(tzinfo=None)
-        return moment
     except ValueError:
-        return None
+        return None, None
+    if value.endswith("Z"):
+        return moment, datetime.timezone.utc
+    if tzid:
+        try:
+            return moment, ZoneInfo(tzid.strip('"'))
+        except (ValueError, KeyError, ZoneInfoNotFoundError):
+            pass  # (a Windows zone name, say: taken as local time)
+    return moment, None
+
+
+def _in_local_time(moment, zone):
+    """A clock time in `zone` as this Mac's (naive) local time."""
+    return moment if zone is None else moment.replace(tzinfo=zone).astimezone().replace(tzinfo=None)
+
+
+def _ics_date(value: str, tzid: str = ""):
+    """An .ics date or time as a naive local time: in UTC ("Z") or in its TZID's zone, converted."""
+    moment, zone = _ics_moment(value, tzid)
+    return None if moment is None else _in_local_time(moment, zone)
 
 
 _WEEKDAYS = {"MO": 0, "TU": 1, "WE": 2, "TH": 3, "FR": 4, "SA": 5, "SU": 6}
 
 
-def next_occurrence(start, rule: str, after):
+def next_occurrence(start, rule: str, after, zone=None):
     """The first time a repeating event (a simple daily or weekly RRULE) happens at or after `after`,
-    or None once it's over. Anything fancier (monthly by weekday…) is taken from its first date."""
+    or None once it's over. Anything fancier (monthly by weekday…) is taken from its first date.
+
+    `start` and `after` are clock times in the event's own `zone` (None: local), and so is the answer: a 9:00
+    meeting in New York stays at 9:00 there through daylight saving, however that falls where you are."""
     parts = dict(p.split("=", 1) for p in rule.upper().split(";") if "=" in p)
     freq, interval = parts.get("FREQ"), max(int(parts.get("INTERVAL", "1") or 1), 1)
     until = _ics_date(parts["UNTIL"]) if "UNTIL" in parts else None
+    if until is not None and zone is not None:
+        until = until.astimezone(zone).replace(tzinfo=None)  # (local, as the event's clock has it)
     count = int(parts["COUNT"]) if parts.get("COUNT", "").isdigit() else None
     if freq not in ("DAILY", "WEEKLY") or start >= after:
         return start if start >= after else None
@@ -776,9 +790,14 @@ def upcoming_events(text: str, base_url: str = "", now=None, days=60) -> list[tu
                 current[name.upper() + ";TZID"] = tzid.group(1)
     items = []
     for event in events:
-        start = _ics_date(event.get("DTSTART", ""), event.get("DTSTART;TZID", ""))
+        start, zone = _ics_moment(event.get("DTSTART", ""), event.get("DTSTART;TZID", ""))
         if start is not None and event.get("RRULE"):  # (a weekly meeting that began months ago is still on)
-            start = next_occurrence(start, event["RRULE"], now - datetime.timedelta(hours=12))
+            # Repeated by its own clock (daylight saving where it is, not where you are), then made local
+            after = now - datetime.timedelta(hours=12)
+            if zone is not None:
+                after = after.astimezone(zone).replace(tzinfo=None)
+            start = next_occurrence(start, event["RRULE"], after, zone)
+        start = None if start is None else _in_local_time(start, zone)
         if start is None or not (now - datetime.timedelta(hours=12) <= start <= now + datetime.timedelta(days=days)):
             continue
         summary = event.get("SUMMARY", "Event").replace("\\,", ",").replace("\\;", ";").replace("\\n", " ")
