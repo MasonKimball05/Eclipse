@@ -14,6 +14,9 @@ SETTING = "whats_new_seen"
 NOTES = """
 ## Lately
 
+- **Watch a page for changes**: right-click a tab → *Watch for Changes…*, or select part of a page, right-click
+  and choose *Watch This*. Eclipse checks it in the background and tells you when it really changes ("Price
+  dropped to $249"), not when it only says it's later. Settings → Watched Pages pauses them or changes how often.
 - **Ask about pages you've read**: in ⌘T, ask a question and choose *Ask Claude About Pages You've Read*.
   The answer comes from pages you've visited, with each point linked to its page. Page search results say when
   you read them, and banks, health records and mail are never kept (Settings → Privacy → Excluded Sites…).
