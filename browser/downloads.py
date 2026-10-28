@@ -56,18 +56,39 @@ DEFAULT_SETTINGS = {
 # a page's download of one asks first
 RISKY = {".app", ".command", ".tool", ".terminal", ".pkg", ".mpkg", ".webloc", ".inetloc", ".fileloc",
          ".scpt", ".scptd", ".applescript", ".workflow", ".jar", ".sh", ".zsh", ".bash",
-         ".prefpane", ".mobileconfig", ".exe", ".msi", ".bat", ".cmd", ".ps1", ".lnk"}
+         ".prefpane", ".mobileconfig", ".exe", ".msi", ".bat", ".cmd", ".ps1", ".lnk",
+         ".saver", ".xip",  # (a screen saver is a plug-in that runs; a .xip unpacks itself, usually into an app)
+         # What Windows runs (or installs, or opens a page of commands for) when it's double-clicked
+         ".scr", ".com", ".pif", ".cpl", ".vbs", ".vbe", ".hta", ".reg", ".msix", ".msixbundle", ".appx",
+         ".appxbundle", ".appinstaller", ".application", ".appref-ms", ".url", ".scf", ".settingcontent-ms"}
+# A script Windows itself runs when it's opened, and a Mac only shows
+WINDOWS_RISKY = {".js", ".jse", ".wsf", ".wsh"}
+# Archives that unpack when opened ("Tool.app.zip" is an app): what's inside them is what counts
+ARCHIVES = {".zip", ".gz", ".tgz", ".tbz", ".tbz2", ".txz", ".bz2", ".xz", ".7z", ".rar", ".cpgz", ".cpio", ".tar"}
 
 
 def risky(name: str) -> bool:
     """Whether a downloaded file of this name could run something when opened (".app.zip" counts: opening the
     zip unpacks the app)."""
     parts = [f".{p.lower()}" for p in name.split(".")[1:]]
-    if parts and parts[-1] in (".zip", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar"):
-        parts = parts[:-1] + ([".tar"] if parts[-1] == ".tgz" else [])
-        if parts and parts[-1] == ".tar":
-            parts = parts[:-1]
-    return bool(parts) and parts[-1] in RISKY
+    while len(parts) > 1 and parts[-1] in ARCHIVES:  # ("x.app.tar.gz": the .tar, then the app)
+        parts = parts[:-1]
+    found = RISKY | (WINDOWS_RISKY if sys.platform == "win32" else set())
+    return bool(parts) and parts[-1] in found
+
+
+def mark_downloaded(path: str) -> bool:
+    """Mark a finished download as from the internet, the way Safari, Chrome and Edge do, so opening it goes through
+    the system's check first: Gatekeeper's on a Mac, SmartScreen's (and Office's Protected View) on Windows, which
+    looks for the file's Zone.Identifier stream. Qt WebEngine does neither, and nor does yt-dlp."""
+    if sys.platform != "win32":
+        return macos.quarantine(path)
+    try:
+        with open(f"{path}:Zone.Identifier", "w", encoding="ascii") as stream:  # (ZoneId 3: the internet)
+            stream.write("[ZoneTransfer]\r\nZoneId=3\r\n")
+        return True
+    except OSError:  # (a drive that isn't NTFS keeps no streams: nothing to mark it with)
+        return False
 
 
 def ytdlp_settings(store) -> dict:
@@ -290,7 +311,7 @@ class YtDlpDownload(DownloadItem):
             line = raw.decode(errors="replace").strip()
             if line.startswith(FILE_MARKER):
                 self.path = line[len(FILE_MARKER):]
-                macos.quarantine(self.path)  # (from the internet: Gatekeeper checks it before it opens)
+                mark_downloaded(self.path)  # (from the internet: Gatekeeper or SmartScreen checks it before it opens)
                 self.files_done += 1
                 self.status = self._prefix() + "Starting next…" if self.playlist_count else "Finishing…"
                 self.fraction = None

@@ -1,12 +1,14 @@
 # The New Live Folder dialog: what a folder follows, from a feed or GitHub to your own apps'
 # APIs and pages.
 
+from PyQt6.QtCore import QUrl
 from PyQt6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QInputDialog, QLabel, QLineEdit,
-                             QRadioButton, QStackedWidget, QVBoxLayout, QWidget)
+                             QMessageBox, QRadioButton, QStackedWidget, QVBoxLayout, QWidget)
 
 from . import keychain
 from .features import Feature
-from .live_folders import GITHUB, LiveFolders, feed_name, github_repo, mark_seen, token_account
+from .live_folders import (DEFAULT_ROOT, GITHUB, LiveFolders, allow_here, allowed_here, feed_name, github_repo,
+                           mark_seen, token_account)
 from .models import walk_tabs
 from .theme import FittedLabel, stylesheet
 
@@ -242,6 +244,7 @@ class LiveFoldersFeature(Feature):
         window = self.window
         folder = window.store.add_folder(window.store.active_space, name)
         folder.live = live
+        allow_here(folder)  # (set up here: it may run git in its folder, or send its token to its site)
         if token and not self.set_token(folder, token):  # into the Keychain, never the session file
             window.toast("Couldn't keep the token in the Keychain: set it from the folder's menu")
         window.store._changed()
@@ -279,11 +282,13 @@ class LiveFoldersFeature(Feature):
 
     def _ask_token(self, folder):
         window = self.window
-        token, ok = QInputDialog.getText(window, "Set Token", f"Token for “{folder.name}” (kept in the Keychain):",
-                                         QLineEdit.EchoMode.Password)
+        site = QUrl(folder.live.get("url", "")).host() or "its site"
+        token, ok = QInputDialog.getText(window, "Set Token", f"Token for “{folder.name}”, sent to {site} "
+                                         "(kept in the Keychain):", QLineEdit.EchoMode.Password)
         if not ok or not token.strip():
             return
         if self.set_token(folder, token.strip()):
+            allow_here(folder)
             self._refresh(folder)
         else:
             window.toast("Couldn't keep the token in the Keychain")
@@ -340,6 +345,22 @@ class LiveFoldersFeature(Feature):
         window._act(menu, "ph.checks", "Mark All as Seen", lambda: self._mark_seen(folder, folder))
         if folder.live.get("auth") == "token":
             window._act(menu, "ph.key", "Set Token…", lambda: self._ask_token(folder))
+        if not allowed_here(folder):
+            window._act(menu, "ph.check-circle", "Use on This Computer…", lambda: self._use_here(folder))
+
+    def _use_here(self, folder):
+        """A folder set up on another computer (through Sync) that runs git or sends a token: only once you say."""
+        live = folder.live
+        if live.get("kind") == "repos":
+            question = (f"Look for changes in the git repos in {live.get('root') or DEFAULT_ROOT}?\n\nA repo's own "
+                        "settings can make git run programs on this computer, so only say yes to a folder you trust.")
+        else:
+            question = (f"Send this folder's token from the Keychain to {QUrl(live.get('url', '')).host()}?\n\n"
+                        "It was set up, or changed, on another computer.")
+        if QMessageBox.question(self.window, f"Use “{folder.name}” on This Computer", question) == \
+                QMessageBox.StandardButton.Yes:
+            allow_here(folder)
+            self._refresh(folder)
 
 
 FEATURE = LiveFoldersFeature

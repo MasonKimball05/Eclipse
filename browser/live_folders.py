@@ -14,6 +14,12 @@
 #
 # Folders refresh when created, every half hour, and from their right-click menu. Items that
 # appeared since the last look get a dot until opened. Tabs you already have open stay open.
+#
+# Two kinds reach further than the web, so they only do it as set up on this computer: a Repos folder runs git
+# in its folder (and a repo's own settings can make git run any program), and a JSON folder with a token sends
+# it from the Keychain. A folder that arrives through Sync (or changes there) doesn't, until you say so from its
+# menu: another device's file could otherwise point git at a folder someone planted, or send your token to
+# their site. What this computer allowed is kept in live_folders_here.json, outside the synced and backed-up data.
 
 import datetime
 import json
@@ -32,11 +38,13 @@ from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkReques
 
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineScript
 
-from . import keychain, macos
+from . import keychain, macos, storage
 from .downloads import find_tool
 from .models import TODAY, Folder, Tab, walk_folders, walk_tabs
 from .timefmt import portable
 
+DEFAULT_ROOT = "~/projects/GitHub"
+NOT_HERE = "it was set up on another computer: choose “Use on This Computer…” from its menu first"
 MAX_FEED_BYTES = 8_000_000
 REFRESH_MS = 30 * 60 * 1000
 GH_TIMEOUT_MS = 30_000  # gh stuck on the network that long is given up on
@@ -341,6 +349,7 @@ class LiveFolders(QObject):
         self._timer = QTimer(self, interval=REFRESH_MS, timeout=self.refresh_all)
         self._timer.start()
         QTimer.singleShot(5000, self.refresh_all)  # catch up after launch, once the window is up
+        trust_existing(browser.store)
 
     def folders(self) -> list[Folder]:
         out = []
@@ -357,6 +366,9 @@ class LiveFolders(QObject):
             return
         self._busy.add(folder.id)
         done = lambda items, title=None, error=None: self._finish(folder, items, title, error, on_done)
+        if not allowed_here(folder):
+            done([], error=NOT_HERE)
+            return
         kind = folder.live.get("kind")
         if kind == "github":
             self._github(folder.live.get("query", "review"), done, folder)
@@ -548,7 +560,7 @@ class LiveFolders(QObject):
 
     def _repos(self, root, done):
         # git, once per repo: in a thread, then back on the main thread through a queued signal
-        root = os.path.expanduser(root or "~/projects/GitHub")
+        root = os.path.expanduser(root or DEFAULT_ROOT)
         job = _RepoScan(root, self)  # owned by this object until it's done, then deletes itself
         job.scanned.connect(lambda items, error: done(items, None, error) if error else done(items))
         job.start()
@@ -885,6 +897,47 @@ class _RepoScan(QThread):
 
 def token_account(folder) -> str:
     return f"live-folder:{folder.id}"
+
+
+# --- What this computer allowed (see the top) ----------------------------------------------------------------
+
+def reaches(live: dict) -> str | None:
+    """What a Live Folder reaches beyond reading the web: the folder git runs in, or the site its Keychain token
+    goes to (the site, not the page: the same API's other addresses are fine). None for the rest."""
+    if live.get("kind") == "repos":
+        return "repos:" + os.path.abspath(os.path.expanduser(live.get("root") or DEFAULT_ROOT))
+    if live.get("kind") == "json" and live.get("auth") == "token":
+        url = QUrl(live.get("url", ""))
+        return f"token:{url.scheme()}://{url.host().lower()}:{url.port()}"
+    return None
+
+
+def _here_path():
+    return storage.data_dir() / "live_folders_here.json"
+
+
+def _here() -> dict:
+    return (storage.read_json(_here_path()) or {}).get("allowed", {})
+
+
+def allowed_here(folder) -> bool:
+    reach = reaches(folder.live or {})
+    return reach is None or _here().get(folder.id) == reach
+
+
+def allow_here(folder):
+    """You set it up here (or said to use it here): what it reaches now is what it may reach."""
+    reach = reaches(folder.live or {})
+    if reach is not None:
+        storage.write_json(_here_path(), {"allowed": {**_here(), folder.id: reach}})
+
+
+def trust_existing(store):
+    """The first launch with the check: the folders already here were set up before it, so they carry on."""
+    if _here_path().exists():
+        return
+    allowed = {f.id: reaches(f.live) for space in store.spaces for f in walk_folders(space.pinned) if f.live}
+    storage.write_json(_here_path(), {"allowed": {k: v for k, v in allowed.items() if v}})
 
 
 def feed_name(url: str) -> str:
