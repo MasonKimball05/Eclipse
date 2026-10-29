@@ -322,6 +322,28 @@ def test_with_no_tab_open_the_hidden_sidebar_comes_out_and_stays(window, site, m
     assert wait_until(lambda: fs.state == "in" and fs.kept, 2)
 
 
+def test_closing_a_tab_opened_from_the_floating_sidebar_keeps_it_out(window, site, monkeypatch):
+    from browser import floating_sidebar
+    tab = open_page(window, f"{site}/index.html")
+    root = window.centralWidget()
+    pointer = {"at": QPoint(60, 300)}  # (over the sidebar, once it's out)
+    monkeypatch.setattr(floating_sidebar.QCursor, "pos", staticmethod(lambda: root.mapToGlobal(pointer["at"])))
+    monkeypatch.setattr(window, "isActiveWindow", lambda: True)
+    window.toggle_sidebar()
+    window.close_tab(tab)  # nothing open: out it comes
+    fs = window.floating_sidebar
+    assert wait_until(lambda: fs.state == "in" and fs.kept, 2)
+    # A tab picked in it, then closed (its ✕ in the sidebar) while the sidebar's still out under the pointer
+    tab = open_page(window, f"{site}/index.html")
+    assert fs.state == "in" and not fs.kept
+    window.close_tab(tab)
+    assert fs.kept  # (nothing's open again: it stays)
+    pointer["at"] = QPoint(root.width() - 50, 300)  # the pointer goes off over the page
+    pause(floating_sidebar.HIDE_DELAY / 1000 + 0.6)
+    assert fs.state == "in" and window.sidebar.isVisible()  # (it used to slide away, leaving no sidebar at all)
+    window.toggle_sidebar()
+
+
 def test_the_hidden_sidebar_slides_out_stays_and_turns_round(window, site, monkeypatch):
     from browser import floating_sidebar
     open_page(window, f"{site}/index.html")
@@ -988,14 +1010,27 @@ def test_undo_of_closing_several_tabs_puts_them_back_in_their_folders(window, si
 
 
 def _lights_state(window):
-    """(hidden, alpha, x, y from the title bar's bottom) of the window's close button."""
+    """(hidden, how bright, x, y from the title bar's bottom) of the traffic lights: Eclipse's own (drawn over
+    macOS's hidden buttons, which are what's moved, and where they are)."""
     import ctypes
+    from browser import traffic_lights
     from browser.macos import _CGRect, _send
     native = _send(ctypes.c_void_p(int(window.winId())), "window")
     button = _send(native, "standardWindowButton:", 0, argtypes=(ctypes.c_long,))
     frame = _send(button, "frame", restype=_CGRect)
-    return (_send(button, "isHidden", restype=ctypes.c_bool), round(_send(button, "alphaValue", restype=ctypes.c_double), 2),
-            round(frame.x), round(frame.y))
+    overlay = window.traffic_lights.overlay
+    return (not overlay.isVisible(), 1.0 if overlay.lit else traffic_lights.DIM, round(frame.x), round(frame.y))
+
+
+def _lights_on_macos_buttons(window) -> bool:
+    """Whether Eclipse's lights sit exactly over macOS's (hidden) buttons."""
+    from PyQt6.QtCore import QPointF
+    from browser import macos
+    overlay = window.traffic_lights.overlay
+    frames = macos.traffic_light_frames(window)
+    return bool(frames) and all(
+        abs((overlay.mapTo(window, centre.toPoint()) - QPointF(x + w / 2, y + h / 2).toPoint()).manhattanLength()) <= 1
+        for centre, (x, y, w, h) in zip(overlay.centres, frames))
 
 
 def test_the_top_row_never_runs_into_the_traffic_lights(window, site):
@@ -1022,15 +1057,16 @@ def test_traffic_lights_light_up_in_place(window, site, monkeypatch):
     pause(0.3)
     calls, real = [], macos.style_traffic_lights
     monkeypatch.setattr(macos, "style_traffic_lights",
-                        lambda w, hidden, alpha=1.0, animate=False: calls.append((alpha, animate)) or real(w, hidden, alpha, animate))
+                        lambda w, hidden, alpha=1.0: calls.append((hidden, alpha)) or real(w, hidden, alpha))
     home = _lights_state(window)[2:]
+    assert _lights_on_macos_buttons(window) and window.traffic_lights.overlay.isVisible()
     seen = set()
     monkeypatch.setattr(window.traffic_lights, "near", lambda: True)
     window.traffic_lights._check()
     assert wait_until(lambda: seen.add(_lights_state(window)[2:]) or _lights_state(window)[1] == 1.0, 2)
-    # (macOS's animator drew them a few points off while it faded them: the fade is ours, in steps)
-    assert calls and not any(animate for _alpha, animate in calls)
-    assert len({alpha for alpha, _ in calls}) > 2 and seen == {home}
+    # (macOS draws its own a few points off while their brightness changes: ours light up, its stay hidden,
+    # untouched)
+    assert calls == [] and seen == {home} and _lights_on_macos_buttons(window)
     monkeypatch.setattr(window.traffic_lights, "near", lambda: False)
     window.traffic_lights._check()
     assert wait_until(lambda: _lights_state(window)[1] == traffic_lights.DIM, 2)
@@ -1065,6 +1101,7 @@ def test_traffic_lights_go_with_the_sidebar(window, site, monkeypatch):
     assert wait_until(lambda: not _lights_state(window)[0], 2)
     m = floating_sidebar.MARGIN
     assert _lights_state(window)[2:] == (home[0] + m, home[1] - m)
+    assert _lights_on_macos_buttons(window)
     monkeypatch.setattr(fs, "_wanted", lambda: False)
     fs.slide_away()
     assert _lights_state(window)[0]
@@ -1077,6 +1114,7 @@ def test_traffic_lights_go_with_the_sidebar(window, site, monkeypatch):
     pause(0.5)
     hidden, _alpha, x, y = _lights_state(window)
     assert not hidden and x == home[0] + window.sidebar.mapTo(window, QPoint(0, 0)).x()
+    assert _lights_on_macos_buttons(window)  # (ours went with them)
     assert window.content_layout.contentsMargins().top() == 8  # (no strip for them over the page)
     # A new title has macOS lay them out again, in the corner: the window puts them back
     window.setWindowTitle("Another page")
@@ -1719,3 +1757,57 @@ def test_a_page_cant_open_windows_by_itself(window, site):
     assert len(window._extra_windows) == before  # (no Little windows: neither at load nor from a timer)
     assert run_js(tab.view, "window.opened.length === 2 && window.opened.every(w => w === null)", world=0)
     window.close_tab(tab)
+
+
+def test_the_traffic_lights_do_what_macos_buttons_do(window, site, monkeypatch):
+    from PyQt6.QtCore import QPointF
+    from PyQt6.QtGui import QMouseEvent
+    from PyQt6.QtWidgets import QApplication
+    from browser import macos
+    if not macos._cocoa():
+        pytest.skip("macOS's own window buttons")
+    open_page(window, f"{site}/index.html")
+    pause(0.3)
+    overlay, done = window.traffic_lights.overlay, []
+    monkeypatch.setattr(macos, "window_button_action", lambda w, action: done.append(action) or True)
+
+    def click(i, alt=False):
+        at = overlay.centres[i]
+        mods = Qt.KeyboardModifier.AltModifier if alt else Qt.KeyboardModifier.NoModifier
+        for kind in (QMouseEvent.Type.MouseButtonPress, QMouseEvent.Type.MouseButtonRelease):
+            QApplication.sendEvent(overlay, QMouseEvent(kind, at, overlay.mapToGlobal(at), Qt.MouseButton.LeftButton,
+                                                        Qt.MouseButton.LeftButton, mods))
+    click(0)
+    click(1)
+    click(2)
+    click(2, alt=True)
+    assert done == ["close", "minimize", "full_screen", "zoom"]
+    # Between the circles: nothing
+    gap = (overlay.centres[0] + overlay.centres[1]) / 2 + QPointF(0, overlay.diameter)
+    assert overlay.which(gap) is None
+    # macOS's own stay hidden while ours show; the window's close still goes through macOS (as from its red button)
+    import ctypes
+    from browser.macos import _send
+    native = _send(ctypes.c_void_p(int(window.winId())), "window")
+    for i in range(3):
+        assert _send(_send(native, "standardWindowButton:", i, argtypes=(ctypes.c_long,)), "isHidden",
+                     restype=ctypes.c_bool)
+
+
+def test_the_traffic_lights_light_up_only_close_to_them(window, site, monkeypatch):
+    from browser import macos, traffic_lights
+    if not macos._cocoa():
+        pytest.skip("macOS's own window buttons")
+    open_page(window, f"{site}/index.html")
+    pause(0.3)
+    lights = window.traffic_lights
+    monkeypatch.setattr(window, "isActiveWindow", lambda: True)
+    x, y, w, h = macos.traffic_light_frames(window)[1]  # (the middle one)
+    pointer = {}
+    monkeypatch.setattr(traffic_lights.QCursor, "pos", staticmethod(lambda: window.mapToGlobal(pointer["at"])))
+    for at, lit in ((QPoint(round(x + w / 2), round(y + h / 2)), True),           # on it
+                    (QPoint(round(x + w / 2), round(y + h + traffic_lights.REACH - 1)), True),  # just below
+                    (QPoint(round(x + w / 2), round(y + h + traffic_lights.REACH + 4)), False),
+                    (window.sidebar.url_pill.mapTo(window, QPoint(20, 4)), False)):  # (the search bar: not yet)
+        pointer["at"] = at
+        assert lights.near() is lit, (at, lit)

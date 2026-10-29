@@ -9,14 +9,14 @@ from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication
 
-from . import backup, brand, crash, features, macos, space_share, spelling, storage, whats_new
+from . import backup, brand, crash, features, macos, space_share, spelling, storage, whats_new, windows_system
 from .external_links import OWN_SCHEME
 from .models import Store
 from .theme import DropdownLists
 from .webview import build_profile
 from .window import MainWindow
 
-LINK_SCHEMES = ("http://", "https://", "file://")
+LINK_SCHEMES = ("http://", "https://", "file://", OWN_SCHEME + "://")  # (eclipse-browser: from Windows, say)
 # Local files worth opening as a page (Finder's "Open With"); anything else is ignored, since
 # macOS also turns plain command-line arguments (like a folder path) into "open" events
 OPENABLE_FILES = {".html", ".htm", ".xhtml", ".pdf", ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".txt"}
@@ -59,9 +59,7 @@ class LinkReceiver(QObject):
             if url.isEmpty() and event.file():
                 url = QUrl.fromLocalFile(event.file())
             if url.scheme().lower() == OWN_SCHEME:  # (Shortcuts and other apps: scripting.py)
-                if not any(f.app_link(url) for f in list(self.window.features.values())):
-                    self.window.bring_to_front()
-                    self.window.toast(f"{brand.NAME} doesn't know the link {url.toString()[:80]}")
+                self.app_link(url)
                 return True
             if url.isLocalFile() and Path(url.toLocalFile()).suffix.lower() == space_share.SUFFIX:
                 self.window.import_space_file(url.toLocalFile())  # (a Space someone shared)
@@ -71,6 +69,19 @@ class LinkReceiver(QObject):
             self.window.open_external(url.toString())
             return True
         return False
+
+    def app_link(self, url):
+        """A link to Eclipse itself, for whichever feature knows it (scripting.py, recipes.py)."""
+        if not any(f.app_link(url) for f in list(self.window.features.values())):
+            self.window.bring_to_front()
+            self.window.toast(f"{brand.NAME} doesn't know the link {url.toString()[:80]}")
+
+    def open_link(self, link: str):
+        """A link handed over on the command line or by a second launch: Eclipse's own, or a page."""
+        if link.lower().startswith(OWN_SCHEME + "://"):
+            self.app_link(QUrl(link))
+        else:
+            self.window.open_external(link)
 
     @pyqtSlot(QUrl)
     def continue_page(self, url):
@@ -97,7 +108,7 @@ class LinkReceiver(QObject):
             buffer.extend(bytes(socket.readAll()))
             links = _links(buffer.decode(errors="replace").splitlines())
             for link in links:
-                self.window.open_external(link)
+                self.open_link(link)
             if not links:
                 self.window.bring_to_front()
             socket.deleteLater()
@@ -120,6 +131,8 @@ def run() -> int:
     links = _links(sys.argv[1:])
     if _hand_off(links):
         return 0
+    if sys.platform == "win32":  # (Windows opens eclipse-browser:// links with this copy: windows_system.py)
+        windows_system.register_url_scheme(OWN_SCHEME, brand.NAME)
     QLocalServer.removeServer(_server_name())  # left behind if the last run crashed
     server = QLocalServer(app)
     server.listen(_server_name())
@@ -142,7 +155,7 @@ def run() -> int:
         window.toast(f"{brand.NAME} didn't quit properly last time. Your tabs are back.",
                      lambda: window.send_feedback(crashed=True), "Report It")
     for link in links:
-        window.open_external(link)
+        receiver.open_link(link)
     # After an update with something new, a short tour of it (once)
     QTimer.singleShot(1500, lambda: setattr(window, "_whats_new", whats_new.show_if_new(window)))
 

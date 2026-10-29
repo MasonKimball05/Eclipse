@@ -484,9 +484,11 @@ class SettingsWindow(FadesIn, QWidget):
         spotlight_row = self._feature_box("spotlight", "Show Spaces and pinned tabs in Spotlight",
                                           "Find them with ⌘Space, like apps and documents. Not Today's tabs, "
                                           "nor private windows.")
-        saver_row = self._feature_box("power_saver", "Save energy in Low Power Mode",
-                                      "While your Mac saves its battery: background tabs pause, idle ones sleep "
-                                      "sooner, and things appear instead of moving.")
+        battery = "Battery saver" if sys.platform == "win32" else "Low Power Mode"
+        saver_row = self._feature_box("power_saver", f"Save energy in {battery}",
+                                      f"While your {'PC' if sys.platform == 'win32' else 'Mac'} saves its battery: "
+                                      "background tabs pause, idle ones sleep sooner, and things appear instead of "
+                                      "moving.", ("darwin", "win32"))
         # (hidden, never setVisible(True): with no parent yet, that would make a row a window of its own)
         if sys.platform != "darwin":
             keep_row.hide()
@@ -583,8 +585,9 @@ class SettingsWindow(FadesIn, QWidget):
                                                       "sleep.", sleep),
             self._row("Peek", "Links opened from pinned tabs and favorites float over the page instead of "
                               "opening a new tab.", peek),
-            self._row("Start view", "With no tab open, the page area shows your most-visited sites and recently "
-                                    "closed tabs. Off, it's empty, like Arc's.", start),
+            self._row("Start view with no tab open", "The Space's name, a search bar, your most-visited sites "
+                                                     "and recently closed tabs. Off, it's just the Space's "
+                                                     "background, like Arc's.", start),
             self._row("Tidy tab titles", "Like Arc Max: the sidebar leaves the site's name out of a tab's title "
                                          "(its icon says it), so “Q3 plan - Google Docs” shows as “Q3 plan”.",
                       tidy),
@@ -1173,13 +1176,14 @@ class SettingsWindow(FadesIn, QWidget):
             feature.sync.run()
         self.sync_status.setText(self._sync_text())
 
-    def _feature_box(self, name, title, hint):
-        """A row with a switch for a feature that has a setting by its own name (on unless turned off)."""
+    def _feature_box(self, name, title, hint, platforms=("darwin",)):
+        """A row with a switch for a feature that has a setting by its own name (on unless turned off), on the
+        systems it works on."""
         box = QCheckBox()
         box.setChecked(self.store.settings.get(name, True))
         box.toggled.connect(lambda on: self._toggle_feature(name, on))
         row = self._row(title, hint, box)
-        if sys.platform != "darwin" or self.browser.feature(name) is None:
+        if sys.platform not in platforms or self.browser.feature(name) is None:
             row.hide()
         return row
 

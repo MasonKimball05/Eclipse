@@ -2,7 +2,8 @@
 # feel (the Space's own background, nothing boxed in), with a little to start from: the Space's name, a
 # search pill that opens ⌘T, the sites you visit most, and the tabs you closed last.
 #
-# Settings → Tabs → Start view turns it off, for the plain emptiness.
+# Settings → Tabs → "Start view with no tab open" turns it off, for the plain emptiness, and so does
+# right-clicking it → Show Just the Background (and, off, right-clicking the background brings it back).
 
 from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QColor, QIcon
@@ -161,6 +162,20 @@ class StartView(QWidget):
             hint = QLabel("The sites you visit most will be here.")
             hint.setObjectName("StartHeading")
             self.body.addWidget(hint)
+
+    def contextMenuEvent(self, event):
+        shown = self.browser.store.settings.get(SETTING, True)
+        menu = self.browser._menu(self)
+        menu.addAction("Show Just the Background" if shown else "Show Search, Most Visited and Recently Closed") \
+            .triggered.connect(lambda: self.set_shown(not shown))
+        menu.exec(event.globalPos())
+
+    def set_shown(self, on: bool):
+        self.browser.store.settings[SETTING] = on
+        self.browser.store.schedule_save()
+        self.refresh()
+        if not on:
+            self.browser.toast("Just the background now · right-click it, or Settings → Tabs, to bring it back")
 
     def _heading(self, text):
         label = QLabel(text)

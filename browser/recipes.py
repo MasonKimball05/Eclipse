@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QF
 from .external_links import OWN_SCHEME
 from .features import Feature
 from .models import TODAY, Tab, walk_tabs
+from .shortcuts import native
 from .split import MAX_PANES
 from .theme import stylesheet
 
@@ -87,7 +88,7 @@ class RecipesFeature(Feature):
             self.recipes().remove(old)
         self.recipes().append(recipe)
         self.window.store.schedule_save()
-        self.window.toast(f"Saved the recipe “{recipe['name']}” · run it from ⌘T")
+        self.window.toast(f"Saved the recipe “{recipe['name']}” · run it from {native('Ctrl+T')}")
         return recipe
 
     # --- Running --------------------------------------------------------------------------------

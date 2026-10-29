@@ -24,6 +24,32 @@ KINDS = [
 ]
 
 
+# Settings → Live Folders: every kind, what it's for and how to set one up, each with a button that starts one
+# (the New Live Folder dialog, that kind chosen). (kind, how to set it up, examples)
+GUIDE = {
+    "feed": ("Paste a feed's address, or just a site's: Eclipse finds its feed for you.",
+             "github.com/MasonKimball05/Eclipse · reddit.com/r/macapps · youtube.com/@verge · "
+             "bsky.app/profile/someone.bsky.social · pypi.org/project/requests · stackoverflow.com/questions/tagged/pyqt"),
+    "github": ("Needs the GitHub CLI, signed in once: install it ({install}), run “gh auth login”, then pick what "
+               "to follow.", "PRs waiting for your review · your open PRs · issues assigned to you · all of them, "
+                             "with each repo's open issues, in sub-folders"),
+    "json": ("The address of an API that answers with a list, where the list is in its answer (blank if it's the "
+             "answer itself), and which fields are each item's title and link (a link can be a pattern: "
+             "https://app.example/items/{{id}}/). It signs in with your logins in Eclipse, or a token kept {vault}.",
+             "your own app's /api/announcements/ · a dashboard's recent items"),
+    "page": ("A page's address and a CSS selector that picks out its links (“.recent a”, say), for sites with no "
+             "feed or API. It reads the page with your logins. To find a selector, right-click a link on the page "
+             "and choose Inspect (Developer Mode).", "a team dashboard's “Recently updated” list · a forum's "
+                                                      "newest threads"),
+    "calendar": ("The calendar's .ics address. Google Calendar: Settings → your calendar → “Secret address in iCal "
+                 "format”. Outlook: Settings → Calendar → Shared calendars → Publish a calendar.",
+                 "deadlines · a club's or chapter's events · a class schedule"),
+    "repos": ("The folder your git repos are in (~/projects/GitHub, unless you choose another). It lists the ones "
+              "with changes you haven't committed or commits you haven't pushed. It only runs on this computer.",
+              "the side project you forgot to push"),
+}
+
+
 def _hint(text):
     label = FittedLabel(text)
     label.setObjectName("Hint")
@@ -265,6 +291,33 @@ class LiveFoldersFeature(Feature):
         """A Live Folder of a GitHub repo's releases (from ⌘T on any page of the repo)."""
         self.create_live_folder({"kind": "feed", "url": f"https://github.com/{owner}/{repo}", "named": True},
                                 f"{repo} Releases")
+
+    def settings_pages(self):
+        return [("live", "ph.lightning", "Live Folders", self.guide_page, "air")]
+
+    def guide_page(self, settings):
+        """Settings → Live Folders: what each kind follows and how to set one up."""
+        import sys
+        from PyQt6.QtWidgets import QPushButton
+        intro = settings._row(
+            "Folders that fill themselves", "A Live Folder sits with your pinned tabs and keeps itself up to date: it "
+            "refreshes when it's made and every half hour (right-click it → Refresh to do it now), new items get a "
+            "dot until you open them, and tabs you've opened from it stay open. It's made in the Space you're in.",
+            None)
+        rows = [intro]
+        filled = {"install": "winget install GitHub.cli" if sys.platform == "win32" else "brew install gh",
+                  "vault": "in Credential Manager" if sys.platform == "win32" else "in the Keychain"}
+        for kind, title, says in KINDS:
+            how, examples = GUIDE[kind]
+            button = QPushButton("New…")
+            button.clicked.connect(lambda _=False, k=kind: self.new_live_folder({"kind": k}))
+            rows.append(settings._row(title, f"{says}\n\nHow: {how.format(**filled)}\n\nFor example: {examples}",
+                                      button))
+        note = settings._row(
+            "From another computer", "Live Folders come along with Sync. Repo Radar folders, and ones that sign in "
+            "with a token, wait until you choose “Use on This Computer…” from their menu, so another computer's "
+            "settings can't run git in a folder here or send your token somewhere new.", None)
+        return settings._stack(settings._card(rows), settings._card([note]))
 
     def commands(self):
         cmds = [("New Live Folder (Feed or GitHub)", "ph.rss", self.new_live_folder),

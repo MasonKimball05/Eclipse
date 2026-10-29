@@ -20,7 +20,9 @@
 #
 # Links: eclipse-browser://open?url=https://example.com&space=Work, eclipse-browser://space?name=Work,
 # eclipse-browser://search?q=…, eclipse-browser://new-tab. They only open pages and move between Spaces (as a
-# click on a link can), and pages can't use them (webview.py refuses them).
+# click on a link can), and pages can't use them (webview.py refuses them). On Windows (no AppleScript there),
+# these links are the way in: Eclipse registers them on start (windows_system.py), for the Run box (Win+R),
+# shortcuts, PowerToys or AutoHotkey.
 
 from html import escape
 from urllib.parse import parse_qs

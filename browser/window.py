@@ -1299,7 +1299,12 @@ class MainWindow(QMainWindow):
     def _float_if_empty(self, tries=3):
         """No tab open and the sidebar hidden: it comes out over the page, as if pointed at, and stays (there's
         nothing to hide it for). Not in full screen, where a hidden sidebar is meant to keep out of the way."""
-        if self.current_tab is not None or not self.sidebar.isHidden() or self._fullscreen or self.isFullScreen():
+        if self.current_tab is not None or self._fullscreen or self.isFullScreen():
+            return
+        if self.floating_sidebar.active:  # (still out from picking the tab that just closed: it stays now)
+            self.floating_sidebar.keep(True)
+            return
+        if not self.sidebar.isHidden():
             return
         if not self.isVisible():  # (still starting up: once the window's there)
             if tries:

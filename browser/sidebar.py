@@ -127,6 +127,7 @@ def spoken(text: str) -> str:
 PILL_PLACEHOLDER = "Search or Enter URL…"
 SPACE_BUTTON = 26  # (a Space's button in the bottom bar, when there's room)
 SPACE_BUTTON_SMALLEST = 18  # (with many Spaces in a narrow sidebar: fewer show, rather than smaller)
+SPACE_MORE = 10  # (the arrows beside them that say some are hidden, and where)
 
 class SpokenTooltips(QObject):
     """Keeps an icon-only button's name for VoiceOver in step with its tooltip."""
@@ -1576,7 +1577,23 @@ class Sidebar(QWidget):
             bottom.addWidget(button)
             self._bottom_buttons.append(button)
         bottom.addStretch(1)
+        # With Spaces hidden (more than fit), an arrow on the side they're on: click it (or swipe) for them
+        self.switcher_more = []
+        for step, icon in ((-1, "ph.caret-left-bold"), (1, "ph.caret-right-bold")):
+            more = QToolButton()
+            more.setObjectName("SpaceMore")
+            more.setProperty("step", step)
+            more.setProperty("icon_name", icon)
+            more.setFixedSize(SPACE_MORE, SPACE_BUTTON)
+            more.setIconSize(QSize(8, 8))
+            more.setCursor(Qt.CursorShape.PointingHandCursor)
+            more.setStyleSheet("QToolButton#SpaceMore { background: transparent; border: none; padding: 0; }")
+            more.clicked.connect(lambda _=False, st=step: self._turn_switcher_page(st))
+            more.hide()
+            self.switcher_more.append(more)
+        bottom.addWidget(self.switcher_more[0])
         bottom.addLayout(self.switcher)
+        bottom.addWidget(self.switcher_more[1])
         bottom.addStretch(1)
         bottom.addWidget(self.new_space_btn)
         layout.addLayout(bottom)
@@ -1911,6 +1928,9 @@ class Sidebar(QWidget):
         crowded = room < len(buttons) * (SPACE_BUTTON + 2)
         self.switcher.setSpacing(1 if crowded else 2)
         fit = max(1, room // (SPACE_BUTTON_SMALLEST + 1))  # (how many fit at the smallest)
+        if fit < len(buttons):  # (some will be hidden: room for the arrows that say so)
+            room -= 2 * (SPACE_MORE + 2)
+            fit = max(1, room // (SPACE_BUTTON_SMALLEST + 1))
         self._switcher_fit = fit
         active = next((i for i, b in enumerate(buttons) if b.property("selected")), 0)
         if active != getattr(self, "_switcher_active", None):
@@ -1925,6 +1945,15 @@ class Sidebar(QWidget):
             more = len(buttons) - len(shown)
             button.setToolTip(button.property("name_tip") + (f"\nSwipe here for the other {more} Space"
                                                               f"{'s' if more != 1 else ''}" if more else ""))
+        hidden = {-1: first, 1: len(buttons) - first - len(shown)}  # (how many off each side)
+        color = _with_alpha(self.browser.theme.text, 0.5)
+        for more in self.switcher_more:
+            count = hidden[more.property("step")]
+            more.setVisible(count > 0)
+            if count:
+                more.setIcon(qta.icon(more.property("icon_name"), color=color))
+                more.setToolTip(f"{count} more Space{'s' if count != 1 else ''}")
+                more.setAccessibleName(f"Show {count} more Space{'s' if count != 1 else ''}")
         size = max(SPACE_BUTTON_SMALLEST, min(SPACE_BUTTON, room // len(shown) - (1 if crowded else 2)))
         for button in buttons:
             button.setVisible(button in shown)

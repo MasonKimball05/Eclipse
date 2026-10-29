@@ -1,5 +1,5 @@
 # Low Power Mode: when the Mac's saving its battery (System Settings → Battery), or running hot enough to slow
-# itself down, Eclipse saves energy too:
+# itself down, Eclipse saves energy too (and on Windows, while Battery saver's on: windows_system.py):
 #   - background tabs you haven't looked at for a couple of minutes are frozen (kept, but their scripts stop
 #     running: no timers, no animations), and wake as you switch to them;
 #   - idle tabs go to sleep sooner (after 10 minutes, if your own setting's longer; "Never" stays never);
@@ -7,18 +7,24 @@
 # Everything goes back as it was when Low Power Mode's turned off. macOS's state is looked at every half
 # minute (asking is cheap). Settings → General → "Save energy in Low Power Mode" turns it off.
 
+import sys
 import time
 
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWebEngineCore import QWebEnginePage
 
-from . import macos, motion
+from . import macos, motion, windows_system
 from .features import Feature
 
 SETTING = "power_saver"
 CHECK_MS = 30 * 1000
 FREEZE_AFTER = 2 * 60   # seconds in the background before a tab's frozen
 SLEEP_MINUTES = 10      # idle tabs sleep after this, at most
+NAME = "Battery saver" if sys.platform == "win32" else "Low Power Mode"  # (what the system calls it)
+
+
+def system_saving() -> bool:
+    return windows_system.battery_saver_on() if sys.platform == "win32" else macos.low_power()
 
 
 class PowerSaverFeature(Feature):
@@ -37,14 +43,14 @@ class PowerSaverFeature(Feature):
         self.check(announce=False)
 
     def check(self, announce=True):
-        saving = self.on() and macos.low_power()
+        saving = self.on() and system_saving()
         if saving != self.saving:
             self.saving = saving
             motion.saving = saving
             self.window.saving_minutes = SLEEP_MINUTES if saving else None
             if saving:
                 if announce:
-                    self.window.toast("Low Power Mode: Eclipse is saving energy too")
+                    self.window.toast(f"{NAME}: Eclipse is saving energy too")
                 self.window.sleep_idle_tabs()
             else:
                 self.thaw()

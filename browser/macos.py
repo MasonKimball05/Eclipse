@@ -220,6 +220,39 @@ def traffic_lights(widget) -> tuple[float, float] | None:
     return frame.x + frame.w, height - (frame.y + frame.h / 2)  # Cocoa measures y from the bottom
 
 
+def traffic_light_frames(widget) -> list[tuple[float, float, float, float]]:
+    """Where the window's three buttons are (close, minimise, zoom): (x, y, width, height) in points from the
+    window's top-left, hidden or not. [] off macOS or before the window exists."""
+    if not _cocoa():
+        return []
+    window = _send(ctypes.c_void_p(int(widget.window().winId())), "window")
+    height, frames = widget.window().height(), []
+    for i in range(3):
+        button = _send(window, "standardWindowButton:", i, argtypes=(ctypes.c_long,)) if window else None
+        if not button:
+            return []
+        bounds = _send(button, "bounds", restype=_CGRect)
+        f = _send(button, "convertRect:toView:", bounds, None, restype=_CGRect, argtypes=(_CGRect, ctypes.c_void_p))
+        frames.append((f.x, height - f.y - f.h, f.w, f.h))  # (Cocoa measures y from the bottom)
+    return frames
+
+
+_WINDOW_ACTIONS = {"close": "performClose:", "minimize": "performMiniaturize:", "zoom": "performZoom:",
+                   "full_screen": "toggleFullScreen:"}
+
+
+def window_button_action(widget, action: str) -> bool:
+    """Do what one of the window's buttons does, as macOS does it (the close as if its red button were clicked,
+    so a window that keeps running on close hides). action: close, minimize, zoom or full_screen."""
+    if not _cocoa():
+        return False
+    window = _send(ctypes.c_void_p(int(widget.window().winId())), "window")
+    if not window:
+        return False
+    _send(window, _WINDOW_ACTIONS[action], None, restype=None, argtypes=(ctypes.c_void_p,))
+    return True
+
+
 _lights_home: dict[int, list[tuple[float, float]]] = {}   # per window: where macOS put each light
 _lights_shift: dict[int, tuple[float, float]] = {}         # and how far we've moved them (Cocoa's way up)
 
@@ -253,9 +286,9 @@ def shift_traffic_lights(widget, dx: float, dy: float) -> bool:
     return True
 
 
-def style_traffic_lights(widget, hidden: bool, alpha: float = 1.0, animate=False) -> bool:
-    """Show or hide the window's traffic lights, at `alpha` (dim until you point at them, like Arc);
-    `animate` fades to it."""
+def style_traffic_lights(widget, hidden: bool, alpha: float = 1.0) -> bool:
+    """Show or hide the window's traffic lights, at `alpha` (dim until you point at them, like Arc). Never faded:
+    mid-fade, macOS draws them out of place (traffic_lights.py)."""
     if not _cocoa():
         return False
     window = _send(ctypes.c_void_p(int(widget.window().winId())), "window")
@@ -269,8 +302,7 @@ def style_traffic_lights(widget, hidden: bool, alpha: float = 1.0, animate=False
         # nudged the buttons under the pointer every time they lit up as it came near
         if _send(button, "isHidden", restype=ctypes.c_bool) != hidden:
             _send(button, "setHidden:", hidden, restype=None, argtypes=(ctypes.c_bool,))
-        target = _send(button, "animator") if animate else button  # (Core Animation does the fade)
-        _send(target, "setAlphaValue:", alpha, restype=None, argtypes=(ctypes.c_double,))
+        _send(button, "setAlphaValue:", alpha, restype=None, argtypes=(ctypes.c_double,))
     return True
 
 

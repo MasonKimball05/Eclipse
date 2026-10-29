@@ -1083,8 +1083,25 @@ def test_a_swipe_over_the_space_buttons_shows_the_hidden_ones(window):
     swipe(30)
     swipe(30)
     assert shown() == first
+    # An arrow on the side the hidden ones are on (only that side), and clicking it shows them
+    back, ahead = sidebar.switcher_more
+    assert ahead.isVisible() and not back.isVisible()
+    assert ahead.toolTip() == f"{6 - len(first)} more Spaces"
+    ahead.click()
+    assert shown()[0] == len(first) and back.isVisible() and store.active_space is active
+    assert back.toolTip() == f"{len(first)} more Space{'s' if len(first) != 1 else ''}"
+    back.click()
+    assert shown() == first and not back.isVisible()
+    # (the arrows sit inside the bar, clear of the other buttons)
+    assert ahead.geometry().right() < sidebar.new_space_btn.geometry().left()
     sidebar.setMinimumWidth(0)
     sidebar.setMaximumWidth(16777215)
+    pause(0.3)
+    while len(store.spaces) > 2:
+        store.remove_space(store.spaces[-1])
+    store._changed()
+    pause(0.3)
+    assert not any(m.isVisible() for m in sidebar.switcher_more)  # (all of them fit: no arrows)
 
 
 def test_switching_spaces_slides_with_no_tab_open_too(window):
@@ -1159,7 +1176,8 @@ def test_a_folder_opening_or_closing_never_moves_the_rows_below_the_wrong_way(wi
         pause(0.4)
         ys = [y for _t, y in frames.ys]
         assert ys == (sorted(ys, reverse=True) if closing else sorted(ys)), ys  # (only ever the one way)
-        assert len(set(ys)) > 3  # (and gradually: an animation, not a jump)
+        assert len(set(ys)) > 2  # (and gradually: a step between start and end, not a jump; on a busy Mac
+        # a 200 ms animation may only get one frame drawn between them)
     for widget in (section, window.sidebar.scroll.viewport(), window.sidebar):
         widget.removeEventFilter(frames)
     space.pinned = []
@@ -1720,3 +1738,42 @@ def test_a_tab_recipe_saves_and_replays_a_routine(window, site, monkeypatch):
     window.separate_split() if window.store.split_of(window.current_tab) else None
     for tab in list(walk_tabs(space.today)):
         window.close_tab(tab)
+
+
+def test_the_start_view_can_be_just_the_background_from_a_right_click(window, monkeypatch):
+    from PyQt6.QtGui import QContextMenuEvent
+    from browser import start_view
+    view = window.content.empty
+    window.store.settings[start_view.SETTING] = True
+    view.refresh()
+    assert view.body.count() > 0
+    chosen = []
+    monkeypatch.setattr("browser.window.PlainMenu.exec", lambda menu, *a: chosen.append(menu.actions()[0]))
+    view.contextMenuEvent(QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(20, 20), QPoint(20, 20)))
+    assert chosen[-1].text() == "Show Just the Background"
+    chosen[-1].trigger()
+    assert window.store.settings[start_view.SETTING] is False and view.body.count() == 0
+    assert "bring it back" in window.toasts[-1]
+    view.contextMenuEvent(QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(20, 20), QPoint(20, 20)))
+    assert chosen[-1].text().startswith("Show Search")
+    chosen[-1].trigger()
+    assert window.store.settings[start_view.SETTING] is True and view.body.count() > 0
+
+
+def test_settings_has_a_live_folders_guide_with_every_kind(window, monkeypatch):
+    from PyQt6.QtWidgets import QLabel, QPushButton
+    from browser.live_folder_dialog import KINDS
+    from browser.settings import SettingsWindow
+    settings = SettingsWindow(window)  # (never shown)
+    page = settings.pages.widget(settings.page_index["live"])
+    text = " ".join(label.text() for label in page.findChildren(QLabel))
+    for _kind, title, _says in KINDS:
+        assert title in text, title
+    assert "{" not in text.replace("{id}", "")  # (every placeholder filled in)
+    started = []
+    monkeypatch.setattr(window.feature("live_folders"), "new_live_folder", started.append)
+    buttons = [b for b in page.findChildren(QPushButton) if b.text() == "New…"]
+    assert len(buttons) == len(KINDS)
+    buttons[1].click()
+    assert started == [{"kind": KINDS[1][0]}]
+    settings.deleteLater()

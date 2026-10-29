@@ -16,6 +16,8 @@ import pytest
 
 from live_helpers import pause, wait_until  # noqa: F401
 
+TONE_LEVEL = 20  # (of 32,767: the test tone's loudness, see site())
+
 SITE = Path(__file__).parent / "site"
 _site_root = [""]  # where `site` copied the pages
 
@@ -67,11 +69,13 @@ def site(tmp_path_factory):
     root = tmp_path_factory.mktemp("site")
     for path in SITE.iterdir():
         (root / path.name).write_bytes(path.read_bytes())
-    with wave.open(str(root / "tone.wav"), "wb") as tone:  # three seconds of 440 Hz, looped by the page
+    # Three seconds of 440 Hz, looped by the page, so quiet you can't hear it (about -64 dB) but loud enough that
+    # Chromium counts the tab as playing sound (it calls anything above about -72 dB audible)
+    with wave.open(str(root / "tone.wav"), "wb") as tone:
         tone.setnchannels(1)
         tone.setsampwidth(2)
         tone.setframerate(8000)
-        tone.writeframes(b"".join(struct.pack("<h", int(6000 * math.sin(i * 2 * math.pi * 440 / 8000)))
+        tone.writeframes(b"".join(struct.pack("<h", int(TONE_LEVEL * math.sin(i * 2 * math.pi * 440 / 8000)))
                                   for i in range(8000 * 3)))
     _site_root[:] = [str(root)]
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(_Quiet, directory=str(root)))

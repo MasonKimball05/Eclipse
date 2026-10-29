@@ -8,12 +8,24 @@ from . import brand
 from .motion import FadesIn
 from .theme import quiet_scrollbars, stylesheet
 
-EDITION = 20
+EDITION = 21
 SETTING = "whats_new_seen"
 
 NOTES = """
 ## Lately
 
+- **Traffic lights drawn like Arc's**: they stay put as they light up (no more jump), and only light up once
+  the pointer's right by them.
+- **Live Folders guide**: Settings → Live Folders shows every kind, what it follows and how to set it up, each
+  with a button to make one.
+- **Just the background**: right-click the page area with no tab open → Show Just the Background, for an empty
+  page like Arc's (right-click again, or Settings → Tabs, to bring the search and recents back).
+- **More Spaces than fit**: a small arrow beside the Space buttons shows which side the hidden ones are on;
+  click it (or swipe) to see them.
+- **Fixed**: closing a tab you'd just opened from the hidden sidebar could leave the empty page with no
+  sidebar at all.
+- **On Windows**: eclipse-browser:// links work there too (from the Run box, a shortcut or AutoHotkey), and
+  Eclipse saves energy while Battery saver's on, as it does in a Mac's Low Power Mode.
 - **Privacy Report**: see which trackers each site tried to load and the companies behind them, over the last
   30 days. It's in the shield's menu in the address pill, and the whole report is in Settings → Privacy or ⌘T.
 - **Space Rules**: right-click a Space → Space Rules… to bring it forward on a schedule (Work on weekdays, 9 to 5)
