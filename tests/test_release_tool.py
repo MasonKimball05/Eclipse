@@ -67,3 +67,21 @@ def test_publishing_finishes_a_draft_an_earlier_try_left(monkeypatch, tmp_path):
     monkeypatch.setattr(release, "draft_of", lambda tag: False)
     release.publish(tmp_path / "Eclipse.zip", "202610281556", "2026.10.28")
     assert calls == [("gh", "release", "create")]
+
+
+def test_versions_go_year_major_week_and_release_within_the_week():
+    next_version = _release().next_version
+    assert next_version("week", [], 2026) == "26.1.0.0"  # (the first numbered release)
+    published = [(26, 1, 0, 0), (26, 1, 3, 0), (26, 1, 2, 4)]  # (the newest by number, not by order)
+    assert next_version("week", published, 2026) == "26.1.4.0"
+    assert next_version("minor", published, 2026) == "26.1.3.1"
+    assert next_version("major", published, 2026) == "26.2.0.0"
+    assert next_version("week", published, 2027) == "27.1.0.0"  # (a new year starts again)
+
+
+def test_published_versions_come_from_the_release_titles(monkeypatch):
+    release = _release()
+    titles = "Eclipse 26.1.3.0\nEclipse 2026.10.29\nEclipse 26.1.2.0\n"
+    monkeypatch.setattr(release.subprocess, "run",
+                        lambda *a, **k: type("Done", (), {"returncode": 0, "stdout": titles})())
+    assert release.published_versions() == [(26, 1, 3, 0), (26, 1, 2, 0)]  # (the old dated ones aren't numbered)

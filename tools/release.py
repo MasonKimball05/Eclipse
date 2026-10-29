@@ -32,6 +32,7 @@ import argparse
 import compileall
 import os
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -478,6 +479,41 @@ def publishable() -> str | None:
     return None
 
 
+# The version people see: year . major release . week's release . release within the week (26.1.3.0, 26.1.3.1…).
+# The latest is the newest release on GitHub named like that, so nothing needs editing before a release. (Updates
+# don't go by it: they compare build numbers, the minute a release was built, in its tag release-<build>.)
+VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)\.(\d+)$")
+FIRST_MAJOR = 1  # (each year starts at YY.1.0.0)
+
+
+def published_versions() -> list[tuple[int, int, int, int]]:
+    """The versions of the releases on GitHub (their titles: "Eclipse 26.1.3.0"); [] if none are numbered yet."""
+    found = subprocess.run(["gh", "release", "list", "--limit", "200", "--json", "name", "--jq", ".[].name"],
+                           capture_output=True, text=True)
+    versions = []
+    for title in found.stdout.splitlines() if found.returncode == 0 else []:
+        match = VERSION.match(title.removeprefix(NAME).strip())
+        if match:
+            versions.append(tuple(int(n) for n in match.groups()))
+    return versions
+
+
+def next_version(kind: str, published: list, year: int | None = None) -> str:
+    """The version for the next release: kind is "week" (the week's release: 26.1.3.0 → 26.1.4.0), "minor" (another
+    in the same week: 26.1.3.0 → 26.1.3.1) or "major" (26.1.3.0 → 26.2.0.0). A new year starts again at YY.1.0.0, and
+    so does the very first numbered release."""
+    yy = (year or time.localtime().tm_year) % 100
+    latest = max((v for v in published if v[0] == yy), default=None)
+    if latest is None:
+        return f"{yy}.{FIRST_MAJOR}.0.0"
+    _, major, week, minor = latest
+    if kind == "major":
+        return f"{yy}.{major + 1}.0.0"
+    if kind == "minor":
+        return f"{yy}.{major}.{week}.{minor + 1}"
+    return f"{yy}.{major}.{week + 1}.0"
+
+
 def release_notes() -> str:
     """What's changed since the last release: the commit subjects."""
     git("fetch", "--quiet", "--tags")  # (releases are tagged on GitHub: the latest isn't here otherwise)
@@ -540,13 +576,14 @@ def publish_built():
     publish(archive, info["CFBundleVersion"], info["CFBundleShortVersionString"], dmg)
 
 
-def release(identity: str, notary_profile: str | None, install: bool, publishing=False) -> Path:
+def release(identity: str, notary_profile: str | None, install: bool, publishing=False, kind="week") -> Path:
     if identity.startswith(("-", "Apple Development")) or not identity:
         raise SystemExit("A release needs the Developer ID Application certificate (none of the team's is here)")
     if publishing and (why := publishable()):
         raise SystemExit(f"Can't publish: {why}")
-    # The version people see (2026.10.27), and the build number updates compare (the minute it was built)
-    version, build = time.strftime("%Y.%-m.%-d"), time.strftime("%Y%m%d%H%M")
+    # The version people see (26.1.3.0), and the build number updates compare (the minute it was built)
+    version, build = next_version(kind, published_versions()), time.strftime("%Y%m%d%H%M")
+    print(f"{NAME} {version} (build {build})")
     app = DIST / f"{NAME}.app"
     shutil.rmtree(app, ignore_errors=True)
     contents = app / "Contents"
@@ -613,7 +650,19 @@ def main():
     parser.add_argument("--publish", action="store_true", help="put it on GitHub as a release (needs --notarize)")
     parser.add_argument("--publish-built", action="store_true",
                         help="put the notarized release already in dist/ on GitHub, without building it again")
+    bump = parser.add_mutually_exclusive_group()
+    bump.add_argument("--minor", dest="kind", action="store_const", const="minor",
+                      help="another release in the same week (26.1.3.0 → 26.1.3.1)")
+    bump.add_argument("--major", dest="kind", action="store_const", const="major",
+                      help="a major release (26.1.3.0 → 26.2.0.0); the default is the week's (26.1.3.0 → 26.1.4.0)")
+    parser.add_argument("--next-version", action="store_true", help="just say what the next version would be")
+    parser.set_defaults(kind="week")
     args = parser.parse_args()
+    if args.next_version:
+        published = published_versions()
+        latest = ".".join(map(str, max(published))) if published else "none yet"
+        print(f"Latest: {latest}. Next: {next_version(args.kind, published)} ({args.kind})")
+        return
     if args.publish_built:
         publish_built()
         return
@@ -625,7 +674,7 @@ def main():
         identity = best[0] if best and best[1].startswith("Developer ID Application") else ""
         if best:
             print(f"Signing with {best[1]}")
-    release(identity, args.notarize, args.install, args.publish)
+    release(identity, args.notarize, args.install, args.publish, args.kind)
 
 
 if __name__ == "__main__":
