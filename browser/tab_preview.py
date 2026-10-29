@@ -1,14 +1,15 @@
 # Tab previews: rest the pointer on a tab in the sidebar and a card beside it shows the page as it
 # looked when you last left it, with its title and address. Once one is showing, moving to the next
 # tab shows its preview straight away, the way tooltips do. The pictures are the small ones the
-# window keeps for the ⌃Tab switcher, so previews cost nothing until you look at one.
+# window keeps for the ⌃Tab switcher, so previews cost nothing until you look at one. Under the title: the
+# site, whether the tab's asleep or kept awake, and how much memory its page is using.
 
 from PyQt6 import sip
 from PyQt6.QtCore import QPoint, QRectF, Qt, QTimer
 from PyQt6.QtGui import QFontMetrics, QPainter, QPainterPath, QPixmap
 from PyQt6.QtWidgets import QFrame, QLabel, QVBoxLayout
 
-from . import motion
+from . import memory, motion
 from .models import display_host
 
 SETTING = "tab_previews"
@@ -36,6 +37,21 @@ def rounded(picture: QPixmap, width: int, ratio: float, radius=7, shape=ASPECT) 
     p.drawPixmap(0, 0, scaled)
     p.end()
     return out
+
+
+def memory_text(browser, tab) -> str:
+    """How much memory a tab's page is using ("180 MB"), as Chrome's previews say, so Memory Saver isn't a mystery;
+    "" when it isn't open (or that can't be told). Pages of one site can share a process: then it says so."""
+    view = tab.view
+    page = view.page() if hasattr(view, "page") else None
+    pid = page.renderProcessPid() if page is not None else 0
+    used = memory.process_mb(pid)
+    if not used:
+        return ""
+    sharing = sum(1 for other in browser.store.all_tabs() if other is not tab and hasattr(other.view, "page")
+                  and other.view.page().renderProcessPid() == pid)
+    amount = f"{used / 1024:.1f} GB" if used >= 1024 else f"{used:.0f} MB"
+    return f"{amount}, shared with {sharing} other tab{'s' if sharing != 1 else ''}" if sharing else amount
 
 
 class TabPreview(QFrame):
@@ -118,10 +134,12 @@ class TabPreview(QFrame):
             self.picture.hide()
         metrics = QFontMetrics(self.title.font())
         self.title.setText(metrics.elidedText(tab.label, Qt.TextElideMode.ElideRight, (inner - 8) * 2 - 24))
-        state = ("Sleeping" if self.browser.is_sleeping(tab) else
-                 "Kept awake" if tab.awake else "")
+        sleeping = self.browser.is_sleeping(tab)
+        state = ["Sleeping" if sleeping else "Kept awake" if tab.awake else ""]
+        if not sleeping:
+            state.append(memory_text(self.browser, tab))
         host = display_host(tab.url) or tab.url
-        self.host.setText(f"{host}  ·  {state}" if state else host)
+        self.host.setText("  ·  ".join([host] + [s for s in state if s]))
         self.layout().activate()
         self.setFixedHeight(self.layout().sizeHint().height())
         self._place(row)

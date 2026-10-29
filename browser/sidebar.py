@@ -389,6 +389,7 @@ class DraggableTab:
 ROW_HEIGHT = 34
 ROW_BUTTON, ROW_BUTTON_ICON = 22, 13  # (its close and mute buttons)
 ROW_SPACING = 9
+WAKE_AHEAD_MS = 300  # the pointer resting on a sleeping tab this long, and it starts waking
 _row_icons = {}
 
 
@@ -456,6 +457,14 @@ class TabRow(HoverFade, DraggableTab, QFrame):
         extras = [f"{badge} unread" if badge and badge != "•" else "new notification" if badge else "",
                   "muted" if self._muted else "playing sound" if self._audible else "", "sleeping" if sleeping else ""]
         self.setAccessibleName(", ".join([self.tab.label] + [e for e in extras if e]))
+        # Its × and speaker are drawn, not buttons VoiceOver can reach on their own: their actions are in the row's
+        # menu (VoiceOver's VO-Shift-M opens it, as a right-click does), which this says
+        can = ["unload it" if self.kind == PINNED else "close it"]
+        if self._audible or self._muted:
+            can.append("unmute it" if self._muted else "mute it")
+        if self.shows_away:
+            can.append("take it back to its pinned page")
+        self.setAccessibleDescription("Its menu can " + ", ".join(can[:-1]) + (" or " if len(can) > 1 else "") + can[-1])
         self._update_close()
 
     def _paint_icon(self):
@@ -638,12 +647,20 @@ class TabRow(HoverFade, DraggableTab, QFrame):
     def enterEvent(self, event):
         self._update_close()
         self.browser.tab_preview.hover(self)
+        if self.browser.is_sleeping(self.tab):
+            # Resting on a sleeping tab: it starts waking now, so it's there (or nearly) by the click
+            self._waking = QTimer(self, singleShot=True, interval=WAKE_AHEAD_MS,
+                                  timeout=lambda: self.browser.wake_ahead(self.tab))
+            self._waking.start()
         super().enterEvent(event)  # (HoverFade)
 
     def leaveEvent(self, event):
         self._set_part(None)
         self._update_close()
         self.browser.tab_preview.leave(self)
+        waking = getattr(self, "_waking", None)
+        if waking is not None:
+            waking.stop()  # (only passing over it)
         super().leaveEvent(event)
 
 

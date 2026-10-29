@@ -84,19 +84,29 @@ def test_now_playing_card_controls_a_background_tab(window, site):
     assert wait_until(lambda: run_js(radio.view, "document.documentElement.getAttribute('data-pb-media')") == "paused", 5)
 
 
-def test_space_swipe_follows_the_fingers_and_springs_back(window, site):
+def test_space_swipe_follows_the_fingers_and_springs_back_only_if_barely_moved(window, site):
     open_page(window, f"{site}/index.html")
     first, second = _two_spaces(window)
     width = window.sidebar.width()
-    _sidebar_swipe(window, 10, -width * 0.04, gap=0.03, end=False)  # 40%, slowly, fingers still down
-    slide = window.feature("gestures").space_swipe.slide
-    assert slide is not None and slide.after is not None
-    assert abs(slide.travel - width * 0.4) < width * 0.05  # it's where the fingers are, not snapped
+    swipe = window.feature("gestures").space_swipe
+    _sidebar_swipe(window, 3, -width * 0.02, gap=0.03, end=False)  # a nudge, slowly, fingers still down
+    assert wait_until(lambda: swipe.slide is not None and abs(swipe.slide.travel - width * 0.06) < width * 0.03, 1)
     pause(0.15)  # resting before letting go: no flick
     _sidebar_swipe(window, 0, 0, begin=False)
-    assert wait_until(lambda: window.feature("gestures").space_swipe.slide is None, 2)
+    assert wait_until(lambda: swipe.slide is None, 2)
     pause(0.1)
-    assert window.store.active_space is first  # not far enough: back where it was
+    assert window.store.active_space is first  # barely moved: back where it was
+    # A swipe is meant: 40% of the way, slowly, is enough (it used to take half, and sprang back)
+    _sidebar_swipe(window, 10, -width * 0.04, gap=0.03, end=False)
+    slide = swipe.slide
+    assert slide is not None and slide.after is not None
+    assert wait_until(lambda: abs(slide.travel - width * 0.4) < width * 0.05, 1)  # it's where the fingers are
+    pause(0.15)
+    _sidebar_swipe(window, 0, 0, begin=False)
+    assert wait_until(lambda: swipe.slide is None, 2)
+    assert wait_until(lambda: window.store.active_space is second, 2)
+    window.switch_space(first)
+    pause(0.6)
 
 
 def test_space_swipe_past_halfway_or_a_flick_switches(window, site, monkeypatch):
@@ -1644,6 +1654,38 @@ def test_low_power_mode_pauses_background_tabs_and_motion(window, site, monkeypa
     window.close_tab(front)
 
 
+def test_resting_on_a_sleeping_tab_wakes_it_before_the_click(window, site):
+    from PyQt6.QtGui import QEnterEvent
+    from browser.sidebar import WAKE_AHEAD_MS
+    asleep = open_page(window, f"{site}/index.html?asleep")
+    open_page(window, f"{site}/links.html")
+    window.sleep_idle_tabs(force=True)
+    assert window.is_sleeping(asleep)
+    row = next(r for r in window.sidebar.today.rows if r.tab is asleep)
+
+    def enter():
+        at = QPointF(row.width() / 2, row.height() / 2)
+        QApplication.sendEvent(row, QEnterEvent(at, at, QPointF(row.mapToGlobal(at.toPoint()))))
+
+    def leave():
+        QApplication.sendEvent(row, QEvent(QEvent.Type.Leave))
+    enter()
+    leave()  # only passing over it: it sleeps on
+    pause(WAKE_AHEAD_MS / 1000 + 0.2)
+    assert window.is_sleeping(asleep)
+    window.saving_minutes = 10  # (Low Power Mode: nothing wakes early)
+    enter()
+    pause(WAKE_AHEAD_MS / 1000 + 0.2)
+    leave()
+    assert window.is_sleeping(asleep)
+    window.saving_minutes = None
+    enter()  # resting on it…
+    assert wait_until(lambda: not window.is_sleeping(asleep), WAKE_AHEAD_MS / 1000 + 1)  # …it wakes, unclicked
+    leave()
+    assert window.current_tab is not asleep
+    assert wait_until(lambda: loaded(asleep.view), 5)
+
+
 def test_memory_running_low_puts_the_longest_unused_tabs_to_sleep(window, site, monkeypatch):
     from browser import memory, memory_saver
     feature = window.feature("memory_saver")
@@ -1735,8 +1777,10 @@ def test_a_space_comes_forward_on_its_schedule_and_blocks_its_distractions(windo
     blocked = f"127.0.0.1 is blocked in {work.name}"
     assert wait_until(lambda: blocked in window.toasts, 5)  # (once per try: a slow load can try twice)
     assert set(window.toasts) == {blocked}
-    # (its quiet page: a moment longer on a busy machine)
-    shown = wait_until(lambda: "isn't in" in (run_js(tab.view, "document.body && document.body.innerText") or ""), 10)
+    # (its quiet page: a moment longer on a busy machine. Asked often and briefly: a question that lands while the
+    # quiet page is being put in is never answered, and one with a long wait of its own used the whole time up)
+    shown = wait_until(lambda: "isn't in" in (run_js(tab.view, "document.body && document.body.innerText",
+                                                     timeout=0.5) or ""), 10)
     page = tab.view.page()  # (if it doesn't show, how the page was, to tell why)
     assert shown, (page.lifecycleState(), page.url().toString(), window.toasts, window.current_tab is tab)
     window.toast_action()
@@ -2027,7 +2071,7 @@ def test_dragging_the_theme_intensity_keeps_up_and_cancel_wins(window):
 
 
 def test_a_space_swipe_turns_the_colours_over_past_halfway_and_catches_up_smoothly(window):
-    from browser.gestures import CATCH_UP
+    from browser.gestures import CATCH_UP_RATE
     from browser.space_slide import _smooth
     # The window looks like the Space you're leaving until past halfway, and the next one's by the end
     assert _smooth(0.0) == _smooth(0.39) == 0.0 and _smooth(0.55) > 0 and _smooth(0.71) == 1.0
@@ -2040,18 +2084,16 @@ def test_a_space_swipe_turns_the_colours_over_past_halfway_and_catches_up_smooth
     swipe._begin(1)
     try:
         slide = swipe.slide
-        swipe.dx = -10
+        swipe.dx = -30  # (the fingers already 30 points along as the swipe begins: the trackpad's first events)
         swipe._follow()
-        assert slide.travel == 10  # (close behind: 1:1, at once)
-        swipe.dx = -10 - CATCH_UP * 5  # held up for a moment (the switch), the fingers got far ahead
-        swipe._follow()
-        assert slide.travel == 10  # no jump…
+        assert slide.travel == 0  # no leap…
+        swipe._chase.stop()
         steps = []
-        for _ in range(40):
-            pause(0.02)
+        for _ in range(20):  # (a frame at a time, by hand: a busy test machine can skip some between two looks)
+            swipe._catch_up()
             steps.append(slide.travel)
-        assert steps[-1] == 10 + CATCH_UP * 5  # …it catches up over a few frames
-        assert all(b - a < CATCH_UP * 5 * 0.6 for a, b in zip([10] + steps, steps))  # (in steps, not one leap)
+        assert steps[-1] == 30  # …it follows over a few frames
+        assert all(b - a <= 30 * CATCH_UP_RATE for a, b in zip([0] + steps, steps))  # (in steps, never one leap)
     finally:
         swipe.dx = 0
         swipe._release()
@@ -2060,6 +2102,143 @@ def test_a_space_swipe_turns_the_colours_over_past_halfway_and_catches_up_smooth
         if store.active_space is not first:
             window.switch_space(first)
         pause(0.5)
+
+
+def test_fingers_down_again_catch_a_swipe_still_settling(window):
+    # (a new swipe used to finish the last one at once: springing back, it snapped to the start, then began again)
+    store = window.store
+    while len(store.spaces) < 2:
+        store.add_space(f"Extra {len(store.spaces)}", "#22aa66")
+    first = store.active_space
+    swipe = window.feature("gestures").space_swipe
+    _sidebar_swipe(window, 6, -12)  # (not far enough: it springs back)
+    slide = swipe.slide
+    assert slide is not None and swipe.state == "settling"
+    pause(0.05)
+    caught_at = slide.travel
+    assert caught_at > 1
+    _sidebar_swipe(window, 1, 0, end=False)  # fingers down again
+    assert swipe.slide is slide and swipe.state == "mine" and abs(slide.travel - caught_at) < 2  # held where it was
+    _sidebar_swipe(window, 4, -12, begin=False)  # …and carried on from there
+    assert wait_until(lambda: swipe.slide is None, 3)
+    assert wait_until(lambda: not [c for c in window.findChildren(type(slide)) if c.isVisible()], 2)
+    if store.active_space is not first:
+        window.switch_space(first)
+        pause(0.6)
+
+
+def test_switching_spaces_holds_the_old_page_till_the_new_one_draws(window, site):
+    # (the new Space's page, out of sight till then, showed black for a moment before it drew, then cut in)
+    from browser.content import PageVeil, VEIL_FADE_MS, VEIL_MAX_MS
+    store = window.store
+    while len(store.spaces) < 2:
+        store.add_space(f"Extra {len(store.spaces)}", "#22aa66")
+    first, second = store.spaces[0], store.spaces[1]
+    here = open_page(window, f"{site}/index.html")
+    window.switch_space(second)
+    pause(0.6)
+    there = open_page(window, f"{site}/links.html")
+    window.switch_space(first)
+    assert wait_until(lambda: window.current_tab is here, 3)
+    veils = window.content.findChildren(PageVeil)
+    assert veils and veils[0].geometry() == window.content.stack.geometry()  # the page just left, over the page area
+    assert there.id in window.thumbnails  # (and its thumbnail, from the same picture)
+    assert wait_until(lambda: not [v for v in window.content.findChildren(PageVeil) if v.isVisible()],
+                      (VEIL_MAX_MS + VEIL_FADE_MS) / 1000 + 1)  # …faded once the new page drew
+
+
+def test_a_swipe_not_far_enough_springs_back_smoothly(window):
+    # (it went back on an ease-out, which starts at its fastest: let go with the fingers at rest, it jerked)
+    from browser.gestures import spring_back
+    from browser.space_slide import SpaceSlide
+    store = window.store
+    while len(store.spaces) < 2:
+        store.add_space(f"Extra {len(store.spaces)}", "#22aa66")
+    pause(0.3)
+    for speed in (0.0, 0.3, -0.5):  # (at rest, still drifting on, already heading back)
+        slide = SpaceSlide(window, 1)
+        slide.set_travel(90)
+        done = []
+        animation = spring_back(slide, 0.0, speed, lambda: done.append(True))
+        animation.pause()
+
+        def at(ms):  # (where it is, ms in: the animation stepped by hand, a frame at a time)
+            animation.setCurrentTime(ms)
+            return slide.travel
+        path = [at(ms) for ms in range(0, animation.duration(), 16)] + [at(animation.duration())]
+        moves = [b - a for a, b in zip(path, path[1:])]
+        # (it starts at the fingers' speed: the old ease-out leapt about 22 points in its first frame from rest)
+        assert abs(moves[0]) < abs(speed) * 16 + 5, (speed, moves[:3])
+        assert all(abs(b - a) < 10 for a, b in zip(moves, moves[1:])), (speed, moves)  # (no jerk on the way)
+        assert min(path) > -0.5 and abs(path[-1]) < 0.5  # (back where it was, never past it)
+        animation.resume()
+        assert wait_until(lambda: done, 2) and slide.travel == 0.0
+        slide.hide()
+        slide.deleteLater()
+
+
+def test_the_address_slides_across_rounded_not_as_a_box(window):
+    # (grab() filled the pill's whole rectangle with its colour: during a switch it slid across as a box)
+    from browser.space_slide import capture, cover_layout
+    pause(0.3)
+    regions, _mask = cover_layout(window)
+    _backdrop, parts = capture(window, regions)
+    pill = parts[0][0].toImage()
+    assert pill.pixelColor(1, 1).alpha() == 0  # (outside its rounded corner: nothing)
+    assert pill.pixelColor(pill.width() // 2, pill.height() // 2).alpha() > 0
+
+
+def test_the_tabs_dont_dim_as_a_space_switchs_cover_fades(window, site):
+    # (faded piece by piece, the cover's picture of the window round the tabs half hid the real tabs under it:
+    # they dimmed for a moment at the end of every switch, then snapped back)
+    from PyQt6.QtCore import QPoint
+    from PyQt6.QtGui import QPainter, QPixmap, QRegion
+    from PyQt6.QtWidgets import QWidget
+    from browser.models import TODAY, Tab
+    from browser.space_slide import SpaceSlide
+    store = window.store
+    while len(store.spaces) < 2:
+        store.add_space(f"Extra {len(store.spaces)}", "#22aa66")
+    first, second = store.spaces[0], store.spaces[1]
+    for i in range(3):
+        store.add_tab(Tab(f"{site}/index.html?{i}", f"Tab number {i}"), TODAY, second)
+    window.switch_space(first)
+    pause(0.8)
+    landed = []
+    lift = SpaceSlide.lift
+    SpaceSlide.lift = lambda self: landed.append(self)  # (held where it lands, just before it fades)
+    try:
+        window.switch_space(second)
+        assert wait_until(lambda: landed, 3)
+    finally:
+        SpaceSlide.lift = lift
+    slide = landed[0]
+    pause(0.3)
+    slide.hide()
+    real = window.grab()
+    slide.show()
+    ratio = real.devicePixelRatio()
+    row = window.sidebar.today.rows[0]
+    top = row.mapTo(window, QPoint(0, 0))
+
+    def brightest(opacity=None):  # (the brightest point of the first tab's row: its title)
+        picture = QPixmap(real)
+        if opacity is not None:
+            slide.opacity = opacity
+            cover = QPixmap(real.size())
+            cover.setDevicePixelRatio(ratio)
+            cover.fill(Qt.GlobalColor.transparent)
+            slide.render(cover, QPoint(0, 0), QRegion(), QWidget.RenderFlag.DrawChildren)
+            p = QPainter(picture)
+            p.drawPixmap(0, 0, cover)
+            p.end()
+        image = picture.toImage()
+        return max(image.pixelColor(int(x * ratio), int(y * ratio)).value()
+                   for x in range(top.x(), top.x() + row.width()) for y in range(top.y(), top.y() + row.height(), 2))
+    seen = [brightest()] + [brightest(o) for o in (1.0, 0.5, 0.2)]
+    assert max(seen) - min(seen) < 20, seen
+    lift(slide)
+    assert wait_until(lambda: not slide.isVisible(), 2)
 
 
 def test_the_spaces_either_side_are_pictured_ahead_so_a_slide_starts_at_once(window, site):
@@ -2076,8 +2255,8 @@ def test_the_spaces_either_side_are_pictured_ahead_so_a_slide_starts_at_once(win
     pictures.kept.clear()
     store.settings[space_slide.PREPARE] = True
     try:
-        pictures.prepare()  # (one at a time, while nothing's happening)
-        pictures.prepare()
+        pictures.prepare()  # (both at once, while nothing's happening)
+        store.settings[space_slide.PREPARE] = False  # (none made again meanwhile, while the test looks at these)
         assert set(pictures.kept) == {second.id, store.spaces[-1].id}  # the two either side, and only them
         assert store.active_space is first and window.styleSheet()  # (made unseen: still in the first)
         made = pictures.get(second)
@@ -2106,9 +2285,15 @@ def test_the_spaces_either_side_are_pictured_ahead_so_a_slide_starts_at_once(win
         assert slide.after is made and store.active_space is second and window.theme is colours
         assert wait_until(lambda: window.theme is not colours, 2)
         assert wait_until(lambda: not [c for c in window.findChildren(SpaceSlide) if c.isVisible()], 2)
-        # Tabs changing: the pictures go (they'd show the wrong ones)
+        # Tabs changing: the pictures are made again soon, and still used till then (thrown away, the next swipe
+        # switched Spaces mid-slide, and dropped frames)
+        kept = dict(pictures.kept)
         store._changed()
-        assert pictures.kept == {}
+        assert pictures.kept == kept and pictures.stale == set(kept)
+        store.settings[space_slide.PREPARE] = True
+        pictures.prepare()
+        pictures.prepare()
+        assert not pictures.stale and all(pictures.kept[k][1] is not kept[k][1] for k in pictures.kept if k in kept)
     finally:
         store.settings[space_slide.PREPARE] = False
         pictures.kept.clear()

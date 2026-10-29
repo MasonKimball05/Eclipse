@@ -11,10 +11,21 @@ from .shortcuts import for_here
 from .motion import FadesIn
 from .theme import quiet_scrollbars, stylesheet
 
-EDITION = 23
+EDITION = 24
 SETTING = "whats_new_seen"
 
 NOTES = """
+## This week
+
+- **Swiping between Spaces, smoother still**: a swipe goes on to the next Space without needing to come halfway,
+  it never stalls partway, fingers down again catch a swipe still settling, and with a page open the page you
+  leave fades into the next instead of flashing.
+- **⌘T glides**: the highlight moves smoothly from row to row with the arrow keys, without a flicker.
+- **Tab previews show memory**: rest on a tab to see how much memory its page is using. Resting on a sleeping tab
+  starts waking it, so it's ready by the time you click.
+- **More card shapes and colours**: eight new colours and twelve new shapes for your Eclipse card, from a crescent
+  to a sunburst.
+
 ## Lately
 
 - **Watch a page for changes**: right-click a tab → *Watch for Changes…*, or select part of a page, right-click

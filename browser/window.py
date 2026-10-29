@@ -1239,7 +1239,9 @@ class MainWindow(QMainWindow):
         if (previous is not tab and isinstance(previous and previous.view, QWebEngineView) and previous.view.isVisible()
                 and wanted):
             # A thumbnail of the page you're leaving, for the ⌃Tab switcher and tab previews
-            self.thumbnails[previous.id] = previous.view.grab().scaledToWidth(
+            left = getattr(self, "_left_picture", None)
+            whole = left[1] if left is not None and left[0] == previous.id else previous.view.grab()
+            self.thumbnails[previous.id] = whole.scaledToWidth(
                 520, Qt.TransformationMode.SmoothTransformation)  # (260 points: sharp in a preview)
             self.thumbnails.move_to_end(previous.id)
             while len(self.thumbnails) > THUMBNAILS:
@@ -2118,6 +2120,15 @@ class MainWindow(QMainWindow):
         return (isinstance(view, QWebEngineView)
                 and view.page().lifecycleState() == QWebEnginePage.LifecycleState.Discarded)
 
+    def wake_ahead(self, tab):
+        """The pointer's resting on a sleeping tab: wake it before the click (not in Low Power Mode, nor for a tab
+        that's gone or awake already). Looked at, it counts as used, so Memory Saver doesn't put it straight back."""
+        if self.saving_minutes or sip.isdeleted(tab) or not self.is_sleeping(tab):
+            return
+        tab.last_active = time.time()
+        self._wake(tab)
+        tab.changed.emit()  # (its row: no longer dimmed as asleep)
+
     def _wake(self, tab):
         if self.is_sleeping(tab):
             tab.view.page().setLifecycleState(QWebEnginePage.LifecycleState.Active)  # reloads the page
@@ -2298,11 +2309,21 @@ class MainWindow(QMainWindow):
         self.apply_theme()
 
     def _restore_space_tab(self):
+        # The page being left, pictured once: held over the page area till the new Space's page has drawn (PageVeil),
+        # and the tab's thumbnail for its preview too
+        leaving = self.current_tab
+        picture = None
+        if isinstance(leaving and leaving.view, QWebEngineView) and leaving.view.isVisible():
+            picture = leaving.view.grab()
+            self._left_picture = (leaving.id, picture)
         tab = self.store.find_tab(self.store.active_space.active_tab_id)
         if tab in self.store.visible_tabs():
             self.activate_tab(tab)
+            if picture is not None and tab is not leaving:
+                self.content.veil(picture, tab.view)
         else:
             self._show_nothing()
+        self._left_picture = None
 
     def switch_space(self, space, direction=None):
         if space.id == self.store.active_space_id:

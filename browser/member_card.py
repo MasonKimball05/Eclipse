@@ -23,8 +23,8 @@ from pathlib import Path
 
 from PyQt6.QtCore import QPointF, QRectF, QSize, Qt
 from PyQt6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPen, QRadialGradient
-from PyQt6.QtWidgets import (QHBoxLayout, QLabel, QLineEdit, QPushButton, QSizePolicy, QToolButton, QVBoxLayout,
-                             QWidget)
+from PyQt6.QtWidgets import (QGridLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSizePolicy, QToolButton,
+                             QVBoxLayout, QWidget)
 
 from . import brand, storage
 from .features import Feature
@@ -47,13 +47,27 @@ PALETTES = [
     {"name": "Honey", "paper": "#fffbea", "ink": "#c27a00", "stops": ["#fcc419", "#ffd96b", "#fff3bf"]},
     {"name": "Fern", "paper": "#13241d", "ink": "#8ce99a", "stops": ["#2f9e44", "#69db7c", "#1f3b2d"]},
     {"name": "Midnight", "paper": "#16151f", "ink": "#b197fc", "stops": ["#7048e8", "#9775fa", "#2b2547"]},
+    # (Eclipse's own, after Arc's: added at the end, so a card's number still means the colours it had)
+    {"name": "Mint", "paper": "#f3fcf8", "ink": "#0ca678", "stops": ["#38d9a9", "#8ce9cc", "#d3f9ec"]},
+    {"name": "Coral", "paper": "#fff5f3", "ink": "#e03131", "stops": ["#ff6b6b", "#ffa8a0", "#ffe3e0"]},
+    {"name": "Plum", "paper": "#fcf5fd", "ink": "#9c36b5", "stops": ["#cc5de8", "#e2a3f2", "#f6e1fb"]},
+    {"name": "Lime", "paper": "#fafdee", "ink": "#5c940d", "stops": ["#94d82d", "#c0eb75", "#e9fac8"]},
+    {"name": "Slate", "paper": "#f6f7f9", "ink": "#495057", "stops": ["#868e96", "#b9c0c7", "#e9ecef"]},
+    {"name": "Ocean", "paper": "#0f1c2b", "ink": "#74c0fc", "stops": ["#1971c2", "#4dabf7", "#18324d"]},
+    {"name": "Ember", "paper": "#21130f", "ink": "#ffa94d", "stops": ["#e8590c", "#ff8f3f", "#3d2018"]},
+    {"name": "Berry", "paper": "#1f111a", "ink": "#f783ac", "stops": ["#c2255c", "#f06595", "#3d1a2e"]},
 ]
 ECLIPSE_LOOK = {"palette": 6, "shape": "Shape3"}  # a new Eclipse card: Fern's deep green, and the arch
 MAKER_TITLE = "ABSOLUTE ECLIPSE"
 _MAKER = "6b00de7db9df2748062a655f71367dc5de9a7b3269b3f4935bd4e8fd3524dc2c"  # (SHA-256 of the maker's git email)
 _maker = None
-SHAPES = ["Shape1", "Shape2", "Shape3", "Shape4"]  # (Arc's names: a round one, a leaf, an arch, a petal)
+SHAPES = ["Shape1", "Shape2", "Shape3", "Shape4",  # (Arc's names: a round one, a leaf, an arch, a petal)
+          "Pill", "Diamond", "Hexagon", "Star", "Heart", "Drop",  # (and Eclipse's own)
+          "Crescent", "Clover", "Flower", "Sunburst", "Onion", "Blob"]  # (and some you don't see every day)
+SHAPE_NAMES = {"Shape1": "Round", "Shape2": "Leaf", "Shape3": "Arch", "Shape4": "Petal",  # (what the others are called)
+               "Onion": "Onion Dome"}
 STAMP = QColor("#4f46e5")
+CHOICES_PER_ROW = 8  # (the colour and shape buttons in the editor)
 
 ADJECTIVES = ["STATUESQUE", "LUMINOUS", "CURIOUS", "VELVET", "RADIANT", "QUIET", "NIMBLE", "GALLANT", "COSMIC",
               "MERRY", "SERENE", "DAUNTLESS", "WHIMSICAL", "GOLDEN", "STEADFAST", "BREEZY", "ELEGANT", "PLUCKY",
@@ -225,6 +239,70 @@ def shape_path(name: str, r: QRectF) -> QPainterPath:
         path.cubicTo(at(1, 0.82), at(0.82, 1), at(0.5, 1))
         path.lineTo(at(0, 1))
         path.closeSubpath()
+    elif name == "Pill":  # tall, with round ends
+        pill = QRectF(at(0.27, 0), at(0.73, 1))
+        path.addRoundedRect(pill, pill.width() / 2, pill.width() / 2)
+    elif name == "Diamond":  # a soft-cornered diamond
+        points = [at(0.5, 0), at(1, 0.5), at(0.5, 1), at(0, 0.5)]
+        _rounded(path, points, 0.12)
+    elif name == "Hexagon":
+        points = [at(0.5, 0), at(0.95, 0.25), at(0.95, 0.75), at(0.5, 1), at(0.05, 0.75), at(0.05, 0.25)]
+        _rounded(path, points, 0.16)
+    elif name == "Star":  # five points, gently rounded
+        from math import cos, pi, sin
+        points = []
+        for i in range(10):
+            radius = 0.5 if i % 2 == 0 else 0.24
+            angle = -pi / 2 + i * pi / 5
+            points.append(at(0.5 + radius * cos(angle), 0.53 + radius * sin(angle)))
+        _rounded(path, points, 0.18)
+    elif name == "Heart":
+        path.moveTo(at(0.5, 0.25))
+        path.cubicTo(at(0.5, 0.02), at(0.0, 0.0), at(0.0, 0.33))
+        path.cubicTo(at(0.0, 0.62), at(0.3, 0.78), at(0.5, 1))
+        path.cubicTo(at(0.7, 0.78), at(1.0, 0.62), at(1.0, 0.33))
+        path.cubicTo(at(1.0, 0.0), at(0.5, 0.02), at(0.5, 0.25))
+        path.closeSubpath()
+    elif name == "Drop":  # a raindrop: pointed at the top
+        path.moveTo(at(0.5, 0))
+        path.cubicTo(at(0.62, 0.22), at(0.92, 0.42), at(0.92, 0.66))
+        path.cubicTo(at(0.92, 0.88), at(0.73, 1), at(0.5, 1))
+        path.cubicTo(at(0.27, 1), at(0.08, 0.88), at(0.08, 0.66))
+        path.cubicTo(at(0.08, 0.42), at(0.38, 0.22), at(0.5, 0))
+        path.closeSubpath()
+    elif name == "Crescent":  # an eclipse's own: a disc with a bite out of it
+        disc = QPainterPath()
+        disc.addEllipse(QRectF(at(0.04, 0.04), at(0.96, 0.96)))
+        bite = QPainterPath()
+        bite.addEllipse(QRectF(at(0.34, -0.06), at(1.16, 0.84)))
+        path = disc.subtracted(bite)
+    elif name == "Clover":  # four round leaves
+        for x, y in ((0.27, 0.27), (0.73, 0.27), (0.27, 0.73), (0.73, 0.73)):
+            leaf = QPainterPath()
+            leaf.addEllipse(at(x, y), r.width() * 0.25, r.height() * 0.25)
+            path = path.united(leaf)
+        middle = QPainterPath()
+        middle.addEllipse(at(0.5, 0.5), r.width() * 0.2, r.height() * 0.2)  # (no hole where they meet)
+        path = path.united(middle)
+    elif name == "Flower":  # eight round petals
+        _wavy(path, at, bumps=8, depth=0.07, size=0.5)
+    elif name == "Sunburst":  # many soft points, like a seal
+        _wavy(path, at, bumps=20, depth=0.025, size=0.5, sharp=True)
+    elif name == "Onion":  # an onion dome: wide below, drawn up to a point
+        path.moveTo(at(0.5, 0))
+        path.cubicTo(at(0.56, 0.16), at(1.0, 0.3), at(1.0, 0.62))
+        path.cubicTo(at(1.0, 0.86), at(0.8, 1), at(0.5, 1))
+        path.cubicTo(at(0.2, 1), at(0.0, 0.86), at(0.0, 0.62))
+        path.cubicTo(at(0.0, 0.3), at(0.44, 0.16), at(0.5, 0))
+        path.closeSubpath()
+    elif name == "Blob":  # lopsided, as if poured
+        path.moveTo(at(0.52, 0.02))
+        path.cubicTo(at(0.82, 0.0), at(1.0, 0.2), at(0.94, 0.46))
+        path.cubicTo(at(0.89, 0.66), at(1.0, 0.86), at(0.76, 0.96))
+        path.cubicTo(at(0.54, 1.04), at(0.38, 0.88), at(0.2, 0.9))
+        path.cubicTo(at(-0.02, 0.92), at(0.0, 0.62), at(0.08, 0.44))
+        path.cubicTo(at(0.16, 0.24), at(0.24, 0.04), at(0.52, 0.02))
+        path.closeSubpath()
     else:  # Shape2, a leaf: pointed at the top right and bottom left
         path.moveTo(at(1, 0))
         path.lineTo(at(1, 0.4))
@@ -234,6 +312,38 @@ def shape_path(name: str, r: QRectF) -> QPainterPath:
         path.cubicTo(at(0, 0.24), at(0.28, 0), at(0.68, 0))
         path.closeSubpath()
     return path
+
+
+def _rounded(path: QPainterPath, points: list, amount: float):
+    """A polygon through `points` with its corners rounded off (amount: how much of each side the curve takes)."""
+    def toward(a, b, t):
+        return QPointF(a.x() + (b.x() - a.x()) * t, a.y() + (b.y() - a.y()) * t)
+    count = len(points)
+    for i, corner in enumerate(points):
+        before, after = points[i - 1], points[(i + 1) % count]
+        start, end = toward(corner, before, amount), toward(corner, after, amount)
+        if i == 0:
+            path.moveTo(start)
+        else:
+            path.lineTo(start)
+        path.quadTo(corner, end)
+    path.closeSubpath()
+
+
+def _wavy(path: QPainterPath, at, bumps: int, depth: float, size: float, sharp: bool = False):
+    """A circle whose edge goes in and out `bumps` times: round bumps (petals), or points (sharp)."""
+    from math import cos, pi, sin
+    steps = bumps * 12
+    for i in range(steps + 1):
+        angle = 2 * pi * i / steps
+        if sharp:
+            wave = 1 - 2 * abs(sin(bumps * angle / 2))  # (points at the tips, rounded between)
+        else:
+            wave = 2 * abs(cos(bumps * angle / 2)) - 1  # (rounded bumps, a crease between)
+        radius = size - depth + depth * wave
+        point = at(0.5 + radius * cos(angle - pi / 2), 0.5 + radius * sin(angle - pi / 2))
+        path.moveTo(point) if i == 0 else path.lineTo(point)
+    path.closeSubpath()
 
 
 def anniversaries(since: str, today: date | None = None) -> int:
@@ -486,11 +596,12 @@ def build_page(self):
 
     def choices(items, icon_for, pick):
         box = QWidget()
-        row = QHBoxLayout(box)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(4)
+        grid = QGridLayout(box)  # (rows of up to CHOICES_PER_ROW: there are too many for one)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(4)
+        grid.setAlignment(Qt.AlignmentFlag.AlignLeft)
         buttons = []
-        for value, tip in items:
+        for i, (value, tip) in enumerate(items):
             button = QToolButton()
             button.setObjectName("CardChoice")
             button.setCheckable(True)
@@ -500,13 +611,12 @@ def build_page(self):
             button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.clicked.connect(lambda _=False, v=value: pick(v))
             button.value = value
-            row.addWidget(button)
+            grid.addWidget(button, i // CHOICES_PER_ROW, i % CHOICES_PER_ROW)
             buttons.append(button)
         return box, buttons
     colours, colour_buttons = choices([(i, p["name"]) for i, p in enumerate(PALETTES)], palette_icon,
                                       lambda i: save(palette=i))
-    shape_names = {"Shape1": "Round", "Shape2": "Leaf", "Shape3": "Arch", "Shape4": "Petal"}
-    shapes, shape_buttons = choices([(n, shape_names[n]) for n in SHAPES],
+    shapes, shape_buttons = choices([(n, SHAPE_NAMES.get(n, n)) for n in SHAPES],
                                     lambda n: shape_icon(n, self.browser.theme.panel_text), lambda n: save(shape=n))
     since = QLabel()
     since.setObjectName("Hint")

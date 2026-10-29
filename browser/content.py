@@ -2,7 +2,8 @@
 # pages, plus the small floating overlays Arc draws on top of it.
 
 import qtawesome as qta
-from PyQt6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QTimer, QUrl, QVariantAnimation
+from PyQt6 import sip
+from PyQt6.QtCore import QEasingCurve, QEvent, QPointF, QRectF, Qt, QTimer, QUrl, QVariantAnimation
 from PyQt6.QtGui import QColor, QImage, QPainter, QPainterPath, QPixmap
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QStackedWidget, QTextBrowser,
@@ -329,6 +330,57 @@ class PreviewCard(QFrame):
             self.browser.open_url(url)
 
 
+class PageVeil(QWidget):
+    """The page you've just left, held over the page area while the one you've gone to draws its first frame, then
+    faded away: a page that's been out of sight takes a moment to draw again, and until it had, the page area showed
+    black (or nothing), then the new page cut in. Gone after VEIL_MAX_MS whatever happens."""
+
+    def __init__(self, content, picture, view):
+        super().__init__(content)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.picture, self.opacity = picture, 1.0
+        self.setGeometry(content.stack.geometry())
+        self.show()
+        content._raise_overlays()  # (the rounded corners stay over it)
+        self.stackUnder(content.corners[0])
+        self._fading = False
+        drawn = view.focusProxy() if view is not None else None
+        self._watched = drawn
+        if drawn is not None:
+            drawn.installEventFilter(self)
+        QTimer.singleShot(VEIL_MAX_MS, self.fade)  # (whatever happens, never stuck over the page)
+
+    def eventFilter(self, obj, event):
+        if obj is self._watched and event.type() in (QEvent.Type.Paint, QEvent.Type.UpdateRequest):
+            QTimer.singleShot(VEIL_SETTLE_MS, self.fade)  # (its first frame's on its way: a moment, then fade)
+            obj.removeEventFilter(self)
+            self._watched = None
+        return False
+
+    def fade(self):
+        if self._fading or sip.isdeleted(self):
+            return
+        self._fading = True
+        if self._watched is not None and not sip.isdeleted(self._watched):
+            self._watched.removeEventFilter(self)
+
+        def step(value):
+            self.opacity = value
+            self.update()
+        motion.animate(self, 1.0, 0.0, step, VEIL_FADE_MS, lambda: (self.hide(), self.deleteLater()))
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setOpacity(self.opacity)
+        p.drawPixmap(self.rect(), self.picture)
+        p.end()
+
+
+VEIL_SETTLE_MS = 40   # after the new page first draws, before the old one fades off it
+VEIL_FADE_MS = 160
+VEIL_MAX_MS = 450     # the longest the old page is held there (a page still loading shows its progress then)
+
+
 class ContentFrame(QFrame):
     def __init__(self, browser, parent=None):
         super().__init__(parent)
@@ -541,6 +593,15 @@ class ContentFrame(QFrame):
     def _raise_overlays(self):
         for widget in (self.progress, self.link_label, self.find_bar, self.preview_card, self.toast, *self.corners):
             widget.raise_()
+
+    def veil(self, picture, view):
+        """Hold `picture` (the page just left) over the page area till `view` has drawn, then fade it (PageVeil)."""
+        if picture is None or picture.isNull() or motion.reduced():
+            return
+        for old in self.findChildren(PageVeil):
+            old.hide()
+            old.deleteLater()
+        PageVeil(self, picture, view)
 
 
 class SplitDropZone(QWidget):

@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from typing import Callable
 
 import qtawesome as qta
-from PyQt6.QtCore import QEvent, QRectF, QSize, Qt, QUrl
+from PyQt6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap
-from PyQt6.QtWidgets import (QApplication, QFrame, QGraphicsDropShadowEffect, QLabel, QLineEdit, QListWidget,
+from PyQt6.QtWidgets import (QApplication, QFrame, QLabel, QLineEdit, QListWidget,
                              QListWidgetItem, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
 from . import motion
@@ -29,7 +29,7 @@ from .page_index import read_on
 from .shortcuts import for_here
 from .storage import favicon
 from .sidebar import tab_icon
-from .theme import legible, letter_icon, quiet_scrollbars
+from .theme import legible, letter_icon, mix, quiet_scrollbars
 
 SEARCH_ENGINES = {
     "google": ("Google", "https://www.google.com/search?q={}"),
@@ -218,6 +218,9 @@ class Result:
     keep_open: bool = False  # e.g. "Ask Claude": the answer appears inside the bar
 
 
+GLIDE_MS = 150  # the highlight moving to the next row (shorter, most of it went by in a frame or two: a jump)
+
+
 class ResultDelegate(QStyledItemDelegate):
     def __init__(self, bar):
         super().__init__(bar)
@@ -237,6 +240,7 @@ class ResultDelegate(QStyledItemDelegate):
         highlight = QColor(theme.accent)
         highlight.setAlphaF(0.85 if not theme.dark else 0.65)
         glide = self.bar.highlight_y
+        under = 0.0  # how much of the highlight is behind this row's text (0 to 1)
         if glide is not None:
             # The highlight on its way from one row to the next: each row paints its own slice of it
             moving = QRectF(rect.left(), glide + 1, rect.width(), rect.height())
@@ -246,12 +250,16 @@ class ResultDelegate(QStyledItemDelegate):
                 painter.setClipRect(option.rect)
                 painter.fillPath(path, highlight)
                 painter.setClipping(False)
+                under = moving.intersected(rect).height() / max(rect.height(), 1)
         elif option.state & QStyle.StateFlag.State_Selected:
             path = QPainterPath()
             path.addRoundedRect(rect, 9, 9)
             painter.fillPath(path, highlight)
-        if option.state & QStyle.StateFlag.State_Selected:
-            text = QColor(theme.on_accent)  # (white, or dark on a pale Space colour)
+            under = 1.0
+        if under > 0:
+            # (white, or dark on a pale Space colour) as the highlight comes under it: the text turned at once,
+            # before the highlight got there, and flickered against it on the way
+            text = mix(text, QColor(theme.on_accent), under)
 
         icon_rect = QRectF(rect.left() + 12, rect.center().y() - 9, 18, 18)
         result.icon.paint(painter, icon_rect.toRect())
@@ -294,6 +302,9 @@ class ResultDelegate(QStyledItemDelegate):
         painter.restore()
 
 
+SHADOW_BLUR, SHADOW_DROP, SHADOW_ALPHA = 48, 12, 90  # the panel's shadow: how soft, how far down, how dark
+
+
 class CommandBar(QWidget):
     """Full-window overlay: a dimmed backdrop with the command panel floating on top."""
 
@@ -310,11 +321,10 @@ class CommandBar(QWidget):
 
         self.panel = QFrame(self)
         self.panel.setObjectName("CommandPanel")
-        shadow = QGraphicsDropShadowEffect(self.panel)
-        shadow.setBlurRadius(48)
-        shadow.setOffset(0, 12)
-        shadow.setColor(QColor(0, 0, 0, 90))
-        self.panel.setGraphicsEffect(shadow)
+        # Its shadow is a picture the backdrop draws behind it, made once for its size: as a graphics effect,
+        # anything changing inside the panel (the highlight gliding, a letter typed) drew the whole panel again
+        # and blurred its shadow again, about 17 ms a frame, and the glide juddered
+        self._shadow = None  # (its size, the picture)
 
         layout = QVBoxLayout(self.panel)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -404,13 +414,46 @@ class CommandBar(QWidget):
         height = self.input.sizeHint().height() + (body_h + 1 if body_h else 0)
         drop = round((1 - self._intro) * 12)  # arriving, it drifts down the last few points
         self.panel.setGeometry((self.width() - width) // 2, int(self.height() * 0.17) - drop, width, height)
+        self.update()  # (its shadow, drawn here, goes where it goes)
 
     def paintEvent(self, event):
-        # The dimmed page behind the bar, fading in with it
+        # The dimmed page behind the bar, fading in with it, and the panel's shadow
         dark = self.browser.theme.dark
         p = QPainter(self)
         p.fillRect(self.rect(), QColor(0, 0, 0, round((60 if dark else 28) * self._intro)))
+        if self.panel.isVisible() and self.panel.width() > 0:
+            picture = self._shadow_picture()
+            panel = self.panel.geometry()
+            p.drawPixmap(panel.left() - SHADOW_BLUR, panel.top() - SHADOW_BLUR + SHADOW_DROP, picture)
         p.end()
+
+    def _shadow_picture(self) -> QPixmap:
+        """The panel's soft shadow, blurred once for its size (and kept until that changes)."""
+        size = self.panel.size()
+        if self._shadow is not None and self._shadow[0] == size:
+            return self._shadow[1]
+        from PyQt6.QtWidgets import QGraphicsBlurEffect, QGraphicsPathItem, QGraphicsScene
+        ratio = self.devicePixelRatioF()
+        picture = QPixmap(QSize(size.width() + 2 * SHADOW_BLUR, size.height() + 2 * SHADOW_BLUR) * ratio)
+        picture.setDevicePixelRatio(ratio)
+        picture.fill(Qt.GlobalColor.transparent)
+        scene = QGraphicsScene(0, 0, picture.width() / ratio, picture.height() / ratio)
+        shape = QPainterPath()
+        shape.addRoundedRect(QRectF(SHADOW_BLUR, SHADOW_BLUR, size.width(), size.height()), 14, 14)
+        item = QGraphicsPathItem(shape)
+        item.setPen(QPen(Qt.PenStyle.NoPen))
+        item.setBrush(QColor(0, 0, 0, SHADOW_ALPHA))
+        blur = QGraphicsBlurEffect()
+        blur.setBlurRadius(SHADOW_BLUR)
+        blur.setBlurHints(QGraphicsBlurEffect.BlurHint.QualityHint)
+        item.setGraphicsEffect(blur)
+        scene.addItem(item)
+        painter = QPainter(picture)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        scene.render(painter, scene.sceneRect(), scene.sceneRect())  # (in points: the picture is twice that in pixels)
+        painter.end()
+        self._shadow = (QSize(size), picture)
+        return picture
 
     def _set_intro(self, value):
         self._intro = value
@@ -502,8 +545,19 @@ class CommandBar(QWidget):
         old = self.list.currentItem()
         start = self.highlight_y if self.highlight_y is not None else (
             self.list.visualItemRect(old).top() if old is not None else None)
+        was = self.list.visualItemRect(old).top() if old is not None else None
+        target = self.list.item(row)
+        if start is not None and target is not None and \
+                abs(self.list.visualItemRect(target).top() - start) <= ROW_HEIGHT * 1.5:
+            # Held where it is first: chosen with nothing gliding, the new row was drawn highlighted straight away,
+            # a frame before the glide began, and the highlight flashed there and back on every arrow press
+            self.highlight_y = start
         self.list.setCurrentRow(row)
         end = self.list.visualItemRect(self.list.currentItem()).top()
+        if start is not None and was is not None:  # (the list scrolled to show the row: where it starts moved too)
+            start += self.list.visualItemRect(old).top() - was
+            if self.highlight_y is not None:
+                self.highlight_y = start
         if start is None or abs(end - start) > ROW_HEIGHT * 1.5:
             self._settle_highlight()
             return
@@ -511,7 +565,17 @@ class CommandBar(QWidget):
         def step(y):
             self.highlight_y = y
             self.list.viewport().update()
-        motion.animate(self.list, start, end, step, 110, self._settle_highlight)
+
+        def go():
+            if self.list.currentItem() is target:  # (not overtaken by another press meanwhile)
+                motion.animate(self.list, self.highlight_y if self.highlight_y is not None else start, end, step,
+                               GLIDE_MS, self._settle_highlight)
+        animation = getattr(self.list, "_pb_animation", None)
+        if animation is not None:
+            animation.stop()  # (it's held where it got to, and carries on from there)
+        # The clock starts once this pass is over and the frame drawn: started at once, the time choosing the row
+        # took was already spent, and the first frame drawn was a third of the way there, a leap
+        QTimer.singleShot(0, go)
 
     def _settle_highlight(self):
         animation = getattr(self.list, "_pb_animation", None)

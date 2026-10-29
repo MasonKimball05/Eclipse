@@ -134,6 +134,17 @@ def test_a_tab_rows_drawn_buttons_work(window, site):
     row = wait_until(lambda: next((r for r in window.sidebar.findChildren(TabRow) if r.tab is tab), None), 3)
     assert not row.findChildren(QWidget)
     assert "close" in row.parts  # (the tab you're on shows its ×)
+    # VoiceOver can't reach a drawn ×: the row says its menu can close it, and VoiceOver's "show menu" opens it
+    assert row.accessibleDescription() == "Its menu can close it"
+    from PyQt6.QtGui import QContextMenuEvent
+    menus = []
+    real_menu = window.show_tab_menu
+    window.show_tab_menu = lambda t, at: menus.append(t)
+    try:
+        QApplication.sendEvent(row, QContextMenuEvent(QContextMenuEvent.Reason.Keyboard, row.rect().center()))
+    finally:
+        window.show_tab_menu = real_menu
+    assert menus == [tab]
     home = row.parts["icon"].center()
 
     def point_at(row, at):  # (QTest.mouseMove moves the real pointer, which a window kept behind never sees)
@@ -303,33 +314,36 @@ def test_dragging_a_tab_parts_the_rows_where_it_will_land(window, site):
     b = open_page(window, f"{site}/links.html")
     c = open_page(window, f"{site}/img.html")
     today = window.sidebar.today
-    assert wait_until(lambda: [r.tab for r in today.rows] == [c, b, a], 3)  # (newest on top)
+    names = {a: "a", b: "b", c: "c"}
+
+    def order():  # (what the list shows, to tell why if a wait runs out: a busy machine can be slow to animate)
+        return [names.get(r.tab, r.tab) for r in today.rows]
+    assert wait_until(lambda: [r.tab for r in today.rows] == [c, b, a], 5), order()  # (newest on top)
     steady(lambda: [r.geometry() for r in today.rows])  # (the rows have slid in)
     row_b = next(r for r in today.rows if r.tab is b)
     today.lift(row_b)
-    assert wait_until(lambda: row_b.parentWidget().height() == 0, 3)  # picked up: its slot closes
+    assert wait_until(lambda: row_b.parentWidget().height() == 0, 5), row_b.parentWidget().height()  # picked up
     rows = {r.tab: r for r in today.rows}
     top_c, top_a = steady(lambda: (rows[c].geometry(), rows[a].geometry()))  # (the rest have closed up)
     _drag_event("move", today, top_a.center().y() + 8, b)  # the lower half of A: below A
     gap = today._gap
-    assert gap is not None and wait_until(lambda: gap.height() == 34, 3)
+    assert gap is not None and wait_until(lambda: gap.height() == 34, 5), gap and gap.height()
     assert gap.geometry().top() > rows[a].geometry().top()  # after A, at the end
     _drag_event("move", today, top_a.center().y() + 9, b)  # a nudge: the same place, no new gap
     assert today._gap is gap
     _drag_event("move", today, top_c.center().y() - 6, b)  # the top half of C: before C
-    assert today._gap is not gap and wait_until(lambda: gap.height() == 0, 3)  # the old one closes
+    assert today._gap is not gap and wait_until(lambda: gap.height() == 0, 5), gap.height()  # the old one closes
     _drag_event("drop", today, top_c.center().y() - 6, b)
-    names = {a: "a", b: "b", c: "c"}
-    landed = wait_until(lambda: [r.tab for r in today.rows] == [b, c, a], 3)
-    assert landed, ([names.get(r.tab, r.tab) for r in today.rows],  # (if not, how it was, to tell why)
+    landed = wait_until(lambda: [r.tab for r in today.rows] == [b, c, a], 5)
+    assert landed, (order(),  # (if not, how it was, to tell why)
                     [names.get(t, t) for t in window.store.active_space.today[:4]], today._gap)
-    assert wait_until(lambda: not today.findChildren(DropGap), 3)
+    assert wait_until(lambda: not today.findChildren(DropGap), 5), today.findChildren(DropGap)
     # Picked up and let go of nowhere: it comes back
     row = next(r for r in today.rows if r.tab is a)
     today.lift(row)
-    assert wait_until(lambda: row.parentWidget().height() == 0, 3)
+    assert wait_until(lambda: row.parentWidget().height() == 0, 5), row.parentWidget().height()
     today.drag_ended(row)
-    assert wait_until(lambda: row.parentWidget() is today and row.isVisible(), 3)
+    assert wait_until(lambda: row.parentWidget() is today and row.isVisible(), 5), (row.parentWidget(), row.isVisible())
     assert [r.tab for r in today.rows] == [b, c, a]
 
 
@@ -519,6 +533,30 @@ def test_a_favorite_squeezes_when_pressed_and_springs_back(window, site):
     assert len(middle) > 1  # the icon is still drawn in the middle of the tile (not just its background)
 
 
+def test_the_command_bars_shadow_is_drawn_once_not_every_frame(window, site):
+    # (as a graphics effect, every change inside the panel drew it all again and blurred the shadow again,
+    # about 17 ms a frame: the highlight juddered as it glided)
+    open_page(window, f"{site}/index.html")
+    window.open_command_bar("new")
+    bar = window.command_bar
+    bar.input.setText("index")
+    pause(0.4)
+    assert bar.panel.graphicsEffect() is None
+    bar.grab()
+    picture = bar._shadow[1]
+    for y in (10, 20, 30):
+        bar.highlight_y = y
+        bar.grab()
+    bar.highlight_y = None
+    assert bar._shadow[1] is picture  # (made once for the panel's size)
+    image = picture.toImage()
+    from browser.command_bar import SHADOW_BLUR
+    below = int((SHADOW_BLUR - 8) * picture.devicePixelRatio())  # (8 points under the panel's bottom edge)
+    assert image.pixelColor(image.width() // 2, image.height() - below).alpha() > 0  # (a soft edge below the panel)
+    assert image.pixelColor(2, 2).alpha() == 0  # (and nothing far out at the corner)
+    window.command_bar.close_bar()
+
+
 def test_the_command_bar_highlight_glides_between_rows(window, site, monkeypatch):
     from PyQt6.QtGui import QKeyEvent
     from browser import command_bar
@@ -537,6 +575,9 @@ def test_the_command_bar_highlight_glides_between_rows(window, site, monkeypatch
     first = bar.list.visualItemRect(bar.list.item(0)).top()
     QApplication.sendEvent(bar.input, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Down, Qt.KeyboardModifier.NoModifier))
     assert bar.list.currentRow() == 1  # the choice moves at once…
+    # …but the highlight is still where it was for the frame drawn next (it flashed at the new row for a frame,
+    # then went back and glided there)
+    assert bar.highlight_y == first
     second = bar.list.visualItemRect(bar.list.item(1)).top()
     assert wait_until(lambda: bar.highlight_y is None and glided, 1)
     assert any(first <= y < second for y in glided)  # …and the highlight glided after it, through the rows between
@@ -945,6 +986,8 @@ def test_resting_on_a_tab_shows_its_preview(window, site):
     assert abs(shown.height() / shown.width() - 0.625) < 0.02  # the top of the page, 16:10
     assert blue(shown.toImage().pixelColor(shown.width() // 2, shown.height() // 2))
     assert preview.host.text().startswith("127.0.0.1")
+    import re
+    assert re.search(r"·\s+\d+ MB", preview.host.text()), preview.host.text()  # how much memory its page is using
     sidebar_right = window.sidebar.mapTo(window, QPoint(window.sidebar.width(), 0)).x()
     assert preview.x() > sidebar_right  # beside the sidebar, not over it
     preview.leave(rows[id(a)])

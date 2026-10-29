@@ -65,3 +65,40 @@ def small() -> bool:
 def kept(plenty: int, little: int) -> int:
     """How many of something to keep: `little` on a machine without much memory."""
     return little if small() else plenty
+
+
+def process_mb(pid: int) -> float | None:
+    """How much memory a process is using, in megabytes: on a Mac its footprint, as Activity Monitor's Memory
+    column shows it (not counting what it shares with others); None if it can't be told."""
+    if not pid or pid <= 0:
+        return None
+    try:
+        import ctypes
+        if sys.platform == "darwin":
+            libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
+            info = (ctypes.c_uint64 * 32)()  # (rusage_info_v2: 16 bytes of uuid, then 64-bit counts)
+            if libproc.proc_pid_rusage(ctypes.c_int(pid), ctypes.c_int(2), ctypes.byref(info)) != 0:
+                return None
+            return info[9] / 2 ** 20  # ri_phys_footprint
+        if sys.platform == "win32":
+            from ctypes import wintypes
+
+            class Counters(ctypes.Structure):
+                _fields_ = [("cb", wintypes.DWORD), ("faults", wintypes.DWORD)] + [
+                    (name, ctypes.c_size_t) for name in ("peak_working", "working", "peak_paged_pool", "paged_pool",
+                                                         "peak_nonpaged_pool", "nonpaged_pool", "pagefile",
+                                                         "peak_pagefile", "private")]
+            handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # (query limited information)
+            if not handle:
+                return None
+            try:
+                counters = Counters(cb=ctypes.sizeof(Counters))
+                if not ctypes.windll.psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb):
+                    return None
+                return counters.private / 2 ** 20
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)
+        with open(f"/proc/{pid}/statm") as statm:  # (Linux: resident pages)
+            return int(statm.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / 2 ** 20
+    except (OSError, ValueError, AttributeError, IndexError):
+        return None

@@ -8,6 +8,7 @@
 # claiming one we ask the page whether anything under the pointer can still scroll that way, or
 # whether the page took the wheel events for itself (preventDefault).
 
+import math
 import time
 
 from PyQt6 import sip
@@ -27,8 +28,12 @@ WORLD = QWebEngineScript.ScriptWorldId.ApplicationWorld
 START_PX = 14         # sideways movement before a swipe counts as one
 COMMIT_PX = 150       # how far to swipe for letting go to navigate
 ARROW = 44
-CATCH_UP = 24         # a Space swipe this far behind the fingers catches up over a few frames instead of jumping
-CATCH_UP_RATE = 0.35  # (the part of the way it closes each frame)
+SWIPE_ENOUGH = 0.12   # how far across (of the sidebar's width) a swipe has to come to go on to the next Space…
+SWIPE_BACK = 0.15     # …as long as the fingers weren't pulling back faster than this (points per millisecond)
+SWIPE_FLICK = 0.15    # or as quick as this toward it, however short
+CATCH_UP = 1          # a Space swipe follows the fingers a frame at a time, closing CATCH_UP_RATE of the way each frame,
+CATCH_UP_RATE = 0.65  # rather than jumping to each event: the trackpad's events don't come in step with the screen's
+#                       frames (it moved +17, +31, +12…), and the first came 6 to 30 points along, a leap as it began
 
 # Notes, in the page, when it handled a sideways wheel itself (maps, sliders)
 WATCH_WHEEL = """
@@ -575,6 +580,39 @@ def settle_ms(distance: float, speed: float) -> int:
     return int(max(110, min(320, 3 * abs(distance) / speed)))
 
 
+SPRING = 0.02  # (per millisecond) how stiff the spring back is: settled in about a third of a second, as in Arc
+
+
+def spring_back(slide, goal, speed, done):
+    """Slide back to `goal` on a critically damped spring that starts at the fingers' own speed (points per
+    millisecond, toward the new Space): still drifting on, it eases to a stop, turns and settles, never stopping
+    dead or turning on the spot (an ease-out always starts at its fastest, from wherever the fingers left it).
+    Like slide.run, it's slide._pb_animation, so a new swipe or switch can stop it."""
+    start = slide.travel
+    offset = start - goal
+    # x(t) = goal + (offset + (speed + SPRING * offset) * t) * e^(-SPRING * t): no bounce past the goal
+    rate = speed + SPRING * offset
+
+    def away(t):  # (how far from the goal it is, t milliseconds in)
+        return (offset + rate * t) * math.exp(-SPRING * t)
+    ms = 8
+    while ms < 1200 and not (abs(away(ms)) < 0.5 and abs(away(ms) - away(ms - 8)) < 0.2):
+        ms += 8  # (till it's within half a point, and barely moving)
+    animation = QVariantAnimation(slide, startValue=0.0, endValue=float(ms), duration=ms)
+    animation.setEasingCurve(QEasingCurve.Type.Linear)
+
+    def step(elapsed):
+        slide.set_travel(goal + away(elapsed))
+    animation.valueChanged.connect(step)
+    animation.finished.connect(lambda: (slide.set_travel(goal), done()))
+    previous = getattr(slide, "_pb_animation", None)
+    if previous is not None:
+        previous.stop()
+    slide._pb_animation = animation
+    animation.start()
+    return animation
+
+
 class SpaceSwipe(QObject):
     """Two fingers sideways on the sidebar: the sidebar follows them to the next (or previous) Space,
     as far as you like and back again. Letting go past halfway, or with a flick, finishes the
@@ -596,7 +634,7 @@ class SpaceSwipe(QObject):
         # straight to where the fingers had got to by then was a jolt)
         self._aim = 0.0
         self._chase = QTimer(self, interval=16, timeout=self._catch_up)
-        QTimer.singleShot(3000, lambda: space_pictures(browser).soon())  # (the Spaces either side, ready to slide to)
+        QTimer.singleShot(3000, lambda: not sip.isdeleted(browser) and space_pictures(browser).soon())  # (the Spaces either side, ready to slide to)
 
     def wheel(self, event) -> bool:
         """A wheel event on the sidebar: True if it was part of a Space swipe (and is used up)."""
@@ -607,6 +645,9 @@ class SpaceSwipe(QObject):
                event.angleDelta().x(), event.angleDelta().y())  # (an address alone can be reused)
         if key == self._last[0]:
             return self._last[1]
+        pictures = getattr(self.browser, "space_pictures", None)
+        if pictures is not None:
+            pictures.soon()  # (the next Spaces' pictures wait till the scrolling's over: never between two swipes)
         answer = self._wheel(event)
         if self._last[0] is None:
             QTimer.singleShot(0, self._forget_last)
@@ -625,6 +666,8 @@ class SpaceSwipe(QObject):
         if phase == Qt.ScrollPhase.ScrollBegin:
             if self.state == "mine":
                 self._release()  # (the last one's fingers-up never came: decide it now)
+            if self._catch():
+                return True
             self._finish_now()
             self.state, self.dx, self.dy = "deciding", 0.0, 0.0
             self.velocity = _Velocity()
@@ -755,14 +798,22 @@ class SpaceSwipe(QObject):
             slide.set_travel(slide.travel + gap * CATCH_UP_RATE)
 
     def _release(self):
+        from .motion import reduced
         self._chase.stop()  # (it settles from where it shows)
         slide = self.slide
         width = slide.side.width()
         speed = self.velocity.value()  # toward the new Space
-        done = self.target is not None and (slide.travel > width * 0.5 and speed > -0.3 or
-                                            speed > 0.45 and slide.travel > width * 0.06)
+        # A swipe is meant: it goes on to the next Space unless the fingers barely moved or were pulling back
+        # (it used to need half the way, or a quick flick, and a deliberate swipe sprang back)
+        done = self.target is not None and (slide.travel > width * SWIPE_ENOUGH and speed > -SWIPE_BACK or
+                                            speed > SWIPE_FLICK and slide.travel > width * 0.03)
         self.state = "settling"
         goal = width if done else 0.0
+        if not done and speed + SPRING * (slide.travel - goal) > 0 and not reduced():
+            # Back where it was, on a spring that starts at the fingers' speed (a quick flick back, which would
+            # carry it past where it started, glides in as it always has)
+            spring_back(slide, goal, speed, lambda: self._settled(slide, done))
+            return
         ms = settle_ms(goal - slide.travel, abs(speed) if (goal > slide.travel) == (speed > 0) else 0)
         slide.run(goal, ms, lambda: self._settled(slide, done))
 
@@ -780,6 +831,25 @@ class SpaceSwipe(QObject):
                 self._switch(slide)
             b._restore_space_tab()  # the new Space's page
         QTimer.singleShot(0, lambda: not sip.isdeleted(slide) and slide.lift())  # once the sidebar has caught up
+
+    def _catch(self) -> bool:
+        """Fingers down again while the last swipe is still settling: they take hold of it where it is, as on a Mac,
+        rather than it jumping to where it was headed (it snapped back to the start, then this one began)."""
+        slide = self.slide
+        if self.state != "settling" or slide is None or sip.isdeleted(slide) or self.target is None:
+            return False
+        animation = getattr(slide, "_pb_animation", None)
+        if animation is not None:
+            try:
+                animation.stop()
+            except RuntimeError:
+                pass
+        self.state = "mine"
+        self.dx = -slide.travel * slide.direction  # (so the fingers carry on from where it shows)
+        self.dy = 0.0
+        self.velocity = _Velocity()
+        self._aim = slide.travel
+        return True
 
     def _finish_now(self):
         """A new gesture while the last one is still settling: let that one land at once."""

@@ -5,6 +5,7 @@
 import functools
 import http.server
 import math
+import os
 import ssl
 import subprocess
 import struct
@@ -17,6 +18,7 @@ import pytest
 from live_helpers import pause, wait_until  # noqa: F401
 
 TONE_LEVEL = 20  # (of 32,767: the test tone's loudness, see site())
+MEMORY_CAP_GB = float(os.environ.get("ECLIPSE_TEST_MEMORY_GB", 4))  # the run stops if the tests use more than this
 
 SITE = Path(__file__).parent / "site"
 _site_root = [""]  # where `site` copied the pages
@@ -45,6 +47,52 @@ def _keep_out_of_the_way(widget=None):
         window = macos._send(ctypes.c_void_p(int(widget.winId())), "window")
         if window:
             macos._send(window, "orderBack:", None, restype=None, argtypes=(ctypes.c_void_p,))
+
+
+def _memory_gb() -> float:
+    """How much memory this process (the tests and their browser window) holds now."""
+    try:
+        out = subprocess.run(["ps", "-o", "rss=", "-p", str(os.getpid())], capture_output=True, text=True, timeout=5)
+        return int(out.stdout.strip()) / 2 ** 20
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return 0.0
+
+
+def pytest_runtest_logfinish(nodeid, location):
+    # A cap, so a run can never take the whole Mac with it (14 GB once, with other apps open): over it, the run
+    # stops, saying which test it got to. ECLIPSE_TEST_MEMORY_GB=8 (say) raises it
+    used = _memory_gb()
+    if used > MEMORY_CAP_GB:
+        pytest.exit(f"The live tests stopped: they were using {used:.1f} GB, over the {MEMORY_CAP_GB:g} GB cap, "
+                    f"after {nodeid}", returncode=3)
+
+
+_slot_errors = []  # errors raised in Qt's callbacks (timers, signals) during the test running now
+
+
+def _slot_error(kind, value, trace):
+    """sys.excepthook for errors in Qt's callbacks. Without one, PyQt aborts the whole run on the first."""
+    if kind is RuntimeError and "has been deleted" in str(value):
+        return  # (a timer of a window a finished test closed, firing late: that window's gone, as it should be)
+    import traceback
+    traceback.print_exception(kind, value, trace)
+    _slot_errors.append(f"{kind.__name__}: {value}")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def slot_errors_fail_their_test():
+    import sys
+    sys.excepthook = _slot_error
+    yield
+    sys.excepthook = sys.__excepthook__
+
+
+@pytest.fixture(autouse=True)
+def no_slot_errors():
+    _slot_errors.clear()
+    yield
+    if _slot_errors:
+        pytest.fail("An error in a Qt callback during this test: " + "; ".join(_slot_errors))
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -136,4 +184,11 @@ def window(data_dir, qapp):
     w.close()
     w.deleteLater()
     pause(0.2)
+    # Gone now, with its pages and pictures: a deleteLater only happens inside a running event loop, which the
+    # tests never start, so every test's window was kept until the end of the run
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtWidgets import QApplication
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)
+    import gc
+    gc.collect()
 
