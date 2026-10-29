@@ -71,6 +71,7 @@ MAC = sys.platform == "darwin"
 # Qt maps "Ctrl" to ⌘ on macOS; the physical Control key is "Meta" there
 CONTROL = "Meta" if MAC else "Ctrl"
 RECENT_PAGES = 12  # (at the bottom of the History menu)
+HISTORY_MENU = 15  # (pages in the back and forward buttons' menus)
 DARK_PAGE_BLANK = "#1b1b1e"  # (theme.py's page-area colour on a dark Space)
 KEEP_RUNNING = "keep_running"  # (closing the window leaves Eclipse open, on a Mac)
 AUTOPLAY_SETTING = "media_waits_for_click"  # (Settings → Privacy: videos don't play until you click)
@@ -898,6 +899,7 @@ class MainWindow(QMainWindow):
         item.private = self.private.is_private_download(download)  # noted now: the session forgets it when done
         self.downloads_window.add(item)
         download.isFinishedChanged.connect(lambda: self._download_finished(item, download))
+        self.emit("download_started", item, download)  # (its icon flies to the Downloads button: download_arc.py)
         self.toast(f"Downloading {download.downloadFileName()}…  (⌥⌘L shows downloads)")
 
     def _download_allowed(self, download) -> bool:
@@ -1811,6 +1813,23 @@ class MainWindow(QMainWindow):
     def go_forward(self):
         if view := self._current_view():
             view.forward()
+
+    def fill_history_menu(self, menu, forward=False):
+        """The pages back (or forward) from this one, nearest first, for the back and forward buttons' menus (held
+        down, or right-clicked): pick one to jump straight there."""
+        menu.clear()
+        view = self._current_view()
+        history = view.history() if view is not None else None
+        items = (history.forwardItems(HISTORY_MENU) if forward else list(reversed(history.backItems(HISTORY_MENU)))) \
+            if history is not None else []
+        for item in items:
+            url = item.url().toString()
+            title = item.title() or display_host(url) or url
+            action = menu.addAction(title if len(title) <= 60 else title[:59] + "…")
+            action.setToolTip(url)
+            action.triggered.connect(lambda _=False, it=item: history.goToItem(it))
+        if not items:
+            menu.addAction("Nothing further " + ("forward" if forward else "back")).setEnabled(False)
 
     def reload(self):
         if view := self._current_view():

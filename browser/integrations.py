@@ -5,9 +5,9 @@
 # your GitHub account's Live Folders and search shortcut.
 #
 # The maker's copy also comes set up for the maker's own apps (nobody else has them):
-#   Homebase   the supervisor on the desktop (arkans-pc1:8090): a chip in the sidebar shows how many of
-#              its apps are up; its menu opens, restarts, stops and shows the logs of each one; Local AI
-#              goes through its Ollama proxy
+#   Homebase   the supervisor on the desktop (arkans-pc1:8090): a Live Folder of its apps (each one's state
+#              in its title), a toast when one goes down; its menu (⌘T → Homebase Apps) opens, restarts,
+#              stops and shows the logs of each one; Local AI goes through its Ollama proxy
 #   Send to    the current page to Job Tracker (a new job from a posting), to Daybook (as a task), to
 #              Sentinel's checkup (a security grade for the site), or a GitHub repo to Loom
 #   Presets    Live Folders and search shortcuts for Parliament, Job Tracker, gradtrack and homebase's Away queue
@@ -108,6 +108,9 @@ def live_folder_presets(cfg: dict) -> list[dict]:
                     "url": base(cfg["gradtrack"]) + "/calendar.ics", "about": "gradtrack's upcoming deadlines"})
     if base(cfg["homebase"]):
         hb = base(cfg["homebase"])
+        out.append({"id": "homebase-apps", "name": "Homebase", "kind": "json", "auth": "none",
+                    "url": hb + "/api/status", "items": "apps", "title": "{title} · {state}", "link": "url",
+                    "about": "homebase's apps that have a page, and how each is doing"})
         out.append({"id": "away-tasks", "name": "Away Tasks", "kind": "json", "auth": "none",
                     "url": hb + "/api/away", "items": "tasks", "title": "{status} · {project} · {text}",
                     "link": hb + "/#away-{id}", "about": "homebase's Away queue: what the local model is working on"})

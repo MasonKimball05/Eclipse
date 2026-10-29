@@ -51,6 +51,17 @@ def test_presets_parse_their_apps_answers():
         [("done · Parliament-Dev · Add tests", DEFAULTS["homebase"] + "/#away-1023-1")]
 
 
+def test_the_homebase_preset_lists_its_apps_and_how_each_is_doing():
+    hb = {p["id"]: p for p in live_folder_presets(config({}))}["homebase-apps"]
+    assert hb["name"] == "Homebase" and hb["url"] == DEFAULTS["homebase"] + "/api/status"
+    status = {"host": "arkans-pc1", "apps": [
+        {"name": "jobtracker", "title": "Job Tracker", "state": "running", "url": "http://desk:8001/"},
+        {"name": "gradtrack", "title": "gradtrack", "state": "crashed", "url": "http://desk:8002/"},
+        {"name": "worker", "title": "Worker", "state": "running"}]}  # (no page: nothing to open)
+    assert parse_json_items(status, hb["items"], hb["title"], hb["link"]) == [
+        ("Job Tracker · running", "http://desk:8001/"), ("gradtrack · crashed", "http://desk:8002/")]
+
+
 def test_search_shortcut_presets():
     assert {e["keyword"] for e in search_shortcut_presets(config({}))} == {"parl", "mygh"}
 

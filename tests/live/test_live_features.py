@@ -165,9 +165,9 @@ def test_swiping_straight_back_shows_only_the_two_spaces(window, site):
     assert wait_until(lambda: [c for c in window.findChildren(SpaceSlide) if c.isVisible()] == [swipes.slide], 2)
     _sidebar_swipe(window, 8, width * 0.05, gap=0.01, begin=False)
     assert wait_until(lambda: swipes.slide is None, 4)
-    pause(0.3)
     assert window.store.active_space is first
-    assert not [c for c in window.findChildren(SpaceSlide) if c.isVisible()]
+    # Its cover fades away once the sidebar's caught up (a moment longer on a busy machine), never left behind
+    assert wait_until(lambda: not [c for c in window.findChildren(SpaceSlide) if c.isVisible()], 2)
 
 
 def test_a_keyboard_switch_mid_swipe_never_wedges_the_sidebar(window, site):
@@ -1677,7 +1677,9 @@ def test_a_space_comes_forward_on_its_schedule_and_blocks_its_distractions(windo
     feature.set_rule(work, {"blocked": ["127.0.0.1"]})
     window.toasts.clear()
     tab = open_page(window, site + "/article.html", wait=False)
-    assert wait_until(lambda: window.toasts == [f"127.0.0.1 is blocked in {work.name}"], 5)
+    blocked = f"127.0.0.1 is blocked in {work.name}"
+    assert wait_until(lambda: blocked in window.toasts, 5)  # (once per try: a slow load can try twice)
+    assert set(window.toasts) == {blocked}
     assert wait_until(lambda: "isn't in" in (run_js(tab.view, "document.body && document.body.innerText") or ""), 5)
     window.toast_action()
     assert wait_until(lambda: tab.view.url().toString() == site + "/article.html", 5)
@@ -1744,6 +1746,7 @@ def test_the_start_view_can_be_just_the_background_from_a_right_click(window, mo
     from PyQt6.QtGui import QContextMenuEvent
     from browser import start_view
     view = window.content.empty
+    space = window.store.active_space
     window.store.settings[start_view.SETTING] = True
     view.refresh()
     assert view.body.count() > 0
@@ -1752,12 +1755,51 @@ def test_the_start_view_can_be_just_the_background_from_a_right_click(window, mo
     view.contextMenuEvent(QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(20, 20), QPoint(20, 20)))
     assert chosen[-1].text() == "Show Just the Background"
     chosen[-1].trigger()
-    assert window.store.settings[start_view.SETTING] is False and view.body.count() == 0
-    assert "bring it back" in window.toasts[-1]
+    assert space.start_view is False and view.body.count() == 0
+    assert window.store.settings[start_view.SETTING] is True  # (this Space only)
+    assert "bring it back" in window.toasts[-1] and space.name in window.toasts[-1]
     view.contextMenuEvent(QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(20, 20), QPoint(20, 20)))
     assert chosen[-1].text().startswith("Show Search")
     chosen[-1].trigger()
-    assert window.store.settings[start_view.SETTING] is True and view.body.count() > 0
+    assert space.start_view is True and view.body.count() > 0
+    space.start_view = None
+
+
+def test_each_space_chooses_its_own_start_view(window):
+    from browser import start_view
+    from browser.models import Space
+    from browser.space_editor import SpaceEditor
+    view = window.content.empty
+    first = window.store.active_space
+    second = Space("Plain", "#3b82f6")
+    window.store.spaces.append(second)
+    window.store.settings[start_view.SETTING] = True
+    try:
+        editor = SpaceEditor(window, second)  # (never shown: editing the Space you're not in)
+        assert not editor.plain.isChecked()
+        editor.plain.setChecked(True)
+        assert second.start_view is False and first.start_view is None
+        assert view.body.count() > 0  # (still showing, in the Space you're in)
+        assert "Plain" in window.toasts[-1]
+        editor.close()
+        window._set_active_space(second)
+        assert view.body.count() == 0
+        window._set_active_space(first)
+        assert view.body.count() > 0
+        # A Space that hasn't chosen follows Settings; one that has keeps its own choice
+        window.store.settings[start_view.SETTING] = False
+        assert not start_view.shown_in(window.store, first) and not start_view.shown_in(window.store, second)
+        second.start_view = True
+        assert start_view.shown_in(window.store, second)
+        assert SpaceEditor(window, second).plain.isChecked() is False
+        assert Space.from_dict(second.to_dict()).start_view is True
+        assert Space.from_dict({"name": "Old"}).start_view is None  # (a Space saved before: the default)
+    finally:
+        window.store.settings[start_view.SETTING] = True
+        if window.store.active_space is not first:
+            window._set_active_space(first)
+        window.store.spaces.remove(second)
+        view.refresh()
 
 
 def test_settings_has_a_live_folders_guide_with_every_kind(window, monkeypatch):
@@ -1777,3 +1819,150 @@ def test_settings_has_a_live_folders_guide_with_every_kind(window, monkeypatch):
     buttons[1].click()
     assert started == [{"kind": KINDS[1][0]}]
     settings.deleteLater()
+
+
+def test_a_downloads_icon_flies_to_the_downloads_button(window, site, monkeypatch):
+    from PyQt6.QtCore import QPointF
+    from browser import download_arc, motion
+    tab = open_page(window, site + "/index.html")
+    feature = window.feature("download_arc")
+    button = window.sidebar.downloads_btn
+    size = button.iconSize()
+
+    class Download:
+        page = staticmethod(lambda: tab.view.page())
+        downloadFileName = staticmethod(lambda: "report.pdf")
+    monkeypatch.setattr(motion, "reduced", lambda: False)
+    flight = feature.download_started(None, Download())
+    assert flight is not None and flight.isVisible()
+    end = QPointF(button.mapTo(window.centralWidget(), QPoint(button.width() // 2, button.height() // 2)))
+    assert flight.end == end
+    mid = download_arc.arc_point(flight.start, flight.end, 0.5)
+    assert mid.y() < min(flight.start.y(), flight.end.y())  # (an arc: up, then down)
+    assert wait_until(lambda: flight.t == 1.0, 2)
+    pause(download_arc.BOUNCE_MS / 1000 + 0.3)
+    assert button.iconSize() == size  # (bounced, and back)
+    # Not with Reduce Motion, nor with the sidebar hidden, nor from a page that isn't in this window
+    monkeypatch.setattr(motion, "reduced", lambda: True)
+    assert feature.download_started(None, Download()) is None
+    monkeypatch.setattr(motion, "reduced", lambda: False)
+    Download.page = staticmethod(lambda: None)
+    assert feature.download_started(None, Download()) is None
+    window.close_tab(tab)
+
+
+def test_the_back_and_forward_buttons_list_the_pages_to_jump_to(window, site):
+    from PyQt6.QtWidgets import QToolButton
+    from browser.window import HISTORY_MENU
+    tab = open_page(window, site + "/index.html")
+    for page in ("article.html", "music.html", "index.html?third"):
+        tab.view.load(QUrl(f"{site}/{page}"))
+        assert wait_until(lambda: tab.view.url().toString() == f"{site}/{page}" and not tab.view.page().isLoading(), 5)
+    back = window.sidebar.back_btn
+    assert back.popupMode() == QToolButton.ToolButtonPopupMode.DelayedPopup  # (a click still just goes back)
+    menu = back.menu()
+    window.fill_history_menu(menu)
+    titles = [a.text() for a in menu.actions()]
+    assert len(titles) == 3 and titles[0] == "Radio Tab"  # (nearest first)
+    menu.actions()[2].trigger()  # the first page, three back
+    assert wait_until(lambda: tab.view.url().toString() == site + "/index.html", 5)
+    window.fill_history_menu(window.sidebar.forward_btn.menu(), forward=True)
+    assert len(window.sidebar.forward_btn.menu().actions()) == 3
+    window.fill_history_menu(menu)
+    assert [a.isEnabled() for a in menu.actions()] == [False]  # (nothing back from here)
+    assert HISTORY_MENU >= 10
+    window.close_tab(tab)
+
+
+def test_shift_return_in_the_command_bar_goes_straight_to_the_best_page(window, monkeypatch):
+    from PyQt6.QtGui import QKeyEvent
+    opened = []
+    monkeypatch.setattr(window, "open_url", lambda url, **_: opened.append(url))
+    bar = window.command_bar
+    window.open_command_bar()
+    bar.input.setText("qt webengine docs")
+    QApplication.sendEvent(bar.input, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Return,
+                                                Qt.KeyboardModifier.ShiftModifier))
+    assert opened == ["https://duckduckgo.com/?q=%5Cqt%20webengine%20docs"] and not bar.isVisible()
+
+
+def test_a_link_preview_shows_the_picture_the_page_offers(window, site, site_root):
+    from pathlib import Path
+    from PyQt6.QtGui import QColor, QImage
+    from browser.browse import PageReader
+    from browser.content import PREVIEW_IMAGE_HEIGHT
+    picture = QImage(800, 420, QImage.Format.Format_RGB32)
+    picture.fill(QColor("#3366ff"))
+    picture.save(str(Path(site_root) / "preview.png"))
+    (Path(site_root) / "og.html").write_text('<html><head><title>With a picture</title>'
+                                            '<meta property="og:image" content="preview.png"></head>'
+                                            '<body><p>' + "Words. " * 200 + '</p></body></html>')
+    found = []
+    reader = PageReader(window.profile, f"{site}/og.html", window, timeout_ms=8000, enough_chars=200)
+    reader.done.connect(lambda title, text: found.append((title, reader.image)))
+    assert wait_until(lambda: found, 10)
+    assert found[0] == ("With a picture", f"{site}/preview.png")  # (made absolute)
+    card = window.content.preview_card
+    card.show_for(f"{site}/og.html")
+    card.set_image(found[0][1])
+    assert wait_until(lambda: card.image.isVisible(), 5)
+    pixmap = card.image.pixmap()
+    assert pixmap.height() <= PREVIEW_IMAGE_HEIGHT and pixmap.width() > 300
+    assert card.height() > pixmap.height()  # (the card grew to hold it)
+    # Not a picture (or not a web address): no picture, no fuss
+    card.set_image(f"{site}/og.html")
+    pause(1.0)
+    assert not card.image.isVisible()
+    card.set_image("file:///etc/hosts")
+    assert not card.image.isVisible()
+    card.dismiss()
+
+
+def test_a_slow_page_gets_a_sweeping_highlight_on_its_loading_bar(window, monkeypatch):
+    from browser import content, motion
+    monkeypatch.setattr(motion, "reduced", lambda: False)
+    frame = window.content
+    frame._slow.setInterval(100)  # (2.5 s in real life)
+    frame.set_progress(10)
+    assert frame.progress.isVisible() and not frame.shimmer.isVisible()
+    assert wait_until(lambda: frame.shimmer.isVisible(), 2)
+    first = frame.shimmer.x()
+    pause(0.3)
+    assert frame.shimmer.x() != first  # (it moves)
+    frame.set_progress(60)
+    assert frame.shimmer.isVisible()
+    frame.set_progress(100)
+    assert not frame.shimmer.isVisible() and not frame.progress.isVisible() and frame._sweep is None
+    # A quick page never shows it
+    frame.set_progress(20)
+    frame.set_progress(100)
+    pause(0.3)
+    assert not frame.shimmer.isVisible()
+    frame._slow.setInterval(content.SLOW_LOAD_MS)
+
+
+def test_dragging_the_theme_intensity_keeps_up_and_cancel_wins(window):
+    from browser.theme_editor import DRAG_MS, ThemeEditor
+    space = window.store.active_space
+    before = dict(space.theme)
+    applied = []
+    real = window.apply_theme
+    window.apply_theme = lambda: (applied.append(space.theme.get("intensity")), real())
+    try:
+        editor = ThemeEditor(window, space)
+        applied.clear()
+        for value in range(10, 60):  # (a drag: many values, much faster than the window restyles)
+            editor.intensity.setValue(value)
+        assert applied == []  # (none yet: the latest comes in a moment)
+        pause(DRAG_MS * 3 / 1000)
+        assert applied == [0.59]  # (once, and the latest)
+        editor.intensity.setValue(70)
+        editor.intensity.sliderReleased.emit()  # letting go: where it ended, at once
+        assert applied[-1] == 0.7
+        editor.intensity.setValue(80)
+        editor.reject()  # Cancel straight after: the old theme, not the last bit of dragging
+        pause(DRAG_MS * 3 / 1000)
+        assert space.theme == before
+    finally:
+        window.apply_theme = real
+        window.apply_theme()

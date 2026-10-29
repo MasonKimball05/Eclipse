@@ -651,6 +651,8 @@ def stylesheet(t: Theme) -> str:
     #ContentFrame[blank="true"] {{ background: {"rgba(0, 0, 0, 0.18)" if t.dark else "rgba(255, 255, 255, 0.42)"}; }}
     QLabel#PanelEmptyTitle {{ color: {panel_text}; font-size: 15px; font-weight: 600; }}
     #ProgressBar {{ background: {rgba(t.accent)}; border-radius: 1px; }}
+    #ProgressShimmer {{ background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0, stop: 0 rgba(255, 255, 255, 0),
+                        stop: 0.5 rgba(255, 255, 255, 0.85), stop: 1 rgba(255, 255, 255, 0)); }}
 
     #LinkLabel, #Toast {{
         background: {panel}; color: {panel_text}; border: 1px solid {panel_line};
@@ -964,6 +966,7 @@ def stylesheet(t: Theme) -> str:
 
     QFrame#SpaceEditor {{ background: {panel}; border: 1px solid {panel_line}; border-radius: 14px; }}
     #SpaceEditor QLabel {{ color: {panel_text}; }}
+    #SpaceEditor QCheckBox {{ color: {panel_text}; }}
     #SpaceEditor QLabel#EditorSection {{ color: {panel_dim}; font-size: 10px; font-weight: 700; }}
     #SpaceEditor QLabel#SpacePreview {{ background: {rgba(t.panel_text, 0.07)}; border-radius: 8px; }}
     #SpaceEditor QLineEdit#SpaceName, #SpaceEditor QComboBox#SpaceCombo {{

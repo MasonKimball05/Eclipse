@@ -1,5 +1,7 @@
 # The Space editor: a small popover (right-click a Space) to rename it, pick its icon and
 # colour, choose its profile, and reach the theme editor. Changes apply as you make them.
+# It also has this Space's "just the background" switch for the start view (as right-clicking that has),
+# being where you'd look while picking a background.
 
 import re
 import sys
@@ -7,7 +9,7 @@ import sys
 import qtawesome as qta
 from PyQt6.QtCore import QPoint, QSize, Qt, QTimer
 from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import (QButtonGroup, QComboBox, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout,
+from PyQt6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout,
                              QLabel, QLineEdit, QPushButton, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
 from .icons import EMOJI, SYMBOLS, emoji_icon, is_symbol, space_icon
@@ -130,6 +132,15 @@ class SpaceEditor(QWidget):
         self.new_profile.hide()
         layout.addWidget(self.profile)
         layout.addWidget(self.new_profile)
+
+        # The start view (with no tab open): the search and sites, or just the background
+        from .start_view import shown_in
+        self.plain = QCheckBox("Just the background with no tab open")
+        self.plain.setToolTip("No search, most visited or recently closed tabs in this Space: just its colours. "
+                              "Right-clicking the start view does the same.")
+        self.plain.setChecked(not shown_in(browser.store, space))
+        self.plain.toggled.connect(lambda on: browser.content.empty.set_shown(not on, space))
+        layout.addWidget(self.plain)
 
         # Actions
         line = QFrame()

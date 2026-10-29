@@ -48,3 +48,4 @@ def test_both_apps_carry_the_dictionary_and_the_link_scheme(tmp_path):
 def test_eclipses_own_links_count_as_another_apps_to_a_page():
     from PyQt6.QtCore import QUrl
     assert is_external(QUrl(f"{OWN_SCHEME}://open?url=https://example.com/"))  # (webview.py refuses them first)
+

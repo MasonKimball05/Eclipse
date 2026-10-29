@@ -30,6 +30,14 @@ PAGE_TIMEOUT_MS = 7_000
 # The page's readable text straight from the DOM. Unlike QWebEnginePage.toPlainText (which
 # stays empty until the whole page, ads included, has finished loading), this works as soon
 # as the HTML has arrived. Runs in an isolated world so the page's own scripts can't interfere.
+# The picture a page offers for link previews (what Messages and Slack show): its og:image or twitter:image
+PREVIEW_IMAGE = """(() => {
+  const meta = document.querySelector('meta[property="og:image"], meta[name="og:image"], meta[name="twitter:image"], '
+                                      + 'meta[property="twitter:image"]');
+  const src = meta && meta.content;
+  try { return src ? new URL(src, location.href).href : ''; } catch (error) { return ''; }
+})()"""
+
 EXTRACT_TEXT = """(() => {
   const clean = (root) => {
     if (!root) return '';
@@ -171,6 +179,7 @@ class PageReader(QObject):
         self._loaded = False
         self._finished = False
         self._stopped = False
+        self.image = ""  # (the page's preview picture's address, if it has one: PREVIEW_IMAGE)
         self.page = QWebEnginePage(profile, self)
         self.page.setAudioMuted(True)
         self.page.loadFinished.connect(self._on_loaded)
@@ -185,7 +194,13 @@ class PageReader(QObject):
 
     def _check(self):
         if not self._finished:
-            self.page.runJavaScript(EXTRACT_TEXT, QWebEngineScript.ScriptWorldId.ApplicationWorld, self._got)
+            world = QWebEngineScript.ScriptWorldId.ApplicationWorld
+            self.page.runJavaScript(PREVIEW_IMAGE, world, self._got_image)  # (answered before the text, in order)
+            self.page.runJavaScript(EXTRACT_TEXT, world, self._got)
+
+    def _got_image(self, src):
+        if isinstance(src, str) and src.startswith(("https://", "http://")):
+            self.image = src
 
     def _got(self, text):
         if self._finished or not isinstance(text, str):

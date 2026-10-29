@@ -42,6 +42,7 @@ PAGES = [
 # Shortcuts that aren't menu items (the menu-bar ones are read straight from the menus)
 EXTRA_SHORTCUTS = [
     ("Command Bar", "⌘↩", "Browse for Me with what you've typed"),
+    ("Command Bar", "⇧↩", "Go straight to the best page for it (Instant Links)"),
     ("Command Bar", "↑ ↓  ↩", "Pick a result"),
     ("Pages", "Tap ⇧ on a link", "Preview where the link goes (Claude)"),
     ("Pages", "⌘F, a question, ↩", "Ask Claude about the page"),
@@ -589,7 +590,9 @@ class SettingsWindow(FadesIn, QWidget):
                               "opening a new tab.", peek),
             self._row("Start view with no tab open", "The Space's name, a search bar, your most-visited sites "
                                                      "and recently closed tabs. Off, it's just the Space's "
-                                                     "background, like Arc's.", start),
+                                                     "background, like Arc's. For Spaces that haven't chosen: "
+                                                     "each can choose for itself (right-click the Space).",
+                      start),
             self._row("Tidy tab titles", "Like Arc Max: the sidebar leaves the site's name out of a tab's title "
                                          "(its icon says it), so “Q3 plan - Google Docs” shows as “Q3 plan”.",
                       tidy),
@@ -980,8 +983,8 @@ class SettingsWindow(FadesIn, QWidget):
         dialog.setProperty("panel", True)
         form = QFormLayout(dialog)
         name, keyword, url = QLineEdit(), QLineEdit(), QLineEdit()
-        name.setPlaceholderText("Parliament")
-        keyword.setPlaceholderText("parl")
+        name.setPlaceholderText("Wikipedia")
+        keyword.setPlaceholderText("wiki")
         url.setPlaceholderText("https://example.com/search?q=%s")
         hint = FittedLabel("Search the site once, copy the address, and put %s where your search words were.")
         hint.setObjectName("Hint")

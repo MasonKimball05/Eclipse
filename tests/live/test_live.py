@@ -408,8 +408,11 @@ def test_the_sidebar_resize_handle_is_on_the_page_edge(window, site):
     assert window.sidebar.width() == 250
 
 
-def test_peek_eases_in_and_out(window, site):
+def test_peek_eases_in_and_out(window, site, monkeypatch):
+    from browser import peek as peek_module
     peek = window.peek
+    # (no click to grow from: the pointer's off the window, so it rises into place)
+    monkeypatch.setattr(peek_module.QCursor, "pos", staticmethod(lambda: window.mapToGlobal(QPoint(-500, -500))))
     peek.open(window.profile, url=f"{site}/article.html")
     assert peek.isVisible() and peek.dim < 0.5  # (on its way, not there at once)
     assert wait_until(lambda: peek.dim == 1.0 and peek.rise == 0.0, 1)
@@ -423,6 +426,27 @@ def test_peek_eases_in_and_out(window, site):
     assert wait_until(lambda: peek.dim == 1.0, 1) and peek.isVisible() and peek.card.pos() == final
     peek.close_peek(animate=False)
     assert not peek.isVisible()
+
+
+def test_peek_grows_out_of_the_link_and_back_into_it(window, site, monkeypatch):
+    from browser import motion, peek as peek_module
+    peek = window.peek
+    monkeypatch.setattr(motion, "reduced", lambda: False)
+    click = QPoint(300, 200)  # (where the link was clicked, in the window)
+    monkeypatch.setattr(peek_module.QCursor, "pos", staticmethod(lambda: window.centralWidget().mapToGlobal(click)))
+    peek.open(window.profile, url=f"{site}/article.html")
+    assert peek.origin == peek.mapFrom(window.centralWidget(), click)
+    assert peek.ghost is not None and not peek.card.isVisible()  # (a picture of it does the growing)
+    seed = peek._seed()
+    assert seed.center() == peek.origin
+    start = peek_module.grown(seed, peek.card.geometry(), 0.0)
+    assert start == seed and peek_module.grown(seed, peek.card.geometry(), 1.0) == peek.card.geometry()
+    assert wait_until(lambda: peek.ghost is None and peek.card.isVisible() and peek.dim == 1.0, 1)
+    assert peek.card.width() > 400  # (its real size, not the seed's)
+    peek.close_peek()
+    assert peek.ghost is not None and not peek.card.isVisible()  # (shrinking back into the link)
+    assert wait_until(lambda: not peek.isVisible() and peek.view is None, 1)
+    assert peek.card.isVisibleTo(peek)  # (ready for next time)
 
 
 def test_split_view_crossfades_and_tidies_up(window, site):

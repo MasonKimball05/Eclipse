@@ -171,8 +171,9 @@ def _containing_list(nodes, node):
 
 class Space:
     def __init__(self, name, color, icon="", space_id=None, pinned=None, today=None, active_tab_id=None,
-                 profile="default", theme=None):
+                 profile="default", theme=None, start_view=None):
         self.id = space_id or new_id()
+        self.start_view = start_view  # its own choice of start view (True/False), or None for Settings' default
         self.theme: dict = theme or {}  # extra colours, intensity, light/dark, grain (see theme.py)
         self.profile = profile  # which browser profile (cookies, logins) this Space's tabs use
         self.name = name
@@ -186,6 +187,7 @@ class Space:
         return {
             "id": self.id, "name": self.name, "color": self.color, "icon": self.icon,
             "active_tab_id": self.active_tab_id, "profile": self.profile, "theme": self.theme,
+            "start_view": self.start_view,
             "pinned": [t.to_dict() for t in self.pinned],
             "today": [t.to_dict() for t in self.today],
         }
@@ -195,7 +197,7 @@ class Space:
         return cls(d.get("name", "Space"), d.get("color", PALETTE[0][1]), d.get("icon", d.get("emoji", "")), d.get("id"),
                    [node_from_dict(t) for t in d.get("pinned", [])],
                    [node_from_dict(t) for t in d.get("today", [])],
-                   d.get("active_tab_id"), d.get("profile", "default"), d.get("theme"))
+                   d.get("active_tab_id"), d.get("profile", "default"), d.get("theme"), d.get("start_view"))
 
 
 class Store(QObject):

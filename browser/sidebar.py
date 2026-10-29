@@ -1427,6 +1427,16 @@ class Sidebar(QWidget):
         self.toggle_btn.clicked.connect(browser.toggle_sidebar)
         self.back_btn.clicked.connect(browser.go_back)
         self.forward_btn.clicked.connect(browser.go_forward)
+        # Held down or right-clicked: the pages back (or forward), to jump several at once
+        for button, forward in ((self.back_btn, False), (self.forward_btn, True)):
+            menu = browser._menu(button)
+            menu.aboutToShow.connect(lambda m=menu, f=forward: browser.fill_history_menu(m, f))
+            button.setMenu(menu)
+            button.setPopupMode(QToolButton.ToolButtonPopupMode.DelayedPopup)
+            button.setStyleSheet("QToolButton::menu-indicator { image: none; width: 0; }")
+            button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            button.customContextMenuRequested.connect(
+                lambda _pos, b=button: b.showMenu())
         self.reload_btn.clicked.connect(browser.reload)
         top.addWidget(self.toggle_btn)
         top.addStretch(1)
@@ -1573,7 +1583,7 @@ class Sidebar(QWidget):
         bottom.addWidget(self.archive_btn)
         bottom.addWidget(self.downloads_btn)
         self._bottom_buttons = [self.archive_btn, self.downloads_btn, self.new_space_btn]
-        for button in browser.gather("sidebar_buttons"):  # (Homebase…)
+        for button in browser.gather("sidebar_buttons"):  # (a feature's own, beside Downloads)
             bottom.addWidget(button)
             self._bottom_buttons.append(button)
         bottom.addStretch(1)

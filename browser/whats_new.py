@@ -1,5 +1,7 @@
 # What's New: a short tour of what's been added, shown once after an update brings something new
 # (and any time from ⌘T → "What's New"). Bump EDITION when there's a new section at the top.
+# A bullet starting "[mine]", or a section whose heading does, is about the maker's own apps: only the maker's
+# copy shows it (see integrations.py).
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QDialogButtonBox, QTextBrowser, QVBoxLayout, QWidget
@@ -9,7 +11,7 @@ from .shortcuts import for_here
 from .motion import FadesIn
 from .theme import quiet_scrollbars, stylesheet
 
-EDITION = 21
+EDITION = 22
 SETTING = "whats_new_seen"
 
 NOTES = """
@@ -21,12 +23,23 @@ NOTES = """
 - **Ask about pages you've read**: in ⌘T, ask a question and choose *Ask Claude About Pages You've Read*.
   The answer comes from pages you've visited, with each point linked to its page. Page search results say when
   you read them, and banks, health records and mail are never kept (Settings → Privacy → Excluded Sites…).
+- **Instant Links**: type in ⌘T and press ⇧↩ to go straight to the best page for it, instead of a page of results.
+- **Back and forward remember the way**: hold down (or right-click) the back or forward button to jump several pages
+  at once.
+- **Downloads fly home**: a download's icon arcs from where you clicked to the Downloads button.
+- **Peek grows out of the link** you clicked, and shrinks back into it when you close it.
+- **Link previews show the page's picture**: tap ⇧ on a link for its summary, now with the image the page offers.
+- **A slow page shows it's still working**: a highlight sweeps along the loading bar until it's done.
+- **Softer motion**: the command bar, Peek, Little windows and cards settle in with a touch of spring.
 - **Traffic lights drawn like Arc's**: they stay put as they light up (no more jump), and only light up once
   the pointer's right by them.
 - **Live Folders guide**: Settings → Live Folders shows every kind, what it follows and how to set it up, each
   with a button to make one.
 - **Just the background**: right-click the page area with no tab open → Show Just the Background, for an empty
-  page like Arc's (right-click again, or Settings → Tabs, to bring the search and recents back).
+  page like Arc's, in that Space (right-click again, or edit the Space, to bring the search and recents back).
+- [mine] **Homebase is a Live Folder now**: its button's gone from the sidebar, making room for more Spaces. Add the
+  Homebase folder (⌘T → Add Live Folders for My Apps) for your apps and how each is doing; ⌘T → Homebase Apps
+  still restarts, stops and shows logs, and a toast still says when one goes down.
 - **More Spaces than fit**: a small arrow beside the Space buttons shows which side the hidden ones are on;
   click it (or swipe) to see them.
 - **Fixed**: closing a tab you'd just opened from the hidden sidebar could leave the empty page with no
@@ -191,7 +204,7 @@ they were. Rebuild the app (`./run.sh --build-app`) for the new icon in the Dock
 - **Right-click selected text** to ask about it, translate it, or look it up in Dictionary.
 - **Spell check** in text fields (Settings → General): corrections at the top of the right-click menu.
 
-## Your apps, in the browser
+## [mine] Your apps, in the browser
 
 - **Homebase** in the sidebar's bottom bar: a dot says whether your desktop's apps are up. Its menu opens,
   restarts, stops and shows logs for each, lists how am-parliament.org and masonkimball.dev are doing, and
@@ -222,6 +235,24 @@ they were. Rebuild the app (`./run.sh --build-app`) for the new icon in the Dock
 """
 
 
+MINE = "[mine] "
+
+
+def notes(maker: bool) -> str:
+    """NOTES as this copy shows them: the maker's own parts only on the maker's copy."""
+    out, section_hidden, bullet_hidden = [], False, False
+    for line in NOTES.splitlines():
+        if line.startswith("## "):
+            section_hidden, bullet_hidden = line.startswith("## " + MINE) and not maker, False
+        elif line.startswith("- "):
+            bullet_hidden = line.startswith("- " + MINE) and not maker
+        elif not line.startswith("  "):  # (a bullet's own lines carry on indented)
+            bullet_hidden = False
+        if not (section_hidden or bullet_hidden):
+            out.append(line.replace(MINE, ""))
+    return "\n".join(out)
+
+
 class WhatsNew(FadesIn, QWidget):
     def __init__(self, browser):
         super().__init__(None, Qt.WindowType.Window)
@@ -235,7 +266,8 @@ class WhatsNew(FadesIn, QWidget):
         text = QTextBrowser()
         text.setObjectName("Answer")
         text.setOpenLinks(False)
-        text.setMarkdown(for_here(NOTES))  # (Windows' keys, off a Mac)
+        from .member_card import is_maker
+        text.setMarkdown(for_here(notes(is_maker())))  # (the maker's own parts only on theirs; Windows' keys, off a Mac)
         quiet_scrollbars(text)  # (like every other list here: out of sight until you scroll)
         layout.addWidget(text, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)

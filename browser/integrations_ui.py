@@ -7,7 +7,7 @@ import re
 
 from PyQt6 import sip
 from PyQt6.QtCore import QObject, Qt, QUrl
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QCursor, QFont
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QLabel, QLineEdit,
@@ -402,7 +402,6 @@ class AppsUI(QObject):
         self.browser.store.schedule_save()
         if key == "homebase":
             self.feature.homebase.refresh()
-            self.feature.update_homebase()
 
     @staticmethod
     def set_token(folder, token) -> bool:
@@ -472,6 +471,7 @@ class IntegrationsFeature(Feature):
         cmds = [(label, icon, run) for label, icon, run in apps.send_to_actions(window.current_tab)]
         if homebase.url:
             cmds += [("Homebase Dashboard", "ph.gauge", lambda: window.open_url(homebase.url + "/")),
+                     ("Homebase Apps", "ph.hard-drives", lambda: apps.homebase_menu(QCursor.pos())),
                      ("Add Live Folders for My Apps", "ph.folders", apps.add_live_folders)]
             # Each app homebase runs, by name: "restart job tracker", "logs gradtrack"
             for app in (homebase.status or {}).get("apps") or []:
@@ -507,56 +507,6 @@ class IntegrationsFeature(Feature):
         tab = tab or self.window.current_tab
         if tab is not None:
             self.window.open_url(integrations.job_tracker_url(self.config(), tab.url))
-
-    # --- Homebase, in the sidebar's bottom row ------------------------------------------------------------
-
-    def sidebar_buttons(self):
-        from PyQt6.QtCore import QPoint, QSize
-        from PyQt6.QtWidgets import QToolButton
-        self.homebase_btn = QToolButton()
-        self.homebase_btn.setObjectName("IconButton")
-        self.homebase_btn.setFixedSize(26, 26)
-        self.homebase_btn.setIconSize(QSize(18, 18))
-        self.homebase_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.homebase_btn.clicked.connect(
-            lambda: self.apps.homebase_menu(self.homebase_btn.mapToGlobal(QPoint(0, 0))))
-        self.homebase_btn.hide()
-        self.homebase.changed.connect(self.update_homebase)
-        return [self.homebase_btn]
-
-    def theme_changed(self):
-        if getattr(self, "homebase_btn", None) is not None:
-            self.update_homebase()
-
-    def update_homebase(self):
-        """A server with a dot that says how your apps are doing."""
-        from PyQt6.QtCore import QRectF
-        from PyQt6.QtGui import QColor, QIcon, QPainter, QPixmap
-        import qtawesome as qta
-        hb, button = self.homebase, self.homebase_btn
-        if not hb.url:
-            button.hide()
-            return
-        theme = self.window.theme
-        if hb.status is None:
-            dot, tip = QColor("#8e8e93"), f"Homebase isn't reachable ({hb.error or 'offline'})"
-        else:
-            up, total, _apps = integrations.summarize(hb.status)
-            dot = QColor("#30d158") if up == total else QColor("#ff9f0a") if up else QColor("#ff453a")
-            tip = f"Homebase · {hb.status.get('host', '')} · {up} of {total} apps up"
-        pm = QPixmap(52, 52)
-        pm.setDevicePixelRatio(2)
-        pm.fill(Qt.GlobalColor.transparent)
-        p = QPainter(pm)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        qta.icon("ph.hard-drives", color=theme.text).paint(p, 1, 1, 22, 22)
-        p.setPen(QColor(theme.top))  # a ring in the sidebar's colour, so the dot stands off the icon
-        p.setBrush(dot)
-        p.drawEllipse(QRectF(16, 16, 9, 9))
-        p.end()
-        button.setIcon(QIcon(pm))
-        button.setToolTip(tip)
-        button.show()
 
 
 FEATURE = IntegrationsFeature

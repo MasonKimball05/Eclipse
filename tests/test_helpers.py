@@ -178,3 +178,10 @@ def test_network_addresses_and_file_names():
     for site in ("github.com", "bun.sh/docs", "example.io"):
         assert not looks_like_a_file(site), site
     assert site_for_tab("you") is not None and site_for_tab("youtube.com") is None  # (the Tab key uses what was typed)
+
+
+def test_instant_links_go_straight_to_the_top_result_or_the_address():
+    from browser.command_bar import instant_url
+    assert instant_url("qt webengine docs") == "https://duckduckgo.com/?q=%5Cqt%20webengine%20docs"
+    assert instant_url("  rust & go  ").endswith("%5Crust%20%26%20go")
+    assert instant_url("github.com/MasonKimball05/Eclipse").startswith("https://github.com/MasonKimball05/Eclipse")

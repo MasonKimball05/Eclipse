@@ -1,10 +1,14 @@
 # Arc's Peek: links opened from a pinned tab or a favorite (Slack, Gmail, Notion…)
 # float over the page in a card instead of piling up as new tabs. Read it, then
 # close it (Esc or click outside) or keep it with "Open as Tab".
+#
+# The card grows out of the link you clicked and shrinks back into it as it closes (as Zen's Glance does): a
+# picture of the card does the growing, the real one appearing as it's done, so the page is never resized
+# frame by frame. Opened some other way (no click to grow from), it rises into place instead.
 
 import qtawesome as qta
-from PyQt6.QtCore import QObject, QSize, Qt, QUrl
-from PyQt6.QtGui import QColor, QPainter
+from PyQt6.QtCore import QEasingCurve, QObject, QPoint, QRect, QRectF, QSize, Qt, QUrl
+from PyQt6.QtGui import QColor, QCursor, QPainter, QPainterPath
 from PyQt6.QtWidgets import (QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QToolButton, QVBoxLayout,
                              QWidget)
 
@@ -12,6 +16,15 @@ from . import motion
 from .models import display_host
 
 RISE = 24  # points the card rises as it opens (and sinks as it closes)
+GROW_MS = 220  # growing out of the link (and back into it)
+SEED = QSize(48, 32)  # the size it grows from, round the link
+
+
+def grown(seed: QRect, card: QRect, t: float) -> QRect:
+    """The card's place t (0 to 1) of the way from the little rectangle at the link to its own."""
+    lerp = lambda a, b: round(a + (b - a) * t)
+    return QRect(lerp(seed.x(), card.x()), lerp(seed.y(), card.y()), lerp(seed.width(), card.width()),
+                 lerp(seed.height(), card.height()))
 
 
 class PeekOverlay(QWidget):
@@ -23,6 +36,9 @@ class PeekOverlay(QWidget):
         self.dim = 0.0  # the backdrop, fading in as the card rises
         self.rise = 0.0  # how far below its place the card is (0 → 1: RISE points)
         self.closing = False
+        self.origin = None  # (where the link was clicked: it grows from there)
+        self.ghost = None   # (the picture of the card while it grows or shrinks)
+        self.grow = 1.0
         self.hide()
 
         self.card = QFrame(self)
@@ -76,10 +92,43 @@ class PeekOverlay(QWidget):
             view.load(QUrl(url))
         self.setGeometry(self.parentWidget().rect())
         self.closing = False
-        self._ease(0.0, 1.0)
+        here = self.mapFromGlobal(QCursor.pos())
+        self.origin = here if self.rect().contains(here) and not motion.reduced() else None
+        if self.origin is not None:
+            self.rise = 0.0
+            self._size_card()  # (now: hidden, it isn't told its size until it's shown)
+            self._grow(0.0, 1.0)
+        else:
+            self._ease(0.0, 1.0)
         self.show()
         self.raise_()
         view.setFocus()
+
+    def _seed(self) -> QRect:
+        rect = QRect(QPoint(0, 0), SEED)
+        rect.moveCenter(self.origin)
+        return rect
+
+    def _grow(self, start, end, done=None):
+        """Grow out of the link (0 → 1) or back into it (1 → 0): a picture of the card does it, then the card."""
+        self.ghost = self.card.grab()
+        self.card.hide()
+
+        def step(t):
+            self.grow = self.dim = t
+            self.update()
+
+        def finished():
+            self.ghost = None
+            if end:
+                self.card.show()
+                if self.view is not None:
+                    self.view.setFocus()
+            self.update()
+            if done:
+                done()
+        motion.animate(self, start, end, step, GROW_MS + (60 if end else 0), finished,
+                       motion.spring() if end else QEasingCurve.Type.OutCubic)
 
     def _ease(self, start, end, done=None):
         """0: closed (no backdrop, card down), 1: open. Only the card's position changes, never its
@@ -98,13 +147,18 @@ class PeekOverlay(QWidget):
             self._closed()
             return
         self.closing = True
-        self._ease(self.dim, 0.0, self._closed)
+        if self.origin is not None and not motion.reduced():
+            self._grow(self.dim, 0.0, self._closed)
+        else:
+            self._ease(self.dim, 0.0, self._closed)
 
     def _closed(self):
         animation = getattr(self, "_pb_animation", None)
         if animation is not None:
             animation.stop()
         self.closing = False
+        self.ghost = None
+        self.card.show()
         self.hide()
         if self.view is not None:
             self.view.deleteLater()
@@ -117,6 +171,8 @@ class PeekOverlay(QWidget):
         if animation is not None:
             animation.stop()
         self.closing = False
+        self.ghost = None
+        self.card.show()
         self.hide()
         if view is not None:
             for link in self._links:
@@ -125,6 +181,9 @@ class PeekOverlay(QWidget):
             self.browser.adopt_view(view)
 
     def resizeEvent(self, event):
+        self._size_card()
+
+    def _size_card(self):
         w, h = self.width(), self.height()
         mx, my = max(int(w * 0.08), 40), max(int(h * 0.06), 30)
         self.card.resize(w - 2 * mx, h - 2 * my)
@@ -138,6 +197,15 @@ class PeekOverlay(QWidget):
         dark = self.browser.theme.dark
         p = QPainter(self)
         p.fillRect(self.rect(), QColor(0, 0, 0, round((70 if dark else 40) * self.dim)))
+        if self.ghost is not None and self.origin is not None:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            rect = grown(self._seed(), self.card.geometry(), self.grow)
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(rect), 12, 12)
+            p.setClipPath(path)
+            p.setOpacity(0.35 + 0.65 * self.grow)
+            p.drawPixmap(rect, self.ghost)
         p.end()
 
     def mousePressEvent(self, event):

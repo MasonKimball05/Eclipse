@@ -2,7 +2,7 @@
 # they tint it, light/dark per Space, and an optional grain texture. Every change
 # previews live on the real window; Cancel puts the old theme back.
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (QButtonGroup, QCheckBox, QColorDialog, QDialog, QHBoxLayout, QLabel, QPushButton,
                              QSlider, QVBoxLayout)
@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (QButtonGroup, QCheckBox, QColorDialog, QDialog, QHB
 from .theme import DEFAULT_SPACE_THEME, PALETTE, stylesheet
 
 MAX_COLORS = 3
+DRAG_MS = 30  # while the intensity's being dragged, the window's restyled at most this often
 
 
 class ThemeEditor(QDialog):
@@ -52,7 +53,12 @@ class ThemeEditor(QDialog):
         self.intensity = QSlider(Qt.Orientation.Horizontal)
         self.intensity.setRange(0, 100)
         self.intensity.setValue(round(t["intensity"] * 100))
-        self.intensity.valueChanged.connect(self._apply)
+        # Restyling the window takes a few tens of milliseconds, and a drag moves the slider more often than that:
+        # each change applied as it came queued them up, so the window lagged and then jumped. The latest value,
+        # every DRAG_MS, keeps up (and letting go applies where it ended)
+        self._dragged = QTimer(self, singleShot=True, interval=DRAG_MS, timeout=self._apply)
+        self.intensity.valueChanged.connect(lambda: self._dragged.isActive() or self._dragged.start())
+        self.intensity.sliderReleased.connect(self._apply)
         layout.addWidget(self.intensity)
 
         layout.addWidget(self._heading("Appearance"))
@@ -142,6 +148,7 @@ class ThemeEditor(QDialog):
             self._apply()
 
     def _apply(self, *_):
+        self._dragged.stop()
         mode = next((b.property("mode") for b in self.mode_group.buttons() if b.isChecked()), "auto")
         self.space.color = self.colors[0]
         self.space.theme = {"colors": list(self.colors) if len(self.colors) > 1 else [],
@@ -153,10 +160,13 @@ class ThemeEditor(QDialog):
         self.setStyleSheet(stylesheet(self.browser.theme))
 
     def reject(self):
+        self._dragged.stop()  # (a last bit of dragging still to show: not now)
         self.space.color, self.space.theme = self._original
         self.browser.apply_theme()
         super().reject()
 
     def accept(self):
+        if self._dragged.isActive():
+            self._apply()
         self.browser.store.schedule_save()
         super().accept()

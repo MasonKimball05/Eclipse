@@ -193,6 +193,16 @@ def looks_like_a_file(text: str) -> bool:
     return bool(_FILE_LIKE.match(text.strip()))
 
 
+# Instant Links (like Arc Max's): ⇧↩ goes straight to the best page for what you typed, not a page of results.
+# DuckDuckGo's "\" does it (it sends you on to its top result), whichever search engine you use otherwise.
+INSTANT = "https://duckduckgo.com/?q=%5C{}"
+
+
+def instant_url(text: str) -> str:
+    """Where ⇧↩ goes: the address itself if it is one, else the top result for it."""
+    return to_url(text) or INSTANT.format(QUrl.toPercentEncoding(text.strip()).data().decode())
+
+
 def search_url(text: str, engine: str = "google") -> str:
     template = SEARCH_ENGINES.get(engine, SEARCH_ENGINES["google"])[1]
     return template.format(QUrl.toPercentEncoding(text.strip()).data().decode())
@@ -359,7 +369,7 @@ class CommandBar(QWidget):
         self._intro = 0.0
         self.show()
         self.raise_()
-        motion.animate(self, 0.0, 1.0, self._set_intro, motion.FAST)
+        motion.animate(self, 0.0, 1.0, self._set_intro, motion.NORMAL, easing=motion.spring())
         self.input.setText(text)
         self.input.selectAll()
         self.input.setFocus()
@@ -454,6 +464,13 @@ class CommandBar(QWidget):
                 if query and claude is not None and claude.available():
                     self.close_bar()
                     claude.browse_for_me(query)
+                return True
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and event.modifiers() & Qt.KeyboardModifier.ShiftModifier \
+                    and self.site is None and self.input.text().strip():
+                # ⇧↩: Instant Links, straight to the best page for it
+                go = self._open(instant_url(self.input.text()))
+                self.close_bar()
+                go()
                 return True
             if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
                 item = self.list.currentItem()

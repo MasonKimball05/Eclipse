@@ -2,8 +2,9 @@
 # pages, plus the small floating overlays Arc draws on top of it.
 
 import qtawesome as qta
-from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
-from PyQt6.QtGui import QColor, QPainter, QPainterPath
+from PyQt6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QTimer, QUrl, QVariantAnimation
+from PyQt6.QtGui import QColor, QImage, QPainter, QPainterPath, QPixmap
+from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QStackedWidget, QTextBrowser,
                              QToolButton, QVBoxLayout, QWidget)
 
@@ -118,7 +119,8 @@ class FindBar(QFrame):
             self._closing = False
             if not self.isVisible():
                 self.move(self.x(), -self.height())
-            motion.animate(self, self.y(), self.TOP, lambda y: self.move(self.x(), round(y)), motion.FAST + 20)
+            motion.animate(self, self.y(), self.TOP, lambda y: self.move(self.x(), round(y)), motion.NORMAL + 40,
+                           easing=motion.spring())
         self.show()
         self.raise_()
         self.input.setFocus()
@@ -197,8 +199,15 @@ class FindBar(QFrame):
             super().keyPressEvent(event)
 
 
+SLOW_LOAD_MS = 2500  # (a page still loading after this long gets the sweeping highlight)
+SWEEP_MS = 1300
+PREVIEW_IMAGE_BYTES = 3_000_000  # (a page's preview picture: anything bigger isn't one)
+PREVIEW_IMAGE_HEIGHT = 170
+
+
 class PreviewCard(QFrame):
-    """Hover a link and tap Shift: a floating summary of the linked page (Arc's "5-second previews")."""
+    """Hover a link and tap Shift: a floating summary of the linked page (Arc's "5-second previews"), with the
+    picture the page offers for link previews at the top, if it has one (as Arc's hover cards show)."""
 
     def __init__(self, browser, parent):
         super().__init__(parent)
@@ -220,9 +229,16 @@ class PreviewCard(QFrame):
         for label in (self.title, self.summary):
             label.setWordWrap(True)
             label.setTextFormat(Qt.TextFormat.PlainText)
+        self.image = QLabel()
+        self.image.setObjectName("PreviewImage")
+        self.image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image.hide()
+        layout.addWidget(self.image)
         layout.addWidget(self.host)
         layout.addWidget(self.title)
         layout.addWidget(self.summary)
+        self._network = None
+        self._image_reply = None
         self._hide_timer = QTimer(self, singleShot=True, interval=400, timeout=self._maybe_hide)
         self.hide()
 
@@ -230,6 +246,7 @@ class PreviewCard(QFrame):
         self.url = url
         self._hide_timer.stop()
         self.host.setText(f"✦  Preview · {display_host(url)}")
+        self.set_image("")
         self.set_content("Loading…", "")
         self.show()
         self.raise_()
@@ -242,11 +259,45 @@ class PreviewCard(QFrame):
             self.summary.setVisible(bool(summary))
         self.reposition()
 
+    def set_image(self, src: str):
+        """The page's preview picture (an http(s) address), fetched and shown at the top; "" for none."""
+        if self._image_reply is not None:
+            self._image_reply.abort()
+            self._image_reply = None
+        self.image.clear()
+        self.image.hide()
+        self.reposition() if self.isVisible() else None
+        if not src.startswith(("https://", "http://")):
+            return
+        if self._network is None:
+            self._network = QNetworkAccessManager(self)
+        reply = self._image_reply = self._network.get(QNetworkRequest(QUrl(src)))
+        url = self.url
+        reply.downloadProgress.connect(lambda got, _total: got > PREVIEW_IMAGE_BYTES and reply.abort())
+        reply.finished.connect(lambda: self._got_image(reply, url))
+
+    def _got_image(self, reply, url):
+        reply.deleteLater()
+        if reply is self._image_reply:
+            self._image_reply = None
+        if reply.error() != QNetworkReply.NetworkError.NoError or url != self.url:
+            return
+        image = QImage.fromData(bytes(reply.readAll()))
+        if image.isNull() or image.width() < 64 or image.height() < 32:
+            return  # (not a picture, or a tiny icon: the card's fine without it)
+        width = self.width() - self.layout().contentsMargins().left() - self.layout().contentsMargins().right()
+        pixmap = QPixmap.fromImage(image).scaledToWidth(width, Qt.TransformationMode.SmoothTransformation)
+        if pixmap.height() > PREVIEW_IMAGE_HEIGHT:
+            pixmap = pixmap.copy(0, (pixmap.height() - PREVIEW_IMAGE_HEIGHT) // 2, width, PREVIEW_IMAGE_HEIGHT)
+        self.image.setPixmap(pixmap)
+        self.image.show()
+        self.reposition()
+
     def reposition(self):
         # Word-wrapped labels need heightForWidth; adjustSize() alone under-measures them
         margins = self.layout().contentsMargins()
         inner = self.width() - margins.left() - margins.right()
-        labels = [l for l in (self.host, self.title, self.summary) if not l.isHidden()]
+        labels = [l for l in (self.image, self.host, self.title, self.summary) if not l.isHidden()]
         height = (margins.top() + margins.bottom() + self.layout().spacing() * (len(labels) - 1)
                   + sum(l.heightForWidth(inner) if l.wordWrap() else l.sizeHint().height() for l in labels))
         self.setFixedHeight(height)
@@ -266,6 +317,7 @@ class PreviewCard(QFrame):
     def dismiss(self):
         self.hide()
         self.url = ""
+        self.set_image("")
 
     def leaveEvent(self, event):
         self.schedule_hide()
@@ -292,6 +344,13 @@ class ContentFrame(QFrame):
         self.progress = QFrame(self)
         self.progress.setObjectName("ProgressBar")
         self.progress.hide()
+        # A page still loading after a while: a highlight sweeps along the bar, so it's plainly still working
+        # (Zen's idea), until it's done
+        self.shimmer = QFrame(self)
+        self.shimmer.setObjectName("ProgressShimmer")
+        self.shimmer.hide()
+        self._slow = QTimer(self, singleShot=True, interval=SLOW_LOAD_MS, timeout=self._start_shimmer)
+        self._sweep = None
 
         self.link_label = QLabel(self)
         self.link_label.setObjectName("LinkLabel")
@@ -384,10 +443,36 @@ class ContentFrame(QFrame):
     def set_progress(self, value):
         if value >= 100:
             self.progress.hide()
+            self._stop_shimmer()
             return
+        if self.progress.isHidden():  # (a load just started)
+            self._slow.start()
         self.progress.setGeometry(0, 0, max(int(self.width() * value / 100), 8), 2)
         self.progress.show()
         self.progress.raise_()
+        if self.shimmer.isVisible():
+            self.shimmer.raise_()
+
+    def _start_shimmer(self):
+        if self.progress.isHidden() or motion.reduced():
+            return
+        width = max(self.width() // 4, 60)
+        self.shimmer.setGeometry(-width, 0, width, 2)
+        self.shimmer.show()
+        self.shimmer.raise_()
+        self._sweep = QVariantAnimation(self, startValue=-width, endValue=self.width(), duration=SWEEP_MS,
+                                        loopCount=-1)
+        self._sweep.setEasingCurve(QEasingCurve.Type.InOutSine)
+        self._sweep.valueChanged.connect(lambda x: self.shimmer.move(int(x), 0))
+        self._sweep.start()
+
+    def _stop_shimmer(self):
+        self._slow.stop()
+        if self._sweep is not None:
+            self._sweep.stop()
+            self._sweep.deleteLater()
+            self._sweep = None
+        self.shimmer.hide()
 
     def show_link(self, url):
         if not url:

@@ -160,9 +160,9 @@ class LittleWindow(QWidget):
             home = self.pos()
 
             def step(t):
-                self.setWindowOpacity(t)
+                self.setWindowOpacity(min(t, 1.0))
                 self.move(home.x(), round(home.y() + 14 * (1 - t)))
-            motion.animate(self, 0.0, 1.0, step, motion.FAST + 30)
+            motion.animate(self, 0.0, 1.0, step, motion.NORMAL, easing=motion.spring())
         if MAC:
             macos.hide_title_text(self)
             lights = macos.traffic_lights(self)

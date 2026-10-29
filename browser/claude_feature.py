@@ -35,7 +35,8 @@ class ClaudeFeature(Feature):
         self.translator = Translator(window)  # Translate Page
         self._preview_page = None   # a link being read for its preview
         self._preview_request = None
-        self._preview_cache: dict[str, tuple[str, str]] = {}
+        self._preview_cache: dict[str, tuple[str, str, str]] = {}  # url -> (title, summary, its picture)
+        self._preview_images: dict[str, str] = {}
         self._tidy_undo = None      # (space, Today's top-level nodes before the last Tidy)
         self._browse_runs: set = set()
         self.claude_action = None
@@ -364,13 +365,17 @@ class ClaudeFeature(Feature):
             self._preview_request = None
         card.show_for(url)
         if url in self._preview_cache:
-            card.set_content(*self._preview_cache[url])
+            title, summary, image = self._preview_cache[url]
+            card.set_content(title, summary)
+            card.set_image(image)
             return
         # Read the page off-screen (same cookies as your tabs), then hand its text to Claude
         if self._preview_page is not None:
             self._preview_page.cancel()
         reader = self._preview_page = PageReader(window.profile, url, window, timeout_ms=8_000, enough_chars=800)
-        reader.done.connect(lambda title, text: self._summarize(url, title or display_host(url), text))
+        reader.done.connect(lambda title, text: (self._preview_images.__setitem__(url, reader.image),
+                                                 card.url == url and card.set_image(reader.image),
+                                                 self._summarize(url, title or display_host(url), text)))
 
     def _summarize(self, url, title, text):
         card = self.window.content.preview_card
@@ -390,7 +395,7 @@ class ClaudeFeature(Feature):
         request.failed.connect(lambda m: card.url == url and card.set_content(None, f"Couldn't summarize: {m}"))
 
     def _finish_preview(self, url, title, summary):
-        self._preview_cache[url] = (title, summary)
+        self._preview_cache[url] = (title, summary, self._preview_images.get(url, ""))
         card = self.window.content.preview_card
         if card.url == url:
             card.set_content(title, summary)

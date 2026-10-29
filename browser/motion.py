@@ -9,6 +9,15 @@ from PyQt6.QtCore import QEasingCurve, Qt, QVariantAnimation
 from PyQt6.QtWidgets import QGraphicsOpacityEffect
 
 FAST, NORMAL = 140, 200
+SPRING_OVERSHOOT = 0.8  # (Qt's own is 1.7: a third of a bounce)
+
+
+def spring() -> QEasingCurve:
+    """For things arriving (a card, Peek, the command bar): eased in with a touch of spring at the end, a few
+    percent past and back, as Zen's are. Never for things leaving: a bounce on the way out looks wrong."""
+    curve = QEasingCurve(QEasingCurve.Type.OutBack)
+    curve.setOvershoot(SPRING_OVERSHOOT)
+    return curve
 
 
 SPI_GETCLIENTAREAANIMATION = 0x1042  # (Windows: Settings → Accessibility → Visual effects → Animation effects)
@@ -52,7 +61,7 @@ def reduced() -> bool:
     return _reduced or saving
 
 
-def animate(owner, start, end, on_value, ms=NORMAL, done=None, easing=QEasingCurve.Type.OutCubic):
+def animate(owner, start, end, on_value, ms=NORMAL, done=None, easing=QEasingCurve.Type.OutCubic):  # (or spring())
     """Run on_value(v) from start to end over ms, then done(). Replaces any animation `owner` was
     already running, so a quick second click picks up from wherever the first one got to."""
     previous = getattr(owner, "_pb_animation", None)

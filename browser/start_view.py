@@ -2,8 +2,9 @@
 # feel (the Space's own background, nothing boxed in), with a little to start from: the Space's name, a
 # search pill that opens ⌘T, the sites you visit most, and the tabs you closed last.
 #
-# Settings → Tabs → "Start view with no tab open" turns it off, for the plain emptiness, and so does
-# right-clicking it → Show Just the Background (and, off, right-clicking the background brings it back).
+# Each Space chooses for itself: right-clicking it → Show Just the Background, for the plain emptiness (and,
+# off, right-clicking the background brings it back), or the switch in the Space editor (right-click a Space).
+# A Space that hasn't chosen follows Settings → Tabs → "Start view with no tab open".
 
 from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtGui import QColor, QIcon
@@ -15,7 +16,14 @@ from .icons import space_icon
 from .models import display_host, frecency
 from .theme import letter_icon
 
-SETTING = "start_view"
+SETTING = "start_view"  # (the default, for Spaces that haven't chosen)
+
+
+def shown_in(store, space) -> bool:
+    """Whether the start view shows in `space`: its own choice, or the default."""
+    if space is not None and space.start_view is not None:
+        return space.start_view
+    return store.settings.get(SETTING, True)
 MOST_VISITED = 8
 RECENTLY_CLOSED = 5
 
@@ -83,7 +91,7 @@ class StartView(QWidget):
                 item.widget().deleteLater()
             elif item.layout() is not None:
                 QWidget().setLayout(item.layout())
-        if not self.browser.store.settings.get(SETTING, True):
+        if not shown_in(self.browser.store, self.browser.store.active_space):
             return  # (off: nothing, like Arc)
         theme, space = self.browser.theme, self.browser.store.active_space
         text = theme.text
@@ -165,18 +173,23 @@ class StartView(QWidget):
             self.body.addWidget(hint)
 
     def contextMenuEvent(self, event):
-        shown = self.browser.store.settings.get(SETTING, True)
+        shown = shown_in(self.browser.store, self.browser.store.active_space)
         menu = self.browser._menu(self)
         menu.addAction("Show Just the Background" if shown else "Show Search, Most Visited and Recently Closed") \
             .triggered.connect(lambda: self.set_shown(not shown))
         menu.exec(event.globalPos())
 
-    def set_shown(self, on: bool):
-        self.browser.store.settings[SETTING] = on
-        self.browser.store.schedule_save()
-        self.refresh()
+    def set_shown(self, on: bool, space=None):
+        """Show it, or not, in `space` (the one you're in, if not given)."""
+        store = self.browser.store
+        space = space or store.active_space
+        space.start_view = on
+        store.schedule_save()
+        if space is store.active_space:
+            self.refresh()
         if not on:
-            self.browser.toast("Just the background now · right-click it, or Settings → Tabs, to bring it back")
+            self.browser.toast(f"Just the background in {space.name} now · right-click it, or edit the Space, "
+                               "to bring it back")
 
     def _heading(self, text):
         label = QLabel(text)
