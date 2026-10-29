@@ -28,6 +28,7 @@ from PyQt6.QtWidgets import QPushButton
 
 from . import macos, net, password_store, passkey_store, recovery
 from .passkeys import PageCard, _Answer, _escape, _gone
+from .theme import MONO_CSS
 from .webview import PASSWORD_CALL
 from .timefmt import portable
 
@@ -240,7 +241,7 @@ class StrongCard(PageCard):
         site = password_store.site_of(frame or view.url().toString())
         self._set_icon("ph.lock-key")
         self._text(f"Use a strong password for <b>{_escape(site)}</b>?")
-        self._text(f"<span style='font-family: Menlo; font-size: 13px'>{_escape(password)}</span><br>"
+        self._text(f"<span style='font-family: {MONO_CSS}; font-size: 13px'>{_escape(password)}</span><br>"
                    f"Eclipse saves it when you sign up.", detail=True)
         self._buttons(("Not Now", lambda: manager.close(self), False),
                       ("Use Strong Password", lambda: manager.use_strong(self), True))

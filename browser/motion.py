@@ -1,6 +1,6 @@
 # Small animations, so things slide and fade instead of jumping: the sidebar, the command bar,
 # toasts. Short (under a quarter of a second) and eased, the way Arc moves. With "Reduce motion"
-# turned on in macOS's Accessibility settings, everything just appears.
+# turned on in macOS's Accessibility settings (or Windows' "Animation effects" off), everything just appears.
 
 import subprocess
 import sys
@@ -11,7 +11,12 @@ from PyQt6.QtWidgets import QGraphicsOpacityEffect
 FAST, NORMAL = 140, 200
 
 
+SPI_GETCLIENTAREAANIMATION = 0x1042  # (Windows: Settings → Accessibility → Visual effects → Animation effects)
+
+
 def _reduce_motion() -> bool:
+    if sys.platform == "win32":
+        return _windows_animations_off()
     if sys.platform != "darwin":
         return False
     try:
@@ -20,6 +25,18 @@ def _reduce_motion() -> bool:
     except (OSError, subprocess.TimeoutExpired):
         return False
     return out == "1"
+
+
+def _windows_animations_off() -> bool:
+    """Windows' "Animation effects" switched off: its Reduce Motion."""
+    import ctypes
+    animations = ctypes.c_int(1)
+    try:
+        if not ctypes.windll.user32.SystemParametersInfoW(SPI_GETCLIENTAREAANIMATION, 0, ctypes.byref(animations), 0):
+            return False
+    except (AttributeError, OSError):
+        return False
+    return not animations.value
 
 
 _reduced = None  # looked up the first time something animates (asking `defaults` costs ~10 ms)

@@ -102,6 +102,17 @@ def find_tool(name) -> str | None:
     return None
 
 
+# What Windows' own installer (winget) calls the tools Homebrew installs on a Mac
+WINGET = {"yt-dlp": "yt-dlp.yt-dlp", "ffmpeg": "Gyan.FFmpeg", "gh": "GitHub.cli"}
+
+
+def install_hint(*tools) -> str:
+    """How to install them here: "brew install …" on a Mac, "winget install …" on Windows."""
+    if sys.platform == "win32":
+        return "winget install " + " ".join(WINGET.get(t, t) for t in tools)
+    return "brew install " + " ".join(tools)
+
+
 def _environment() -> QProcessEnvironment:
     # An app started from Finder gets a minimal PATH; yt-dlp looks there for ffmpeg
     # and for the JavaScript runtime it needs for YouTube's player challenges.
@@ -537,7 +548,7 @@ class DownloadRow(QFrame):
             self.bar.setRange(0, 1000)  # (still: no busy animation while it waits)
         self.action.setVisible(running or (item.state == "done" and bool(item.path)))
         self.action.setIcon(qta.icon("ph.x-circle" if running else "ph.magnifying-glass", color=self.color))
-        self.action.setToolTip("Cancel" if running else "Show in Finder")
+        self.action.setToolTip("Cancel" if running else "Show in Finder" if sys.platform == "darwin" else "Show in Folder")
 
     def _act(self):
         if self.item.state == "running":
@@ -856,12 +867,12 @@ class DownloadsWindow(FadesIn, QWidget):
 
     def _check_tools(self):
         if not self.exe:
-            self.message.setText("yt-dlp isn't installed. Install it with Homebrew (brew install yt-dlp "
-                                 "ffmpeg), then reopen this window.")
+            self.message.setText(f"yt-dlp isn't installed. Install it ({install_hint('yt-dlp', 'ffmpeg')}), "
+                                 "then reopen this window.")
             self.fetch_btn.setEnabled(False)
         elif not find_tool("ffmpeg"):
             self.message.setText("ffmpeg isn't installed, so video and audio can't be combined or converted. "
-                                 "Install it with: brew install ffmpeg")
+                                 f"Install it with: {install_hint('ffmpeg')}")
 
     # --- Opening ---------------------------------------------------------------------------
 

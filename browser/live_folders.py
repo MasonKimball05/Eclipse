@@ -39,7 +39,7 @@ from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkReques
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineScript
 
 from . import keychain, macos, storage
-from .downloads import find_tool
+from .downloads import find_tool, install_hint
 from .models import TODAY, Folder, Tab, walk_folders, walk_tabs
 from .timefmt import portable
 
@@ -576,7 +576,7 @@ class LiveFolders(QObject):
 
     def _github(self, query, done, folder=None):
         if find_tool("gh") is None:
-            done([], error="The GitHub CLI isn't installed (brew install gh, then gh auth login).")
+            done([], error=f"The GitHub CLI isn't installed ({install_hint('gh')}, then gh auth login).")
             return
         if query == "overview":
             self._github_overview(done, folder)

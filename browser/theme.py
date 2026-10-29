@@ -352,6 +352,20 @@ class _PointedAt(QObject):
 _legible: dict = {}
 
 
+# Code and passwords: a Mac's Menlo, Windows' Consolas, or another monospaced font. Qt has no generic "monospace" (a
+# family it doesn't have is quietly swapped for the proportional default), so the families are named
+MONO_CSS = 'Menlo, Consolas, "Cascadia Mono", "DejaVu Sans Mono"'
+
+
+def mono_font(size: int | None = None) -> QFont:
+    font = QFont()
+    font.setFamilies(["Menlo", "Consolas", "Cascadia Mono"])
+    font.setStyleHint(QFont.StyleHint.Monospace)  # (none of them: the system's own monospaced font)
+    if size:
+        font.setPointSize(size)
+    return font
+
+
 def legible(icon: QIcon, theme: "Theme") -> QIcon:
     """A site icon that shows up against this theme. Some sites serve an all-white icon in dark mode
     (GitHub, Notion…) that vanishes on a light sidebar, or an all-black one that vanishes on a dark
@@ -813,11 +827,11 @@ def stylesheet(t: Theme) -> str:
     QPushButton#DevButton:hover {{ background: {rgba(t.accent, 0.15)}; }}
     QTextEdit#DevLog {{
         background: transparent; border: none; color: {panel_text};
-        font-family: Menlo, monospace; font-size: 11px;
+        font-family: {MONO_CSS}; font-size: 11px;
     }}
     QLineEdit#DevInput {{
         background: {rgba(t.accent, 0.08)}; border: 1px solid {panel_line}; border-radius: 6px; color: {panel_text};
-        font-family: Menlo, monospace; font-size: 11px; padding: 4px 6px;
+        font-family: {MONO_CSS}; font-size: 11px; padding: 4px 6px;
     }}
 
     *[panel="true"] {{ background: {panel}; }}

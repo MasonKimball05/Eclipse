@@ -9,6 +9,8 @@ from pathlib import Path
 
 from PyQt6.QtPdf import QPdfDocument
 
+from .page_actions import not_reserved
+
 TEXT_TYPES = {".txt", ".md", ".csv", ".json", ".html", ".htm", ".xml", ".log", ".tsv"}
 EXCERPT_CHARS = 1500
 MAX_NAME = 80
@@ -79,7 +81,7 @@ def new_path(path: Path, reply: str) -> Path | None:
     stem = clean_name(reply)
     if stem is None or stem == path.stem:
         return None
-    target = unique_path(path.parent, stem, path.suffix, current=path)
+    target = unique_path(path.parent, not_reserved(stem), path.suffix, current=path)
     return None if risky(target.name) and not risky(path.name) else target
 
 

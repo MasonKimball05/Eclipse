@@ -10,6 +10,7 @@ from PyQt6.QtGui import QColor, QIcon
 from PyQt6.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QPushButton, QToolButton, QVBoxLayout, QWidget
 
 from . import storage
+from .shortcuts import for_here
 from .icons import space_icon
 from .models import display_host, frecency
 from .theme import letter_icon
@@ -121,7 +122,7 @@ class StartView(QWidget):
         inside.setContentsMargins(16, 0, 16, 0)
         for words, align in (("Search or enter an address", Qt.AlignmentFlag.AlignLeft),
                              ("⌘T", Qt.AlignmentFlag.AlignRight)):
-            label = QLabel(words)
+            label = QLabel(for_here(words))  # (Ctrl+T on Windows)
             label.setObjectName("StartSearchText")
             label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
             inside.addWidget(label, 1 if align == Qt.AlignmentFlag.AlignLeft else 0, align)

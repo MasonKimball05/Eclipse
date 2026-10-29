@@ -5,6 +5,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QDialogButtonBox, QTextBrowser, QVBoxLayout, QWidget
 
 from . import brand
+from .shortcuts import for_here
 from .motion import FadesIn
 from .theme import quiet_scrollbars, stylesheet
 
@@ -234,7 +235,7 @@ class WhatsNew(FadesIn, QWidget):
         text = QTextBrowser()
         text.setObjectName("Answer")
         text.setOpenLinks(False)
-        text.setMarkdown(NOTES)
+        text.setMarkdown(for_here(NOTES))  # (Windows' keys, off a Mac)
         quiet_scrollbars(text)  # (like every other list here: out of sight until you scroll)
         layout.addWidget(text, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)

@@ -25,8 +25,10 @@ if ($Fresh) {
 if (-not (Test-Path $Python)) {
     Write-Host "Setting up the virtualenv in $Venv ..."
     $launcher = Get-Command py -ErrorAction SilentlyContinue
-    if ($launcher) { & py -3 -m venv $Venv } else { & python -m venv $Venv }
-    if (-not (Test-Path $Python)) { throw "Couldn't make a virtualenv: install Python 3.12+ from python.org first." }
+    # (py -3.14 picks that one even beside others; py -3 would take the newest, whichever it is)
+    if ($launcher) { & py -3.14 -m venv $Venv; if (-not (Test-Path $Python)) { & py -3 -m venv $Venv } }
+    else { & python -m venv $Venv }
+    if (-not (Test-Path $Python)) { throw "Couldn't make a virtualenv: install Python 3.14 from python.org first." }
 }
 
 $Requirements = Join-Path $Root "requirements.txt"

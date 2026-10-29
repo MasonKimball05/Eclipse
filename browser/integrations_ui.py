@@ -21,7 +21,7 @@ from .integrations import (GENERAL, ISSUE_TEXT, SETTING, STATE_DOTS, away_task_t
                            matching_projects, open_external, open_in_app, search_shortcut_presets, summarize)
 from .live_folders import token_account
 from .models import display_host
-from .theme import FittedLabel, dot_icon, stylesheet
+from .theme import FittedLabel, dot_icon, mono_font, stylesheet
 
 
 def _dialog(browser, title, width=520):
@@ -110,7 +110,7 @@ class AppsUI(QObject):
         layout = QVBoxLayout(dialog)
         text = QPlainTextEdit()
         text.setReadOnly(True)
-        text.setFont(QFont("Menlo", 11))
+        text.setFont(mono_font(11))
         text.setPlainText("Loading…")
         layout.addWidget(text)
         refresh = QPushButton("Refresh")

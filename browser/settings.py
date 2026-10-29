@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDialo
 
 from . import brand, clean_links, dark_pages, macos, passwords, shortcuts, spelling, tab_titles, verified
 from .command_bar import CUSTOM_SETTING, SEARCH_ENGINES, use_custom_sites
-from .downloads import DownloadSettingsForm, find_tool
+from .downloads import DownloadSettingsForm, find_tool, install_hint
 from .external_links import all_rules as external_rules, set_allowed as set_external
 from .motion import FadesIn
 from .permissions import set_capture_rule
@@ -233,6 +233,7 @@ class SettingsWindow(FadesIn, QWidget):
         h.setSpacing(16)
         text = QVBoxLayout()
         text.setSpacing(2)
+        title, description = shortcuts.for_here(title), shortcuts.for_here(description)  # (Windows' keys, off a Mac)
         label = QLabel(title)
         label.setObjectName("SettingTitle")
         text.addWidget(label)
@@ -540,7 +541,8 @@ class SettingsWindow(FadesIn, QWidget):
                                                    "they are). Leave a site light from the shield in the address "
                                                    "bar.", self._dark_switch()),
                         self._row("App icon", "Changes in the Dock right away; Finder and Launchpad show it "
-                                              "after the next app build.", None),
+                                              "after the next app build." if sys.platform == "darwin" else
+                                              "Changes in the taskbar and the window right away.", None),
                         self._icon_choices()]),
             self._card([self._row("Backup", "Spaces, tabs, settings, notes, Boosts, userscripts, extensions, "
                                             "passwords and passkeys (locked with your recovery PIN) in one file. "
@@ -731,8 +733,8 @@ class SettingsWindow(FadesIn, QWidget):
             box.setText("")
             return title, control(box)
         ytdlp = find_tool("yt-dlp")
-        tools = (f"yt-dlp: {ytdlp}" if ytdlp else "yt-dlp isn't installed: brew install yt-dlp") + "  ·  ffmpeg: " + (
-            "found" if find_tool("ffmpeg") else "missing (brew install ffmpeg)")
+        tools = (f"yt-dlp: {ytdlp}" if ytdlp else f"yt-dlp isn't installed: {install_hint('yt-dlp')}") + "  ·  ffmpeg: " + (
+            "found" if find_tool("ffmpeg") else f"missing ({install_hint('ffmpeg')})")
         where = self._card([self._row("Save to", "Where downloads go: files from pages, and videos from "
                                                  "File → Download Video (⇧⌘D).", control(form.folder))])
         rows = [self._row("Download", "What File → Download Video saves by default. " + tools, control(form.kind)),
@@ -1058,7 +1060,7 @@ class SettingsWindow(FadesIn, QWidget):
                 groups.setdefault(group, {}).setdefault(name, []).append((key, keys, action))
         for group, keys, description in EXTRA_SHORTCUTS:
             if not query or query in description.lower() or query in group.lower() or query in keys.lower():
-                groups.setdefault(group, {})[description] = keys
+                groups.setdefault(group, {})[description] = shortcuts.for_here(keys)
         for group, rows in groups.items():
             title = QLabel(group.upper())
             title.setObjectName("EditorSection")

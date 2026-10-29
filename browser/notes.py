@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import QTextEdit
 from . import storage
 from .features import Feature
 from .models import new_id
+from .shortcuts import for_here
 
 NOTE_SCHEME = "note:"
 CHECKLIST = ("[]", "[ ]", "-[]", "- [ ]")  # typed at the start of a line, then a space
@@ -51,8 +52,8 @@ class NoteEditor(QTextEdit):
         self.setFrameShape(QTextEdit.Shape.NoFrame)
         self.document().setDocumentMargin(48)
         self.viewport().setMouseTracking(True)  # (a hand over a checklist's boxes)
-        self.setPlaceholderText("Untitled Note\n\nStart writing…  (⌘B bold, ⌘I italic, ⌘U underline, \"* \" for a list, "
-                                "\"[] \" for a checklist, \"# \" for a heading)")
+        self.setPlaceholderText(for_here("Untitled Note\n\nStart writing…  (⌘B bold, ⌘I italic, ⌘U underline, \"* \" for a "
+                                         "list, \"[] \" for a checklist, \"# \" for a heading)"))
         if self.path.exists():
             self.setMarkdown(self.path.read_text())
         self.document().setModified(False)  # setup (margins, loading the file) isn't an edit

@@ -15,6 +15,7 @@ import mimetypes
 import re
 import shutil
 import struct
+import sys
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -176,7 +177,9 @@ class ChromeExtension:
         out = []
         for name, spec in (self.manifest.get("commands") or {}).items():
             keys = (spec.get("suggested_key") or {})
-            key = keys.get("mac") or keys.get("default") if isinstance(keys, dict) else None
+            # This system's suggestion, as Chrome picks it (a Mac's can use ⌘ and the Control key, Windows' can't)
+            system = {"darwin": "mac", "win32": "windows"}.get(sys.platform, "linux")
+            key = keys.get(system) or keys.get("default") if isinstance(keys, dict) else None
             if not key:
                 continue
             # Chrome's names → Qt's (on a Mac, Qt's "Ctrl" is ⌘ and "Meta" is the Control key)

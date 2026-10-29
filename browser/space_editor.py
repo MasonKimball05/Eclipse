@@ -2,6 +2,7 @@
 # colour, choose its profile, and reach the theme editor. Changes apply as you make them.
 
 import re
+import sys
 
 import qtawesome as qta
 from PyQt6.QtCore import QPoint, QSize, Qt, QTimer
@@ -79,7 +80,8 @@ class SpaceEditor(QWidget):
         self.custom_emoji = QLineEdit()
         self.custom_emoji.setObjectName("SpaceName")
         self.custom_emoji.setPlaceholderText("Other emoji…")
-        self.custom_emoji.setToolTip("Type or paste any emoji (⌃⌘Space opens the macOS picker)")
+        self.custom_emoji.setToolTip("Type or paste any emoji (" + ("⌃⌘Space opens the macOS picker)" if sys.platform == "darwin"
+                                                                      else "Windows+. opens the emoji panel)"))
         self.custom_emoji.textEdited.connect(lambda t: t.strip() and self._set_icon(t.strip()[:4]))
         emoji_layout.addWidget(self.custom_emoji)
         self.pages.addWidget(emoji_page)

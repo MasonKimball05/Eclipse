@@ -16,6 +16,7 @@ from .browse import BrowseForMe, PageReader, answer_path, js_set, new_run_id, re
 from .features import Feature
 from .models import TODAY, Folder, Tab, display_host, walk_tabs
 from .page_index import ask_prompt, cite, question_words
+from .shortcuts import for_here
 from .tidy import MIN_TABS as TIDY_MIN_TABS, build_prompt as build_tidy_prompt, parse_groups as parse_tidy_groups
 from .tidy_downloads import tidy as tidy_download
 from .translate import Translator, target_language
@@ -435,10 +436,11 @@ class ClaudeFeature(Feature):
         status = self._settings_status = QLabel()
         status.setObjectName("Hint")
         status.setWordWrap(True)
-        about = QLabel("Claude features run through the Claude Code app on this Mac (the claude command), using "
-                       "your Claude subscription. There's no API key, and nothing is sent unless you use a feature: "
-                       "Tidy Tab Titles (when you pin), Ask on Page (⌘F), command bar answers, link previews "
-                       "(tap ⇧) and Browse for Me (⌘↩). Each use counts toward your plan's limits.")
+        about = QLabel(for_here(
+            "Claude features run through the Claude Code app on this Mac (the claude command), using "
+            "your Claude subscription. There's no API key, and nothing is sent unless you use a feature: "
+            "Tidy Tab Titles (when you pin), Ask on Page (⌘F), command bar answers, link previews "
+            "(tap ⇧) and Browse for Me (⌘↩). Each use counts toward your plan's limits."))
         about.setObjectName("Hint")
         about.setWordWrap(True)
         return settings._stack(

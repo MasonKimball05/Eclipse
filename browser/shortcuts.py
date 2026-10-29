@@ -4,12 +4,19 @@
 # reach the items you haven't touched.
 #
 # Each item remembers the shortcut it was built with, so Reset puts that back.
+#
+# Shortcuts are written the Mac's way ("Ctrl" is ⌘, "Meta" the Control key), and here() makes them Windows' (and
+# Linux's): there's no ⌘, so the Control key's ones become Ctrl, except ⌃1–⌃9 (the Spaces), which become Alt+1–9
+# since Ctrl+1–9 are the tabs, as in every browser; and the Library is Ctrl+H, as Ctrl+Y is Redo there. Text that
+# names a key ("Reopen it with ⇧⌘T") goes through for_here(), which says it as the key really is there
+# ("Ctrl+Shift+T"), along with what Windows calls a Mac's things (Finder, the Keychain).
 
+import re
 import sys
 
-from PyQt6.QtCore import QKeyCombination, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QKeyCombination, QObject, Qt, pyqtSignal
 from PyQt6.QtGui import QKeySequence
-from PyQt6.QtWidgets import QPushButton
+from PyQt6.QtWidgets import QPushButton, QToolTip, QWidget
 
 SETTING = "shortcuts"
 DEFAULT = "eclipse_default_shortcut"
@@ -22,6 +29,71 @@ MODIFIER_KEYS = {Qt.Key.Key_Control, Qt.Key.Key_Shift, Qt.Key.Key_Alt, Qt.Key.Ke
                  Qt.Key.Key_CapsLock}
 ANY_MODIFIER = (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier |
                 Qt.KeyboardModifier.MetaModifier)
+
+
+# A Mac shortcut's other key on Windows, where it would be taken (the Mac's key → Windows')
+WINDOWS_INSTEAD = {"Ctrl+Y": "Ctrl+H"}
+
+
+def here(keys: str) -> str:
+    """A shortcut, written the Mac's way, as it's bound on this system (see the top)."""
+    if sys.platform == "darwin" or not keys:
+        return keys
+    parts = keys.split("+")
+    if "Meta" in parts:
+        key = parts[-1]
+        parts = [("Alt" if key.isdigit() and len(key) == 1 else "Ctrl") if p == "Meta" else p for p in parts]
+        parts = [p for i, p in enumerate(parts) if p not in parts[:i] or i == len(parts) - 1]  # (Ctrl once)
+    keys = "+".join(parts)
+    return WINDOWS_INSTEAD.get(keys, keys)
+
+
+# Mac key symbols in text: the modifiers (in any order), then a key, or none ("Hold ⌃, tap Tab")
+_MODIFIERS = {"⌃": "Meta", "⌥": "Alt", "⇧": "Shift", "⌘": "Ctrl"}
+_KEY_NAMES = {"↩": "Enter", "⌫": "Backspace", "⌦": "Delete", "⎋": "Esc", "⇥": "Tab"}
+_RUN = re.compile(r"([⌃⌥⇧⌘]+)(-(?:click|drag|scroll)|Tab|Space|Return|Enter|Esc|F\d{1,2}|[A-Za-z0-9]\b|"
+                  r"[\[\]=\-/`'\\.]|,(?!\s)|[↩⌫⌦⎋⇥←→↑↓])?")
+_WORDS = [(re.compile(r"\bthe Keychain\b"), "Credential Manager"), (re.compile(r"\bKeychain\b"), "Credential Manager"),
+          (re.compile(r"\bFinder\b"), "File Explorer"), (re.compile(r"\bthis Mac\b"), "this PC"),
+          (re.compile(r"\byour Mac\b"), "your PC")]
+_ORDER = ["Ctrl", "Alt", "Shift"]
+
+
+def _said(match) -> str:
+    mods = [_MODIFIERS[c] for c in match.group(1)]
+    key = match.group(2)
+    if not key:
+        return "+".join(dict.fromkeys(here("+".join(mods + ["X"])).split("+")[:-1]))  # ("Hold ⌃": Hold Ctrl)
+    if key.startswith("-") and len(key) > 1:  # ("⌘-click"; a lone "-" is the key itself: ⌘- zooms out)
+        return "+".join(dict.fromkeys(here("+".join(mods + ["X"])).split("+")[:-1])) + "+" + key[1:]
+    bound = here("+".join(mods + [_KEY_NAMES.get(key, key.upper() if len(key) == 1 else key)])).split("+")
+    return "+".join(sorted(bound[:-1], key=lambda m: _ORDER.index(m) if m in _ORDER else 9) + bound[-1:])
+
+
+def for_here(text: str) -> str:
+    """Text written for a Mac, as it reads on this system: "⇧⌘T" is "Ctrl+Shift+T" on Windows (the key as it's
+    really bound there: here()), "↩" is Enter, Finder is File Explorer. Unchanged on a Mac."""
+    if sys.platform == "darwin" or not text:
+        return text
+    text = _RUN.sub(_said, text)
+    text = re.sub(r"↩", "Enter", text)
+    for pattern, words in _WORDS:
+        text = pattern.sub(words, text)
+    return text
+
+
+class NativeTooltips(QObject):
+    """Every tooltip as for_here() says it, off a Mac (installed on the app: app.py), so a button's "Reload (⌘R)"
+    reads "Reload (Ctrl+R)" on Windows without each one being written twice."""
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.ToolTip and isinstance(obj, QWidget):
+            tip = obj.toolTip()
+            said = for_here(tip)
+            if said != tip:
+                QToolTip.showText(event.globalPos(), said, obj)
+                return True
+        return False
 
 
 def portable(sequence: QKeySequence) -> str:

@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (QApplication, QButtonGroup, QFrame, QGraphicsEllips
 from . import storage
 from .features import Feature
 from .models import new_id
+from .shortcuts import for_here
 
 EASEL_SCHEME = "easel:"
 COLORS = ["#1f2937", "#ef4444", "#f59e0b", "#22c55e", "#3b82f6", "#a855f7"]
@@ -836,8 +837,8 @@ class EaselView(QWidget):
             menu.addAction("Open Page", lambda: self.open_link.emit(item.data(SOURCE)))
             menu.addSeparator()
         menu.addAction("Duplicate", self.duplicate)
-        menu.addAction("Bring to Front\t⇧⌘]", self.bring_to_front)
-        menu.addAction("Send to Back\t⇧⌘[", self.send_to_back)
+        menu.addAction(for_here("Bring to Front\t⇧⌘]"), self.bring_to_front)
+        menu.addAction(for_here("Send to Back\t⇧⌘["), self.send_to_back)
         menu.addSeparator()
         menu.addAction("Delete", lambda: (self._delete(self._chosen())))
         menu.exec(at)

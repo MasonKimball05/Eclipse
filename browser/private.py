@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton
                              QToolButton, QVBoxLayout, QWidget)
 
 from .webview import harden
-from . import macos, spelling
+from . import macos, shortcuts, spelling
 from .command_bar import search_url, to_url
 from .content import RADIUS, Corner
 from .models import display_host
@@ -216,7 +216,7 @@ class PrivateWindow(QWidget):
                            ("Ctrl+=", lambda: self.zoom(1)), ("Ctrl+-", lambda: self.zoom(-1)),
                            ("Ctrl+0", lambda: self.zoom(0)), ("Meta+Tab", lambda: self.cycle(1)),
                            ("Meta+Shift+Tab", lambda: self.cycle(-1))):  # ⇧⌘P is the File menu's, from anywhere
-            QShortcut(QKeySequence(keys), self).activated.connect(slot)
+            QShortcut(QKeySequence(shortcuts.here(keys)), self).activated.connect(slot)  # (⌃Tab: Ctrl+Tab on Windows)
         for n in range(1, 10):
             QShortcut(QKeySequence(f"Ctrl+{n}"), self).activated.connect(lambda n=n: self._jump(n))
 

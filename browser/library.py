@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget
 from . import clean_links, storage
 from .motion import FadesIn
 from .models import display_host
+from .shortcuts import for_here
 from .theme import letter_icon, plain_tip, quiet_scrollbars, stylesheet
 from .timefmt import portable
 
@@ -274,7 +275,7 @@ class LibraryWindow(FadesIn, QWidget):
         empty = {"history": "No history yet.", "archive": "Nothing archived yet. Today tabs you stop using end up here.",
                  "notes": "No notes yet. ⇧⌘N starts one.", "answers": "No Browse for Me answers yet. Ask a question "
                                                                     "in ⌘T and press ⌘↩."}[self.section]
-        self.empty.setText("Nothing matches." if query else empty)
+        self.empty.setText("Nothing matches." if query else for_here(empty))
         self.empty.setVisible(not entries)
         self.list.setVisible(bool(entries))
         first = next((i for i in range(self.list.count()) if self.list.item(i).data(ENTRY)), None)

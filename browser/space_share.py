@@ -14,6 +14,7 @@ import unicodedata
 from pathlib import Path
 
 from .models import Folder, Space, Tab, walk_tabs
+from .page_actions import not_reserved
 from .theme import DEFAULT_SPACE_THEME
 
 FORMAT = "eclipse-space"
@@ -45,7 +46,7 @@ def export(space: Space) -> dict:
 def write(space: Space, folder: Path) -> Path:
     """The Space as a file in `folder`, named after it."""
     name = re.sub(r'[/\\:*?"<>|\x00-\x1f]', " ", space.name).strip(" .") or "Space"
-    path = Path(folder) / f"{name[:60]}{SUFFIX}"
+    path = Path(folder) / f"{not_reserved(name[:60])}{SUFFIX}"  # ("Aux" is a device on Windows: "Aux_")
     path.write_text(json.dumps(export(space), ensure_ascii=False, indent=1))
     return path
 

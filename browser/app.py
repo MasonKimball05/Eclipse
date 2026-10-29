@@ -9,7 +9,8 @@ from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
 from PyQt6.QtWidgets import QApplication
 
-from . import backup, brand, crash, features, macos, space_share, spelling, storage, whats_new, windows_system
+from . import (backup, brand, crash, features, macos, shortcuts, space_share, spelling, storage, whats_new,
+               windows_system)
 from .external_links import OWN_SCHEME
 from .models import Store
 from .theme import DropdownLists
@@ -127,6 +128,8 @@ def run() -> int:
     macos.name_in_menu_bar(brand.NAME)
     app = QApplication(sys.argv)
     app.installEventFilter(dropdowns := DropdownLists(app))  # (every dropdown's list, styled like the menus)
+    if sys.platform != "darwin":
+        app.installEventFilter(tooltips := shortcuts.NativeTooltips(app))  # (tooltips with Windows' keys)
 
     links = _links(sys.argv[1:])
     if _hand_off(links):

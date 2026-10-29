@@ -140,6 +140,21 @@ def relaunch_command() -> list[str]:
     return [sys.executable, str(REPO / "main.py")]
 
 
+def relaunch_after(pid: int, command: list[str]) -> list[str]:
+    """What starts `command` once process `pid` (this one: it holds the single-instance socket, so a copy started
+    sooner would hand its links over and quit) has gone. A shell's loop on a Mac; PowerShell on Windows, which has no
+    /bin/sh: Wait-Process, then Start-Process with the arguments quoted as Windows reads a command line."""
+    if sys.platform != "win32":
+        script = 'while kill -0 "$0" 2>/dev/null; do sleep 0.2; done; exec "$@"'
+        return ["/bin/sh", "-c", script, str(pid), *command]
+    quote = lambda text: "'" + text.replace("'", "''") + "'"  # (PowerShell's literal string: '' is a quote)
+    script = (f"Wait-Process -Id {int(pid)} -ErrorAction SilentlyContinue; "
+              f"Start-Process -FilePath {quote(command[0])} -WorkingDirectory {quote(str(REPO))}"
+              + (f" -ArgumentList {quote(subprocess.list2cmdline(command[1:]))}" if command[1:] else ""))
+    shell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    return [str(shell), "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script]
+
+
 class SelfUpdater(QObject):
     checked = pyqtSignal(dict)
     applied = pyqtSignal(bool, str)
@@ -260,10 +275,8 @@ class SelfUpdater(QObject):
             QProcess.startDetached(swap[0], swap[1:])
             QApplication.instance().quit()
             return
-        command = relaunch_command()
-        # Wait for this process to be gone (it holds the single-instance socket), then start again
-        script = 'while kill -0 "$0" 2>/dev/null; do sleep 0.2; done; exec "$@"'
-        QProcess.startDetached("/bin/sh", ["-c", script, str(os.getpid()), *command])
+        relaunch = relaunch_after(os.getpid(), relaunch_command())
+        QProcess.startDetached(relaunch[0], relaunch[1:])
         QApplication.instance().quit()
 
 

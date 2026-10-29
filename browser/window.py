@@ -2549,7 +2549,7 @@ class MainWindow(QMainWindow):
         def add(menu, text, shortcut, slot):
             action = QAction(text, self)
             if shortcut:
-                action.setShortcut(QKeySequence(shortcut))
+                action.setShortcut(QKeySequence(shortcuts.here(shortcut)))  # (Windows' own keys: shortcuts.here)
             if text not in own_window:
                 slot = (lambda inner: lambda: (self.isHidden() and self.bring_to_front(), inner()))(slot)
             action.triggered.connect(lambda _=False: slot())
@@ -2667,7 +2667,7 @@ class MainWindow(QMainWindow):
         add(spaces, "Previous Space", "Ctrl+Alt+Left", lambda: self.cycle_space(-1))
         spaces.addSeparator()
         for n in range(1, 10):
-            add(spaces, f"Space {n}", f"{CONTROL}+{n}", lambda n=n: self.switch_to_space_number(n))
+            add(spaces, f"Space {n}", f"Meta+{n}", lambda n=n: self.switch_to_space_number(n))  # (⌃n; Alt+n elsewhere)
         windows = bar.addMenu("Window")
         for text, keys, slot in (("Minimize", "Ctrl+M", lambda: self._front_window().showMinimized()),
                                  ("Zoom", "", self._zoom_window),

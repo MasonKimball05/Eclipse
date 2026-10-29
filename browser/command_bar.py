@@ -26,6 +26,7 @@ def _path_hint(url: str) -> str:
 from .content import answer_browser, fit_answer
 from .models import display_host, frecency
 from .page_index import read_on
+from .shortcuts import for_here
 from .storage import favicon
 from .sidebar import tab_icon
 from .theme import legible, letter_icon, quiet_scrollbars
@@ -726,6 +727,7 @@ class CommandBar(QWidget):
         self._settle_highlight()  # (new results: the highlight starts on its row)
         self.list.clear()
         for result in results:
+            result.subtitle, result.badge = for_here(result.subtitle), for_here(result.badge)  # ("⌘↩": Ctrl+Enter)
             item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, result)
             # (the row is painted by hand: these are what VoiceOver reads for it)

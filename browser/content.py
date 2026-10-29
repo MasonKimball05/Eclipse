@@ -7,7 +7,7 @@ from PyQt6.QtGui import QColor, QPainter, QPainterPath
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QStackedWidget, QTextBrowser,
                              QToolButton, QVBoxLayout, QWidget)
 
-from . import motion
+from . import motion, shortcuts
 from .models import display_host
 
 RADIUS = 10
@@ -403,7 +403,7 @@ class ContentFrame(QFrame):
     def show_toast(self, text, action=None, label="Undo"):
         """A short message at the bottom of the page. With `action`, it has a button (Undo, say) and
         stays a little longer to give you time for it."""
-        self.toast_text.setText(text)
+        self.toast_text.setText(shortcuts.for_here(text))  # (Windows' keys and names, off a Mac)
         self._toast_do = action
         self.toast_button.setText(label)
         self.toast_button.setVisible(action is not None)
