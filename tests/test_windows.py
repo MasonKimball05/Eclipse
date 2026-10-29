@@ -128,15 +128,21 @@ def test_relaunching_on_a_mac_waits_with_the_shell(mac):
 # --- Fonts ---------------------------------------------------------------------------------------------------------
 
 def test_code_and_passwords_are_set_in_a_monospaced_font_without_menlo(qapp):
-    from PyQt6.QtGui import QFontInfo
+    from PyQt6.QtGui import QFontDatabase, QFontInfo
     from PyQt6.QtWidgets import QLabel
     from browser.theme import MONO_CSS, mono_font
-    assert QFontInfo(mono_font(12)).fixedPitch()  # (Menlo is a Mac's: Consolas on Windows, or the system's own)
+    assert "Consolas" in MONO_CSS and MONO_CSS.startswith("Menlo")
+    assert mono_font(12).families()[:2] == ["Menlo", "Consolas"]
+    known = set(QFontDatabase.families())
+    if not known & set(mono_font(12).families()):
+        # (Qt's offscreen platform, as GitHub's Windows check runs it, sees none of the system's fonts)
+        pytest.skip(f"this Qt platform has none of {mono_font(12).families()} (it knows {sorted(known)[:8]})")
+    got = QFontInfo(mono_font(12))
+    assert got.fixedPitch(), got.family()  # (Menlo is a Mac's: Consolas on Windows, or the system's own)
     label = QLabel("x")
     label.setStyleSheet(f"font-family: {MONO_CSS};")
     label.ensurePolished()
-    assert QFontInfo(label.font()).fixedPitch()
-    assert "Consolas" in MONO_CSS and MONO_CSS.startswith("Menlo")
+    assert QFontInfo(label.font()).fixedPitch(), QFontInfo(label.font()).family()
 
 
 # --- File names --------------------------------------------------------------------------------------------------

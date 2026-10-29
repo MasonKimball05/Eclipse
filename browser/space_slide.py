@@ -1,18 +1,29 @@
 # Switching Spaces, Arc style: the Space's part of the sidebar slides across to the next one while the
 # rest of the window blends over to its colours. Used by ⌃1–⌃9, the Space switcher and ⌥⌘←/→, and by a
 # two-finger swipe on the sidebar (gestures.py, which drives the same slide with your fingers).
+#
+# Switching is the heavy part (the whole window takes the new Space's colours: tens of milliseconds, more on an
+# older Mac), and doing it as a slide began held the slide up for its first frames. So the Spaces either side of
+# the one you're in have their pictures ready (SpacePictures: the one you left, and the others made while
+# nothing's happening), and a slide to one of them starts at once, the switch itself waiting until it lands,
+# under the cover. Only those two are kept, so the memory stays small.
+
+import json
 
 from PyQt6 import sip
 from PyQt6.QtCore import QEasingCurve, QEvent, QObject, QPointF, QRectF, Qt, QTimer, QVariantAnimation
 from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QRegion
-from PyQt6.QtWidgets import QWidget
+from PyQt6.QtWidgets import QApplication, QWidget
 
 CONTENT_RADIUS = 10  # (content.RADIUS: the page's rounded corners)
 
 
-def _smooth(t: float, start=0.2, end=0.8) -> float:
-    """0 → 1 eased, over the middle of a slide: a word in the address bar is mostly one Space's or
-    the other's, never both on top of each other for long."""
+BLEND = (0.4, 0.7)  # how far across the colours (and anything else round the tabs) turn over: just past halfway
+
+
+def _smooth(t: float, start=BLEND[0], end=BLEND[1]) -> float:
+    """0 → 1 eased, over a stretch of a slide: the window looks like the Space you're leaving until you're past
+    halfway to the next, and is never both for long."""
     t = max(0.0, min((t - start) / (end - start), 1.0))
     return t * t * (3 - 2 * t)
 
@@ -29,7 +40,9 @@ class SpaceSlide(QWidget):
     def __init__(self, window, direction):
         # The last switch's cover may still be fading out (swiping straight back, say): gone first,
         # or this one's pictures would have it, and its Space's text, baked in
+        self.interrupted = False  # (another was still under way: the window may be between two Spaces)
         for old in window.findChildren(SpaceSlide):
+            self.interrupted = self.interrupted or old.isVisible()
             animation = getattr(old, "_pb_animation", None)
             if animation is not None:
                 animation.stop()
@@ -40,30 +53,10 @@ class SpaceSlide(QWidget):
         self.window_ = window
         self.direction = direction  # 1: the next Space comes in from the right
         self.width_ = window.sidebar.width()  # how far the tabs travel
-        floating = getattr(window, "floating_sidebar", None) is not None and window.floating_sidebar.active
-        if floating:
-            # Out over the page (no tab open, or the hidden sidebar come out): the cover is the sidebar's card,
-            # the page all round it left live
-            side = _in_window(window, window.sidebar)
-            self.regions = [side]
-            card = QPainterPath()
-            card.addRoundedRect(side, CONTENT_RADIUS, CONTENT_RADIUS)
-            self.setMask(QRegion(card.toFillPolygon().toPolygon()))
-        else:
-            page = content_rect(window)
-            everything = QRectF(window.rect())
-            # The window round the page: the sidebar's column and the thin frame above, beside and below
-            self.regions = [r for r in (
-                QRectF(0, 0, page.left(), everything.height()),
-                QRectF(page.left(), 0, everything.width() - page.left(), page.top()),
-                QRectF(page.right(), page.top(), everything.width() - page.right(), page.height()),
-                QRectF(page.left(), page.bottom(), everything.width() - page.left(), everything.height() - page.bottom()),
-            ) if r.width() > 0 and r.height() > 0]
-            hole = QPainterPath()
-            hole.addRoundedRect(page, CONTENT_RADIUS, CONTENT_RADIUS)
-            self.setMask(QRegion(window.rect()).subtracted(QRegion(hole.toFillPolygon().toPolygon())))
-        self.lanes = [space_rect(window, w) for w in self._sliding_parts()]  # where each part slides
-        self.before = self._capture()
+        self.regions, mask = cover_layout(window)
+        self.setMask(mask) if mask is not None else self.clearMask()
+        self.lanes = [space_rect(window, w) for w in sliding_parts(window)]  # where each part slides
+        self.before = capture(window, self.regions)
         self.after = None
         self.travel = 0.0  # points the tabs have moved, toward the new Space
         self.opacity = 1.0  # fades out as it lifts
@@ -71,33 +64,9 @@ class SpaceSlide(QWidget):
         self.show()
         self.raise_()
 
-    def _sliding_parts(self):
-        """What belongs to one Space and so slides: its tabs, and the address of its current tab.
-        (Favorites are the same in every Space, so they simply stay.)"""
-        sidebar = self.window_.sidebar
-        return [sidebar.url_pill, sidebar.scroll]
-
-    def _capture(self):
-        """([(each region round the page, without the sliding parts)], [(each part on its own, where it goes)])
-        Small pictures only, never the page: they cost a millisecond or so each."""
-        parts = self._sliding_parts()
-        pictures = []
-        for part in parts:
-            policy = part.sizePolicy()
-            if not policy.retainSizeWhenHidden():
-                policy.setRetainSizeWhenHidden(True)  # hiding it for a moment mustn't move anything else
-                part.setSizePolicy(policy)
-            pictures.append((part.grab(), _in_window(self.window_, part).topLeft()))
-        for part in parts:
-            part.hide()  # (not on screen in between: nothing repaints until this returns)
-        backdrop = [(region, self.window_.grab(region.toAlignedRect())) for region in self.regions]
-        for part in parts:
-            part.show()
-        return backdrop, pictures
-
     def take_after(self):
         self.hide()
-        self.after = self._capture()
+        self.after = capture(self.window_, self.regions)
         self.show()
         self.raise_()
         self.update()
@@ -158,6 +127,58 @@ class SpaceSlide(QWidget):
         p.end()
 
 
+def cover_layout(window):
+    """(the regions the cover holds pictures of, the mask that keeps the rest of the window live, or None)"""
+    floating = getattr(window, "floating_sidebar", None) is not None and window.floating_sidebar.active
+    if getattr(window.content, "blank", False):
+        # No tab open: the "page" is the start view, in the Space's colours and with its name, so it's covered too
+        # (left live, it turned to the new Space's the moment a swipe began)
+        return [QRectF(window.rect())], None
+    if floating:
+        # The hidden sidebar come out over a page: the cover is the sidebar's card, the page all round it left live
+        side = _in_window(window, window.sidebar)
+        card = QPainterPath()
+        card.addRoundedRect(side, CONTENT_RADIUS, CONTENT_RADIUS)
+        return [side], QRegion(card.toFillPolygon().toPolygon())
+    page = content_rect(window)
+    everything = QRectF(window.rect())
+    # The window round the page: the sidebar's column and the thin frame above, beside and below
+    regions = [r for r in (
+        QRectF(0, 0, page.left(), everything.height()),
+        QRectF(page.left(), 0, everything.width() - page.left(), page.top()),
+        QRectF(page.right(), page.top(), everything.width() - page.right(), page.height()),
+        QRectF(page.left(), page.bottom(), everything.width() - page.left(), everything.height() - page.bottom()),
+    ) if r.width() > 0 and r.height() > 0]
+    hole = QPainterPath()
+    hole.addRoundedRect(page, CONTENT_RADIUS, CONTENT_RADIUS)
+    return regions, QRegion(window.rect()).subtracted(QRegion(hole.toFillPolygon().toPolygon()))
+
+
+def sliding_parts(window):
+    """What belongs to one Space and so slides: its tabs, and the address of its current tab.
+    (Favorites are the same in every Space, so they simply stay.)"""
+    return [window.sidebar.url_pill, window.sidebar.scroll]
+
+
+def capture(window, regions):
+    """([(each region round the page, without the sliding parts)], [(each part on its own, where it goes)])
+    Small pictures only, never the page: they cost a millisecond or so each."""
+    parts = sliding_parts(window)
+    pictures = []
+    for part in parts:
+        policy = part.sizePolicy()
+        if not policy.retainSizeWhenHidden():
+            policy.setRetainSizeWhenHidden(True)  # hiding it for a moment mustn't move anything else
+            part.setSizePolicy(policy)
+        pictures.append((part.grab(), _in_window(window, part).topLeft()))
+    for part in parts:
+        part.hide()  # (not on screen in between: nothing repaints until this returns)
+    backdrop = [(region, window.grab(region.toAlignedRect())) for region in regions]
+    for part in parts:
+        part.show()
+    return backdrop, pictures
+
+
 def _in_window(window, widget) -> QRectF:
     rect = widget.rect()
     rect.moveTopLeft(widget.mapTo(window, rect.topLeft()))
@@ -174,14 +195,142 @@ def content_rect(window) -> QRectF:
     return _in_window(window, window.content)
 
 
-def slide_region(window, widget, change, direction):
-    """Run change() (switching Spaces), sliding the Space's part of the sidebar across and blending
-    the rest over. direction 1: the new one comes from the right."""
+def slide_region(window, widget, change, direction, target=None, choose=None):
+    """Run change() (switching Spaces to target), sliding the Space's part of the sidebar across and blending
+    the rest over. direction 1: the new one comes from the right. With target's picture ready, choose() (just
+    which Space you're in: what comes next, a tab opened in it say, goes there) is run at once and the rest of
+    change() (its colours and page) once the slide's landed."""
     from .motion import NORMAL
     slide = SpaceSlide(window, direction)  # holds the old look meanwhile
+    pictures = space_pictures(window)
+    ready = pictures.get(target) if target is not None else None
+    if not slide.interrupted:
+        pictures.keep(window.store.active_space, slide.before)
+    if ready is not None:
+        # Its picture's ready: slide at once, and switch once it's landed (under the cover)
+        slide.after = ready
+        if choose is not None:
+            choose()
+
+        def landed():
+            change()
+            QTimer.singleShot(0, slide.lift)  # (once the sidebar has caught up)
+        slide.run(slide.side.width(), NORMAL + 60, landed)
+        return
     change()
 
     def start():
         slide.take_after()
         slide.run(slide.side.width(), NORMAL + 60, slide.lift)
     QTimer.singleShot(0, start)  # the sidebar rebuilds on the next pass of the event loop
+
+
+PREPARE_MS = 1500  # how long nothing has to be happening before the next Spaces' pictures are made
+PREPARE = "prepare_spaces"  # (a setting: on unless turned off)
+
+
+class SpacePictures(QObject):
+    """Pictures of the Spaces either side of the one you're in (as a slide shows them), ready before they're
+    needed. A picture's only used while it still fits: the same window size and sidebar, the same kind of cover
+    (a page open or not), the Space's colours unchanged."""
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.window = window
+        self.kept: dict[str, tuple] = {}  # Space id: (what it was taken for, the picture)
+        self._idle = QTimer(self, singleShot=True, interval=PREPARE_MS, timeout=self.prepare)
+        window.store.structure_changed.connect(self.forget)
+
+    def _fits(self, space):
+        """What a picture of `space` has to have been taken for, to be used now."""
+        w = self.window
+        regions, _mask = cover_layout(w)
+        lanes = [space_rect(w, part) for part in sliding_parts(w)]
+        rects = tuple((r.x(), r.y(), r.width(), r.height()) for r in regions + lanes)
+        return (w.width(), w.height(), w.sidebar.width(), rects, space.color, json.dumps(space.theme, sort_keys=True))
+
+    def neighbours(self) -> list:
+        spaces, here = self.window.store.spaces, self.window.store.active_space
+        if here not in spaces or len(spaces) < 2:
+            return []
+        i = spaces.index(here)
+        return list(dict.fromkeys(s for s in (spaces[i - 1], spaces[(i + 1) % len(spaces)]) if s is not here))
+
+    def get(self, space):
+        kept = self.kept.get(space.id) if space is not None else None
+        return kept[1] if kept is not None and kept[0] == self._fits(space) else None
+
+    def keep(self, space, picture):
+        """A picture of `space` as it is now (the one a slide just took, leaving it)."""
+        self.kept[space.id] = (self._fits(space), picture)
+        self.soon()
+
+    def forget(self):
+        """Tabs moved, added or closed: the pictures may show the wrong ones."""
+        self.kept.clear()
+        self.soon()
+
+    def soon(self):
+        self._idle.start()
+
+    def _quiet(self) -> bool:
+        from .motion import reduced
+        w = self.window
+        return (w.isVisible() and w.sidebar.isVisible() and not reduced()
+                and QApplication.mouseButtons() == Qt.MouseButton.NoButton
+                and not any(c.isVisible() for c in w.findChildren(SpaceSlide)))
+
+    def prepare(self):
+        """Keep only the neighbours' pictures, and make any of theirs that's missing (one at a time, each when
+        nothing else is happening)."""
+        if not self.window.store.settings.get(PREPARE, True):
+            return  # (off: the tests, which want a window that only does what they ask)
+        if not self._quiet():
+            self.soon()
+            return
+        wanted = self.neighbours()
+        for space_id in [k for k in self.kept if k not in {s.id for s in wanted}]:
+            del self.kept[space_id]  # (only the two either side: the memory stays small)
+        missing = [s for s in wanted if self.get(s) is None]
+        if missing:
+            space = missing[0]
+            self.kept[space.id] = (self._fits(space), self.picture_of(space))
+            if len(missing) > 1:
+                self.soon()
+
+    def picture_of(self, space):
+        """`space` as a slide to it would show it, made without showing it: the window's switched to it,
+        pictured and switched back, all before anything's drawn on screen."""
+        w = self.window
+        store, sidebar = w.store, w.sidebar
+        regions, _mask = cover_layout(w)
+        real_space, real_tab = store.active_space_id, w.current_tab
+        store.active_space_id = space.id
+        try:
+            w.apply_theme()  # (its colours, and its tabs in the sidebar)
+            tab = store.find_tab(space.active_tab_id)
+            if tab in store.visible_tabs():
+                w.current_tab = tab  # (its own tab highlighted, its address in the pill: only for the picture)
+                sidebar.update_selection()
+                sidebar.update_nav()
+            _lay_out(w)
+            return capture(w, regions)
+        finally:
+            store.active_space_id, w.current_tab = real_space, real_tab
+            w.apply_theme()
+            _lay_out(w)
+
+
+def _lay_out(window):
+    """Everything laid out now, as it would be on the next pass of the event loop (new rows, say)."""
+    for widget in [window] + window.findChildren(QWidget):
+        layout = widget.layout()
+        if layout is not None:
+            layout.activate()
+
+
+def space_pictures(window) -> SpacePictures:
+    pictures = getattr(window, "space_pictures", None)
+    if pictures is None:
+        pictures = window.space_pictures = SpacePictures(window)
+    return pictures

@@ -185,3 +185,24 @@ def test_instant_links_go_straight_to_the_top_result_or_the_address():
     assert instant_url("qt webengine docs") == "https://duckduckgo.com/?q=%5Cqt%20webengine%20docs"
     assert instant_url("  rust & go  ").endswith("%5Crust%20%26%20go")
     assert instant_url("github.com/MasonKimball05/Eclipse").startswith("https://github.com/MasonKimball05/Eclipse")
+
+
+def test_memory_says_how_much_to_keep(monkeypatch):
+    from browser import memory
+    assert memory.total_gb() > 0.5
+    monkeypatch.setattr(memory, "total_gb", lambda: 8.0)
+    assert memory.small() and memory.kept(40, 20) == 20
+    monkeypatch.setattr(memory, "total_gb", lambda: 32.0)
+    assert not memory.small() and memory.kept(40, 20) == 40
+
+
+def test_memory_says_how_short_it_is(monkeypatch):
+    from types import SimpleNamespace
+    from browser import memory
+    assert memory.pressure() in (memory.NORMAL, memory.LOW, memory.CRITICAL)  # (whatever it is right now)
+    monkeypatch.setattr(memory.sys, "platform", "win32")  # (Windows: how much of it's in use)
+    for load, level in ((40, memory.NORMAL), (88, memory.LOW), (97, memory.CRITICAL)):
+        monkeypatch.setattr(memory, "_windows_status", lambda load=load: SimpleNamespace(load=load))
+        assert memory.pressure() == level
+    monkeypatch.setattr(memory, "_windows_status", lambda: None)
+    assert memory.pressure() == memory.NORMAL  # (can't tell: as if fine)

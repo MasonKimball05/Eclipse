@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (QApplication, QColorDialog, QDialog, QFileDialog,
 
 import qtawesome as qta
 
-from . import (backup, brand, clean_links, dark_pages, macos, motion, screenshots, shortcuts, space_share, spelling,
+from . import (backup, brand, clean_links, dark_pages, macos, memory, motion, screenshots, shortcuts, space_share, spelling,
                storage)
 from .adblock import AdBlocker
 from .command_bar import CUSTOM_SETTING, CommandBar, use_custom_sites
@@ -72,6 +72,7 @@ MAC = sys.platform == "darwin"
 CONTROL = "Meta" if MAC else "Ctrl"
 RECENT_PAGES = 12  # (at the bottom of the History menu)
 HISTORY_MENU = 15  # (pages in the back and forward buttons' menus)
+THUMBNAILS = memory.kept(40, 20)  # (small pictures of pages, for previews and ⌃Tab)
 DARK_PAGE_BLANK = "#1b1b1e"  # (theme.py's page-area colour on a dark Space)
 KEEP_RUNNING = "keep_running"  # (closing the window leaves Eclipse open, on a Mac)
 AUTOPLAY_SETTING = "media_waits_for_click"  # (Settings → Privacy: videos don't play until you click)
@@ -698,6 +699,8 @@ class MainWindow(QMainWindow):
                    else "None of these tabs are open")
 
     def _on_audible(self, tab):
+        if sip.isdeleted(tab):
+            return  # (its page went quiet after the tab itself was gone: closing, or the window shutting)
         tab.changed.emit()
         self.mini_player.audible_changed(tab)
         self.emit("audible_changed", tab)
@@ -1239,7 +1242,7 @@ class MainWindow(QMainWindow):
             self.thumbnails[previous.id] = previous.view.grab().scaledToWidth(
                 520, Qt.TransformationMode.SmoothTransformation)  # (260 points: sharp in a preview)
             self.thumbnails.move_to_end(previous.id)
-            while len(self.thumbnails) > 40:
+            while len(self.thumbnails) > THUMBNAILS:
                 self.thumbnails.popitem(last=False)
         if tab.notified:
             tab.notified = False
@@ -2152,10 +2155,14 @@ class MainWindow(QMainWindow):
         slept = 0
         for tab in list(self.resting_tabs()):
             if force or tab.last_active < cutoff:
-                self._note_scroll(tab)
-                tab.view.page().setLifecycleState(QWebEnginePage.LifecycleState.Discarded)
+                self.put_to_sleep(tab)
                 slept += 1
         return slept
+
+    def put_to_sleep(self, tab):
+        """Let a background page go, freeing its memory; it reloads, where you'd scrolled to, when you click it."""
+        self._note_scroll(tab)
+        tab.view.page().setLifecycleState(QWebEnginePage.LifecycleState.Discarded)
 
     def sleep_other_tabs(self):
         slept = self.sleep_idle_tabs(force=True)
@@ -2312,7 +2319,8 @@ class MainWindow(QMainWindow):
         if self.sidebar.isVisible() and self.isVisible() and self.store.active_space in spaces:
             # The sidebar slides over to the new Space, like Arc's
             direction = direction or (1 if spaces.index(space) > spaces.index(self.store.active_space) else -1)
-            slide_region(self, self.sidebar, change, direction)
+            chosen = lambda: setattr(self.store, "active_space_id", space.id)  # noqa: E731 (at once, if it waits)
+            slide_region(self, self.sidebar, change, direction, space, chosen)
         else:
             change()
 

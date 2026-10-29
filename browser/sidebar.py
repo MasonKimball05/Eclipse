@@ -18,9 +18,11 @@ import sys
 
 import qtawesome as qta
 from PyQt6.QtCore import QEvent, QMimeData, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl
-from PyQt6.QtGui import QColor, QDrag, QIcon, QImage, QLinearGradient, QPainter, QPen, QPixmap
+from PyQt6.QtGui import (QColor, QDrag, QFont, QFontMetrics, QIcon, QImage, QLinearGradient, QPainter, QPen,
+                         QPixmap)
 from PyQt6.QtWidgets import (QApplication, QFrame, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout, QLabel,
-                             QPushButton, QScrollArea, QSizePolicy, QSpacerItem, QToolButton, QVBoxLayout, QWidget)
+                             QPushButton, QScrollArea, QSizePolicy, QSpacerItem, QToolButton, QToolTip, QVBoxLayout,
+                             QWidget)
 
 from PyQt6 import sip
 
@@ -128,6 +130,7 @@ PILL_PLACEHOLDER = "Search or Enter URL…"
 SPACE_BUTTON = 26  # (a Space's button in the bottom bar, when there's room)
 SPACE_BUTTON_SMALLEST = 18  # (with many Spaces in a narrow sidebar: fewer show, rather than smaller)
 SPACE_MORE = 10  # (the arrows beside them that say some are hidden, and where)
+SPACE_SHOWN = 3  # (at most this many at once, at a size that's easy to hit; the arrows and swipes reach the rest)
 
 class SpokenTooltips(QObject):
     """Keeps an icon-only button's name for VoiceOver in step with its tooltip."""
@@ -383,46 +386,44 @@ class DraggableTab:
             self.browser.show_tab_menu(self.tab, event.globalPos())
 
 
+ROW_HEIGHT = 34
+ROW_BUTTON, ROW_BUTTON_ICON = 22, 13  # (its close and mute buttons)
+ROW_SPACING = 9
+_row_icons = {}
+
+
+def _row_icon(name, color) -> QIcon:
+    """A row button's icon, made once per name and colour (every row shares them)."""
+    key = (name, QColor(color).rgba())
+    if key not in _row_icons:
+        _row_icons[key] = qta.icon(name, color=color)
+    return _row_icons[key]
+
+
 class TabRow(HoverFade, DraggableTab, QFrame):
+    """A tab in the sidebar. One widget that draws its own icon, title, unread badge and buttons: a row made
+    of seven widgets (labels, buttons) made every restyle and every Space switch slower with each tab."""
+
     def __init__(self, browser, tab, kind, depth=0, parent=None):
         super().__init__(parent)
         self._init_drag(browser, tab)
         self.kind = kind
+        self.depth = depth
         self.setObjectName("TabRow")
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
-        self.setFixedHeight(34)
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(10 + depth * INDENT, 0, 5, 0)
-        layout.setSpacing(9)
-        self.icon_label = QLabel()
-        self.icon_label.setFixedSize(16, 16)
-        self.icon_label.installEventFilter(self)
-        # A pinned tab that's wandered off its pinned page shows "/" after its icon, like Arc; the icon
-        # then turns into "back to the pinned page" when you point at it
-        self.away_label = QLabel("/")
-        self.away_label.setProperty("dim", True)
-        self.away_label.hide()
-        self.title_label = ElidedLabel()
-        # Pinned tabs get "—" (unload) like Arc; Today tabs get "×" (close)
-        self.close_btn = IconButton("ph.minus" if kind == PINNED else "ph.x", "Close", size=22, icon_size=13)
-        self.close_btn.clicked.connect(lambda: browser.close_tab(tab))
-        # Unread count from the site's title ("(3) Inbox"), or a dot after a notification
-        self.unread_label = QLabel()
-        self.unread_label.setObjectName("UnreadBadge")
-        self.unread_label.setFixedHeight(16)
-        self.unread_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.unread_label.hide()
-        # A speaker while the tab plays sound (or is muted): click to mute / unmute, like Arc
-        self.audio_btn = IconButton("ph.speaker-high", "Mute Tab", size=22, icon_size=13)
-        self.audio_btn.clicked.connect(lambda: browser.toggle_mute(tab))
-        layout.addWidget(self.icon_label)
-        layout.addWidget(self.away_label)
-        layout.addWidget(self.title_label, 1)
-        layout.addWidget(self.unread_label, 0, Qt.AlignmentFlag.AlignVCenter)
-        layout.addWidget(self.audio_btn)
-        layout.addWidget(self.close_btn)
-
+        self.setMouseTracking(True)  # (which of its buttons the pointer is over)
+        self.setFixedHeight(ROW_HEIGHT)
+        self.shows_away = False
+        self.icon_picture = QPixmap()
+        self._title = self._badge = self._title_tip = ""
+        self._unloaded = self._fresh = self._audible = self._muted = False
+        self._show_close = False
+        self._part = None      # the button (or away icon) under the pointer: "close", "audio" or "home"
+        self._pressed = None   # the one pressed, till the release
+        self._part_hover = 0.0
+        self._part_fader = QObject(self)  # (its own animation, apart from the row's hover fade)
+        self._elided = None
+        self.parts = {}
         tab.changed.connect(self.refresh)
         self.refresh()
 
@@ -435,62 +436,191 @@ class TabRow(HoverFade, DraggableTab, QFrame):
         return self.kind != TODAY and is_away(self.tab)
 
     def refresh(self):
-        theme = self.browser.theme
+        self.shows_away = self.away
         self._paint_icon()
-        set_shown(self.away_label, self.away)
-        self.icon_label.setToolTip("Back to the pinned page" if self.away else "")
-        self.icon_label.setCursor(Qt.CursorShape.PointingHandCursor if self.away else Qt.CursorShape.ArrowCursor)
         shown = shown_title(self.tab, self.browser.store.settings)
-        self.title_label.set_full_text(shown)
         sleeping = self.browser.is_sleeping(self.tab)
         # The preview says it all, except on the tab you're on, which has none
         previews = (self.browser.store.settings.get("tab_previews", True)
                     and self.tab is not getattr(self.browser, "current_tab", None))
         whole = self.tab.label + "\n" if shown != self.tab.label else ""  # (the title, if it's been tidied)
-        self.title_label.setToolTip("" if previews else whole + self.tab.url
-                                    + ("\nSleeping — click to wake" if sleeping else "")
-                                    + ("\nKept awake" if self.tab.awake else ""))
-        repolish(self.title_label, unloaded=(self.kind == PINNED and self.tab.view is None) or sleeping,
-                 fresh=self.tab.fresh)
-        self.close_btn.set_color(theme.text)
-        badge = self.tab.unread or self.tab.app_unread or ("•" if self.tab.notified else "")
-        self.unread_label.setText(badge)
-        set_shown(self.unread_label, badge)
-        audible, muted = self.browser.tab_audio(self.tab)
+        self._title_tip = "" if previews else (whole + self.tab.url + ("\nSleeping — click to wake" if sleeping else "")
+                                               + ("\nKept awake" if self.tab.awake else ""))
+        self._title = shown
+        self._unloaded = (self.kind == PINNED and self.tab.view is None) or sleeping
+        self._fresh = bool(self.tab.fresh)
+        self._badge = self.tab.unread or self.tab.app_unread or ("•" if self.tab.notified else "")
+        self._audible, self._muted = self.browser.tab_audio(self.tab)
         # What VoiceOver says for the row: its title, and anything its badges show
+        badge = self._badge
         extras = [f"{badge} unread" if badge and badge != "•" else "new notification" if badge else "",
-                  "muted" if muted else "playing sound" if audible else "", "sleeping" if sleeping else ""]
+                  "muted" if self._muted else "playing sound" if self._audible else "", "sleeping" if sleeping else ""]
         self.setAccessibleName(", ".join([self.tab.label] + [e for e in extras if e]))
-        self.close_btn.setAccessibleName(("Unload " if self.kind == PINNED else "Close ") + self.tab.label)
-        set_shown(self.audio_btn, audible or muted)
-        if audible or muted:
-            self.audio_btn.icon_name = "ph.speaker-slash" if muted else "ph.speaker-high"
-            self.audio_btn.setToolTip("Unmute Tab" if muted else "Mute Tab")
-            self.audio_btn.setAccessibleName(self.audio_btn.toolTip())
-            self.audio_btn.set_color(theme.text)
         self._update_close()
 
-    def _paint_icon(self, hovered=False):
+    def _paint_icon(self):
         theme = self.browser.theme
-        if hovered and self.away:
-            icon = qta.icon("ph.arrow-u-up-left", color=theme.text)
+        if self._part == "home" and self.shows_away:  # (pointing at it: back to the pinned page)
+            icon = _row_icon("ph.arrow-u-up-left", theme.text)
         else:
             icon = tab_icon(self.tab, theme)
-        self.icon_label.setPixmap(icon.pixmap(16, 16))
+        self.icon_picture = icon.pixmap(16, 16)
+        self.update()
 
-    def eventFilter(self, obj, event):
-        if obj is self.icon_label and self.away:
-            kind = event.type()
-            if kind == QEvent.Type.Enter:
-                self._paint_icon(hovered=True)
-            elif kind == QEvent.Type.Leave:
-                self._paint_icon()
-            elif kind == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
-                return True  # not the start of a drag, or a click on the row
-            elif kind == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
-                self.browser.go_home(self.tab)
-                return True
-        return super().eventFilter(obj, event)
+    def _fonts(self):
+        title = QFont(self.font())
+        title.setPixelSize(13)
+        title.setWeight(QFont.Weight.Bold if self._fresh else QFont.Weight.Medium)
+        small = QFont(self.font())
+        small.setPixelSize(11)
+        badge = QFont(self.font())
+        badge.setPixelSize(10)
+        badge.setWeight(QFont.Weight.Bold)
+        return title, small, badge
+
+    def _lay_out(self):
+        """Where everything goes, as the old row's layout put it: icon, "/", title, then the badge and buttons
+        on the right (a hidden one takes no room)."""
+        _, small, badge_font = self._fonts()
+        mid = ROW_HEIGHT // 2
+        x = 10 + self.depth * INDENT
+        parts = {"icon": QRect(x, mid - 8, 16, 16)}
+        x += 16 + ROW_SPACING
+        if self.shows_away:
+            width = QFontMetrics(small).horizontalAdvance("/")
+            parts["slash"] = QRect(x, 0, width, ROW_HEIGHT)
+            x += width + ROW_SPACING
+        right = self.width() - 5
+        for name, shown in (("close", self._show_close), ("audio", self._audible or self._muted)):
+            if shown:
+                parts[name] = QRect(right - ROW_BUTTON, mid - ROW_BUTTON // 2, ROW_BUTTON, ROW_BUTTON)
+                right -= ROW_BUTTON + ROW_SPACING
+        if self._badge:
+            width = max(16, QFontMetrics(badge_font).horizontalAdvance(self._badge) + 10)
+            parts["badge"] = QRect(right - width, mid - 8, width, 16)
+            right -= width + ROW_SPACING
+        parts["title"] = QRect(x, 0, max(10, right - x), ROW_HEIGHT)
+        self.parts = parts
+
+    def _part_at(self, pos):
+        for name in ("close", "audio"):
+            if name in self.parts and self.parts[name].contains(pos):
+                return name
+        if self.shows_away and self.parts.get("icon", QRect()).contains(pos):
+            return "home"
+        return None
+
+    def _set_part(self, part):
+        if part == self._part:
+            return
+        self._part = part
+        self.setCursor(Qt.CursorShape.PointingHandCursor if part else Qt.CursorShape.ArrowCursor)
+        if self.shows_away:
+            self._paint_icon()
+        from . import motion
+
+        def step(value):
+            self._part_hover = value
+            self.update()
+        self._part_hover = 0.0 if part else self._part_hover
+        motion.animate(self._part_fader, self._part_hover, 1.0 if part in ("close", "audio") else 0.0, step, 90)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)  # (its stylesheet's highlight, and the hover fading over it)
+        theme = self.browser.theme
+        title_font, small, badge_font = self._fonts()
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        parts = self.parts
+        p.drawPixmap(parts["icon"], self.icon_picture)
+        if "slash" in parts:
+            p.setFont(small)
+            p.setPen(_with_alpha(QColor(theme.text), 0.55))
+            p.drawText(parts["slash"], Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, "/")
+        title = parts["title"]
+        key = (self._title, title.width(), self._fresh)
+        if self._elided is None or self._elided[0] != key:
+            text = QFontMetrics(title_font).elidedText(self._title, Qt.TextElideMode.ElideRight, title.width())
+            self._elided = (key, text)
+        p.setFont(title_font)
+        p.setPen(_with_alpha(QColor(theme.text), 0.72) if self._unloaded else QColor(theme.text))
+        p.drawText(title, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self._elided[1])
+        if "badge" in parts:
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(theme.accent))
+            p.drawRoundedRect(QRectF(parts["badge"]), 8, 8)
+            p.setFont(badge_font)
+            p.setPen(QColor(theme.on_accent))
+            p.drawText(parts["badge"], Qt.AlignmentFlag.AlignCenter, self._badge)
+        for name in ("audio", "close"):
+            if name not in parts:
+                continue
+            area = QRectF(parts[name])
+            if self._pressed == name and self._part == name:
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(_with_alpha(QColor(theme.text), 0.10))
+                p.drawRoundedRect(area, 6, 6)
+            elif self._part == name and self._part_hover > 0.001:
+                from .theme import hover_color
+                color = hover_color(theme)
+                color.setAlphaF(color.alphaF() * self._part_hover)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(color)
+                p.drawRoundedRect(area, 6, 6)
+            if name == "close":
+                icon = "ph.minus" if self.kind == PINNED else "ph.x"
+            else:
+                icon = "ph.speaker-slash" if self._muted else "ph.speaker-high"
+            inset = (ROW_BUTTON - ROW_BUTTON_ICON) / 2
+            _row_icon(icon, theme.text).paint(p, area.adjusted(inset, inset, -inset, -inset).toRect())
+        p.end()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._lay_out()
+
+    def event(self, event):
+        if event.type() == QEvent.Type.ToolTip:
+            pos = event.pos()
+            part = self._part_at(pos)
+            tip = {"close": ("Unload Tab" if self.kind == PINNED else "Close Tab"),
+                   "audio": "Unmute Tab" if self._muted else "Mute Tab",
+                   "home": "Back to the pinned page"}.get(part)
+            if tip is None and self.parts.get("title", QRect()).contains(pos):
+                tip = self._title_tip
+            if tip:
+                QToolTip.showText(event.globalPos(), tip, self, self.parts.get(part or "title", QRect()))
+            else:
+                QToolTip.hideText()
+                event.ignore()
+            return True
+        return super().event(event)
+
+    def mousePressEvent(self, event):
+        part = self._part_at(event.position().toPoint())
+        if part and event.button() == Qt.MouseButton.LeftButton:
+            self._pressed = part  # (a button's click, not the start of a drag or a click on the row)
+            self.update()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        self._set_part(self._part_at(event.position().toPoint()))
+        if self._pressed:
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        pressed, self._pressed = self._pressed, None
+        if pressed:
+            self.update()
+            if event.button() == Qt.MouseButton.LeftButton and self._part_at(event.position().toPoint()) == pressed:
+                {"close": lambda: self.browser.close_tab(self.tab),
+                 "audio": lambda: self.browser.toggle_mute(self.tab),
+                 "home": lambda: self.browser.go_home(self.tab)}[pressed]()
+            return
+        super().mouseReleaseEvent(event)
 
     def set_selected(self, selected):
         if self.selected != selected:
@@ -501,7 +631,9 @@ class TabRow(HoverFade, DraggableTab, QFrame):
         visible = self.selected or self.underMouse()
         if self.kind == PINNED:
             visible = visible and self.tab.view is not None
-        set_shown(self.close_btn, visible)
+        self._show_close = visible
+        self._lay_out()
+        self.update()
 
     def enterEvent(self, event):
         self._update_close()
@@ -509,55 +641,78 @@ class TabRow(HoverFade, DraggableTab, QFrame):
         super().enterEvent(event)  # (HoverFade)
 
     def leaveEvent(self, event):
+        self._set_part(None)
         self._update_close()
         self.browser.tab_preview.leave(self)
         super().leaveEvent(event)
 
 
 class FolderRow(HoverFade, QFrame):
-    """A pinned folder: click to open/close, drag to move, right-click for options."""
+    """A pinned folder: click to open/close, drag to move, right-click for options. Like a TabRow, it draws its
+    own icon, name and count (one widget, not four)."""
 
     def __init__(self, browser, folder, depth=0, parent=None):
         super().__init__(parent)
         self.browser = browser
         self.folder = folder
+        self.depth = depth
         self._press_pos = None
         self.setObjectName("TabRow")
         self.setAttribute(Qt.WidgetAttribute.WA_Hover)
-        self.setFixedHeight(34)
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(10 + depth * INDENT, 0, 10, 0)
-        layout.setSpacing(9)
-        self.icon_label = QLabel()
-        self.icon_label.setFixedSize(16, 16)
-        self.name_label = ElidedLabel(folder.name)
-        self.count_label = QLabel()
-        self.count_label.setProperty("dim", True)
-        layout.addWidget(self.icon_label)
-        layout.addWidget(self.name_label, 1)
-        layout.addWidget(self.count_label)
+        self.setFixedHeight(ROW_HEIGHT)
+        self.icon_picture = QPixmap()
+        self.count_text = ""
+        self._elided = None
         self.refresh()
 
     def refresh(self):
-        color = _with_alpha(self.browser.theme.text, 0.75)
+        theme = self.browser.theme
+        color = _with_alpha(theme.text, 0.75)
         live = self.folder.live or {}
         if live:  # a Live Folder: what it follows, and how many items are new
-            icon = "ph.github-logo" if live.get("kind") == "github" else "ph.rss"
-            self.icon_label.setPixmap(qta.icon(icon, color=self.browser.theme.accent_text).pixmap(16, 16))
+            icon = _row_icon("ph.github-logo" if live.get("kind") == "github" else "ph.rss", theme.accent_text)
         elif self._github_section():  # a section of the GitHub folder, or one of your repos
-            icon = GITHUB_SECTION_ICONS.get(self.folder.name, "ph.book-bookmark")
-            self.icon_label.setPixmap(qta.icon(icon, color=color).pixmap(16, 16))
+            icon = _row_icon(GITHUB_SECTION_ICONS.get(self.folder.name, "ph.book-bookmark"), color)
         else:
-            icon = "ph.folder-open" if self.folder.expanded else "ph.folder"
-            self.icon_label.setPixmap(qta.icon(icon, color=color).pixmap(16, 16))
-        self.name_label.set_full_text(self.folder.name)
+            icon = _row_icon("ph.folder-open" if self.folder.expanded else "ph.folder", color)
+        self.icon_picture = icon.pixmap(16, 16)
         self.setAccessibleName(f"{self.folder.name}, folder, {'open' if self.folder.expanded else 'closed'}")
         fresh = sum(1 for t in walk_tabs(self.folder.children) if t.fresh)
         # Only a Live Folder's new items get a count, like Arc; how many tabs a folder holds is in its tooltip
-        self.count_label.setText(f"{fresh} new" if fresh else "")
+        self.count_text = f"{fresh} new" if fresh else ""
         count = sum(1 for _ in walk_tabs(self.folder.children))
         self.setToolTip(f"{count} tab{'s' if count != 1 else ''}" if not self.folder.expanded else "")
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)  # (its stylesheet's highlight, and the hover fading over it)
+        text = QColor(self.browser.theme.text)
+        name_font = QFont(self.font())
+        name_font.setPixelSize(13)
+        name_font.setWeight(QFont.Weight.Medium)
+        small = QFont(self.font())
+        small.setPixelSize(11)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        x = 10 + self.depth * INDENT
+        p.drawPixmap(QRect(x, ROW_HEIGHT // 2 - 8, 16, 16), self.icon_picture)
+        x += 16 + ROW_SPACING
+        right = self.width() - 10
+        if self.count_text:
+            width = QFontMetrics(small).horizontalAdvance(self.count_text)
+            p.setFont(small)
+            p.setPen(_with_alpha(text, 0.55))
+            p.drawText(QRect(right - width, 0, width, ROW_HEIGHT), Qt.AlignmentFlag.AlignVCenter, self.count_text)
+            right -= width + ROW_SPACING
+        width = max(10, right - x)
+        key = (self.folder.name, width)
+        if self._elided is None or self._elided[0] != key:
+            self._elided = (key, QFontMetrics(name_font).elidedText(self.folder.name, Qt.TextElideMode.ElideRight, width))
+        p.setFont(name_font)
+        p.setPen(text)
+        p.drawText(QRect(x, 0, width, ROW_HEIGHT), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                   self._elided[1])
+        p.end()
 
     def _github_section(self) -> bool:
         parent = self.browser.store.live_folder_of(self.folder)
@@ -1238,10 +1393,10 @@ class FavoritesGrid(DropZone):
         self.hint.setFixedHeight(32)
 
     def set_tabs(self, tabs):
-        # The same Favorites in the same look: kept, just refreshed (making them again is most of a rebuild's time)
+        # The same Favorites: kept, just refreshed, in the new Space's colours too (making them again is most of a
+        # rebuild's time, and switching to a Space of another colour made them all again)
         self._tabs = tabs
-        same = (tuple(map(id, tabs)), self.browser.theme.text.name(), self.browser.theme.accent.name(),
-                self._columns_that_fit())
+        same = (tuple(map(id, tabs)), self._columns_that_fit())
         if self.tiles and same == getattr(self, "_built", None) and all(not sip.isdeleted(t) for t in self.tiles):
             for tile in self.tiles:
                 tile.refresh()
@@ -1927,7 +2082,7 @@ class Sidebar(QWidget):
     def _fit_switcher(self):
         """The Space buttons share what room the bottom bar has: full size when there's room, smaller and closer
         together (to two-thirds of it) when there are many Spaces or the sidebar's narrow, never on top of each
-        other. With too many to fit even so, the ones round the Space you're in show."""
+        other. At most SPACE_SHOWN at once: with more, the ones round the Space you're in show."""
         buttons = [b for b in self.space_buttons if not sip.isdeleted(b)]
         if not buttons:
             return
@@ -1935,12 +2090,12 @@ class Sidebar(QWidget):
         others = [b for b in self._bottom_buttons if not sip.isdeleted(b) and b.isVisibleTo(self)]
         room = self.width() - margins.left() - margins.right() - sum(b.sizeHint().width() for b in others) \
             - 2 * (len(others) + 1)
-        crowded = room < len(buttons) * (SPACE_BUTTON + 2)
-        self.switcher.setSpacing(1 if crowded else 2)
-        fit = max(1, room // (SPACE_BUTTON_SMALLEST + 1))  # (how many fit at the smallest)
+        fit = min(SPACE_SHOWN, max(1, room // (SPACE_BUTTON_SMALLEST + 1)))  # (how many fit at the smallest)
         if fit < len(buttons):  # (some will be hidden: room for the arrows that say so)
             room -= 2 * (SPACE_MORE + 2)
-            fit = max(1, room // (SPACE_BUTTON_SMALLEST + 1))
+            fit = min(SPACE_SHOWN, max(1, room // (SPACE_BUTTON_SMALLEST + 1)))
+        crowded = room < min(fit, len(buttons)) * (SPACE_BUTTON + 2)
+        self.switcher.setSpacing(1 if crowded else 2)
         self._switcher_fit = fit
         active = next((i for i, b in enumerate(buttons) if b.property("selected")), 0)
         if active != getattr(self, "_switcher_active", None):

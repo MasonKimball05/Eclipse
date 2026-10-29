@@ -577,6 +577,10 @@ class SettingsWindow(FadesIn, QWidget):
         start = QCheckBox()
         start.setChecked(self.store.settings.get("start_view", True))
         start.toggled.connect(lambda on: (self._setting("start_view", on), self.browser.content.empty.refresh()))
+        memory_row = self._feature_box("memory_saver", "Sleep tabs when memory runs low",
+                                       "When your " + ("PC" if sys.platform == "win32" else "Mac") + " is short "
+                                       "of memory, the tabs you've gone longest without using sleep first, so "
+                                       "everything else stays quick.", ("darwin", "win32"))
         banners = QCheckBox()
         banners.setChecked(not self.store.settings.get("notifications_dnd", False))
         banners.toggled.connect(lambda on: self._setting("notifications_dnd", not on))
@@ -586,6 +590,7 @@ class SettingsWindow(FadesIn, QWidget):
             self._row("Put idle tabs to sleep after", "Sleeping tabs free their memory and reload, where you'd "
                                                       "scrolled to, when you click them. Tabs playing audio never "
                                                       "sleep.", sleep),
+            memory_row,
             self._row("Peek", "Links opened from pinned tabs and favorites float over the page instead of "
                               "opening a new tab.", peek),
             self._row("Start view with no tab open", "The Space's name, a search bar, your most-visited sites "

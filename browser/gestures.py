@@ -20,12 +20,15 @@ import qtawesome as qta
 
 from .features import Feature
 
-from .space_slide import CONTENT_RADIUS, SpaceSlide, _smooth, content_rect, slide_region, space_rect  # noqa: F401
+from .space_slide import (CONTENT_RADIUS, SpaceSlide, _smooth, content_rect, slide_region, space_pictures,  # noqa: F401
+                          space_rect)
 
 WORLD = QWebEngineScript.ScriptWorldId.ApplicationWorld
 START_PX = 14         # sideways movement before a swipe counts as one
 COMMIT_PX = 150       # how far to swipe for letting go to navigate
 ARROW = 44
+CATCH_UP = 24         # a Space swipe this far behind the fingers catches up over a few frames instead of jumping
+CATCH_UP_RATE = 0.35  # (the part of the way it closes each frame)
 
 # Notes, in the page, when it handled a sideways wheel itself (maps, sliders)
 WATCH_WHEEL = """
@@ -108,14 +111,33 @@ class SwipeArrow(QWidget):
 
 
 SNAPSHOTS = 12  # pictures of pages you've left, for swiping back to them (all tabs together)
+SHARP = (4, 2)  # how many of the newest stay as they are (with plenty of memory, without): the rest are compressed
+SNAPSHOT_QUALITY = 85
+
+
+def _compress(image) -> bytes:
+    """A page's picture as a JPEG: a fiftieth of the memory or so (run off the main thread)."""
+    from PyQt6.QtCore import QBuffer, QIODevice
+    buffer = QBuffer()
+    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+    image.save(buffer, "JPG", SNAPSHOT_QUALITY)
+    return bytes(buffer.data())
 
 
 class Snapshots:
     """What each page looked like when you left it, so swiping back can show it under your fingers.
-    Full resolution (a softer picture under a sharp page looks wrong), so only the last few."""
+    Full resolution (a softer picture under a sharp page looks wrong). A full page's picture is some 20 MB on a
+    Retina screen, so only the newest few (the ones you're likeliest to swipe back to) stay that way; older ones
+    are compressed in the background, and opened again if you swipe that far back."""
 
     def __init__(self):
-        self._shots = {}  # (id(view), history index, url) → QPixmap, oldest first
+        from concurrent.futures import ThreadPoolExecutor
+        from .memory import kept
+        self._shots = {}  # (id(view), history index, url) → QPixmap (or, older, JPEG bytes and its pixel ratio)
+        self._sharp = kept(*SHARP)
+        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="snapshots")
+        self._pending = {}  # key → (the picture it was, the compressing of it)
+        self._done = QTimer(interval=150, timeout=self._collect)
 
     @staticmethod
     def key(view, index, url):
@@ -134,9 +156,39 @@ class Snapshots:
         self._shots[key] = shot
         while len(self._shots) > SNAPSHOTS:
             self._shots.pop(next(iter(self._shots)))
+        self._squeeze()
+
+    def _squeeze(self):
+        """Compress the ones older than the newest few (off the main thread: a moment's work each)."""
+        from PyQt6.QtGui import QPixmap
+        keys = list(self._shots)
+        for key in keys[:max(0, len(keys) - self._sharp)]:
+            shot = self._shots[key]
+            if isinstance(shot, QPixmap) and key not in self._pending:
+                image = shot.toImage()  # (a QImage can be worked on in another thread; a QPixmap can't)
+                self._pending[key] = (shot, self._pool.submit(_compress, image))
+        if self._pending:
+            self._done.start()
+
+    def _collect(self):
+        for key, (shot, job) in list(self._pending.items()):
+            if not job.done():
+                continue
+            del self._pending[key]
+            if self._shots.get(key) is shot and job.exception() is None:  # (still the same, still kept)
+                self._shots[key] = (job.result(), shot.devicePixelRatio())
+        if not self._pending:
+            self._done.stop()
 
     def get(self, view, index, url):
-        return self._shots.get(self.key(view, index, url))
+        from PyQt6.QtGui import QPixmap
+        shot = self._shots.get(self.key(view, index, url))
+        if isinstance(shot, tuple):  # (compressed: opened again)
+            data, ratio = shot
+            shot = QPixmap()
+            shot.loadFromData(data, "JPG")
+            shot.setDevicePixelRatio(ratio)
+        return shot
 
     def forget(self, view):
         for key in [k for k in self._shots if k[0] == id(view)]:
@@ -539,6 +591,12 @@ class SpaceSwipe(QObject):
         self.previous = None
         self.switched = False
         self._last = (None, False)
+        # Where the fingers have taken it, which the slide catches up to over a few frames when it's fallen behind
+        # (the switch to the new Space, under the cover as the swipe starts, holds things up for a moment; jumping
+        # straight to where the fingers had got to by then was a jolt)
+        self._aim = 0.0
+        self._chase = QTimer(self, interval=16, timeout=self._catch_up)
+        QTimer.singleShot(3000, lambda: space_pictures(browser).soon())  # (the Spaces either side, ready to slide to)
 
     def wheel(self, event) -> bool:
         """A wheel event on the sidebar: True if it was part of a Space swipe (and is used up)."""
@@ -627,7 +685,13 @@ class SpaceSwipe(QObject):
         self.target = spaces[(spaces.index(self.previous) + direction) % len(spaces)] if len(spaces) > 1 else None
         self.slide = SpaceSlide(b, direction)
         self.switched = False
-        if self.target is not None:
+        pictures = space_pictures(b)
+        if not self.slide.interrupted:
+            pictures.keep(self.previous, self.slide.before)
+        ready = pictures.get(self.target) if self.target is not None else None
+        if ready is not None:
+            self.slide.after = ready  # (its picture's ready: the switch waits until the slide lands, under the cover)
+        elif self.target is not None:
             # The switch and the picture of the new Space each wait for a later pass of the event loop,
             # so the first frames of the swipe aren't held up (the cover shows the old Space meanwhile)
             slide = self.slide
@@ -670,9 +734,28 @@ class SpaceSwipe(QObject):
     def _follow(self):
         travel = self._travel()
         self.velocity.add(travel)
-        self.slide.set_travel(travel)
+        self._aim = travel
+        if self._chase.isActive():
+            return  # (still catching up: it heads for the new aim)
+        if abs(travel - self.slide.travel) > CATCH_UP:
+            self._chase.start()
+        else:
+            self.slide.set_travel(travel)
+
+    def _catch_up(self):
+        slide = self.slide
+        if slide is None or sip.isdeleted(slide) or self.state != "mine":
+            self._chase.stop()
+            return
+        gap = self._aim - slide.travel
+        if abs(gap) < 1:
+            self._chase.stop()
+            slide.set_travel(self._aim)
+        else:
+            slide.set_travel(slide.travel + gap * CATCH_UP_RATE)
 
     def _release(self):
+        self._chase.stop()  # (it settles from where it shows)
         slide = self.slide
         width = slide.side.width()
         speed = self.velocity.value()  # toward the new Space

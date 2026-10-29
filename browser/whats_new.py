@@ -11,7 +11,7 @@ from .shortcuts import for_here
 from .motion import FadesIn
 from .theme import quiet_scrollbars, stylesheet
 
-EDITION = 22
+EDITION = 23
 SETTING = "whats_new_seen"
 
 NOTES = """
@@ -40,6 +40,15 @@ NOTES = """
 - [mine] **Homebase is a Live Folder now**: its button's gone from the sidebar, making room for more Spaces. Add the
   Homebase folder (⌘T → Add Live Folders for My Apps) for your apps and how each is doing; ⌘T → Homebase Apps
   still restarts, stops and shows logs, and a toast still says when one goes down.
+- **Smoother Space swipes**: the Spaces either side are made ready ahead, so a swipe moves the moment your
+  fingers do, and the colours turn over once you're past halfway. Three Spaces show at a time, a little bigger.
+- **Faster with lots of tabs**: switching Spaces no longer slows down as tabs pile up (about three times faster
+  with 80 tabs).
+- **Memory Saver**: when your Mac runs short of memory, the tabs you've gone longest without using go to sleep,
+  a few at a time, so the rest stays quick. They wake where you left them. Settings → Tabs turns it off.
+- **Lighter on memory**: older pages kept for swiping back are compressed, and Macs with 8 GB keep fewer pictures.
+- **Just the background, per Space**: each Space can show its plain background with no tab open (edit the Space).
+- **The theme's Intensity slider** follows your pointer smoothly.
 - **More Spaces than fit**: a small arrow beside the Space buttons shows which side the hidden ones are on;
   click it (or swipe) to see them.
 - **Fixed**: closing a tab you'd just opened from the hidden sidebar could leave the empty page with no

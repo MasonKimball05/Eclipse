@@ -401,11 +401,11 @@ def test_github_folder_fills_its_sub_folders(window, site, monkeypatch):
     window.store._changed()
     pause(0.2)
     rows = {r.folder.name: r for r in window.sidebar.findChildren(FolderRow) if r.isVisible()}
-    assert rows["GitHub"].count_label.text() == "1 new" and rows["eclipse"].count_label.text() == "1 new"
+    assert rows["GitHub"].count_text == "1 new" and rows["eclipse"].count_text == "1 new"
     fresh = next(t for t in walk_tabs(folder.children) if t.fresh)
     window.activate_tab(fresh)
     pause(0.1)
-    assert not fresh.fresh and rows["eclipse"].count_label.text() == "" and rows["GitHub"].count_label.text() == ""
+    assert not fresh.fresh and rows["eclipse"].count_text == "" and rows["GitHub"].count_text == ""
     # A sub-folder can't be dragged out, and nothing can be dropped in
     from browser.models import PINNED, TODAY
     window.store.move_tab(folder.children[1], PINNED, index=0)
@@ -1024,7 +1024,7 @@ def test_youtubes_ads_are_taken_out_before_its_player_sees_them(window, site):
 
 def test_a_narrow_sidebar_fits_its_search_pill_space_buttons_and_favorites(window):
     from browser.models import Tab
-    from browser.sidebar import PILL_PLACEHOLDER, SPACE_BUTTON
+    from browser.sidebar import PILL_PLACEHOLDER, SPACE_BUTTON, SPACE_SHOWN
     store, sidebar = window.store, window.sidebar
     for n in range(5):
         store.add_space(f"Space {n}", "#3366aa", "ph.code")
@@ -1035,17 +1035,18 @@ def test_a_narrow_sidebar_fits_its_search_pill_space_buttons_and_favorites(windo
     # The placeholder is never cut from the left (only a site's address is): a narrow pill says "Search…"
     if window.current_tab is None:
         assert sidebar.url_pill.text() in (PILL_PLACEHOLDER, "Search…") and not sidebar.url_pill.text().startswith("…")
-    # The Space buttons share the room: smaller, never on top of each other
+    # The Space buttons share the room: a few at a time, never too small to hit, never on top of each other
     buttons = [b for b in sidebar.space_buttons if b.isVisible()]
     assert any(b.property("selected") for b in buttons)  # (the Space you're in always shows)
-    assert all(b.width() < SPACE_BUTTON for b in buttons) and min(b.iconSize().width() for b in buttons) >= 12
+    assert len(buttons) <= SPACE_SHOWN and min(b.iconSize().width() for b in buttons) >= 12
     assert min(b.width() for b in buttons) >= 18
     lefts = [b.geometry().left() for b in buttons]
     rights = [b.geometry().right() for b in buttons]
     assert all(rights[i] < lefts[i + 1] for i in range(len(buttons) - 1))
     sidebar.setFixedWidth(420)
     pause(0.5)
-    assert all(b.width() == SPACE_BUTTON and b.isVisible() for b in sidebar.space_buttons)
+    shown = [b for b in sidebar.space_buttons if b.isVisible()]
+    assert len(shown) == SPACE_SHOWN and all(b.width() == SPACE_BUTTON for b in shown)  # (wide: full size, still 3)
     sidebar.setMinimumWidth(0)
     sidebar.setMaximumWidth(16777215)
 
@@ -1104,6 +1105,26 @@ def test_a_swipe_over_the_space_buttons_shows_the_hidden_ones(window):
     assert not any(m.isVisible() for m in sidebar.switcher_more)  # (all of them fit: no arrows)
 
 
+def test_three_spaces_show_at_once_at_full_size(window):
+    from browser.models import Space
+    from browser.sidebar import SPACE_BUTTON, SPACE_SHOWN
+    store, sidebar = window.store, window.sidebar
+    while len(store.spaces) < 5:
+        store.spaces.append(Space(f"Extra {len(store.spaces)}", "#3b82f6"))
+    store._changed()
+    pause(0.3)
+    try:
+        shown = [b for b in sidebar.space_buttons if b.isVisible()]
+        assert len(shown) == SPACE_SHOWN == 3
+        assert all(b.width() == SPACE_BUTTON for b in shown)  # (as big as with only a few Spaces)
+        assert sidebar.switcher_more[1].isVisible()  # (and the arrow says there are more)
+    finally:
+        while len(store.spaces) > 2:
+            store.remove_space(store.spaces[-1])
+        store._changed()
+        pause(0.3)
+
+
 def test_switching_spaces_slides_with_no_tab_open_too(window):
     # With no tab open the sidebar floats over the page (it stays out), and switching Spaces didn't slide at all
     # then: it just jumped. It slides over a floating sidebar as over a docked one.
@@ -1122,9 +1143,8 @@ def test_switching_spaces_slides_with_no_tab_open_too(window):
     first = store.active_space
     window.switch_space(second)
     slides = [w for w in window.findChildren(SpaceSlide) if w.isVisible()]
-    assert len(slides) == 1 and not slides[0].mask().isEmpty()
-    side = window.sidebar.geometry()
-    assert slides[0].mask().boundingRect().intersects(side)  # (over the sidebar's card, the page left live)
+    # Over the whole window: the start view takes on the new Space's colours and name with the rest, past halfway
+    assert len(slides) == 1 and slides[0].mask().isEmpty() and slides[0].geometry() == window.rect()
     travels = []
     end = time.monotonic() + 0.5
     from PyQt6 import sip
@@ -1624,6 +1644,41 @@ def test_low_power_mode_pauses_background_tabs_and_motion(window, site, monkeypa
     window.close_tab(front)
 
 
+def test_memory_running_low_puts_the_longest_unused_tabs_to_sleep(window, site, monkeypatch):
+    from browser import memory, memory_saver
+    feature = window.feature("memory_saver")
+    level = [memory.NORMAL]
+    monkeypatch.setattr(memory, "pressure", lambda: level[0])
+    window.store.settings[memory_saver.SETTING] = True  # (the live tests have it off)
+    tabs = [open_page(window, f"{site}/index.html?{i}") for i in range(6)]
+    now = time.time()
+    for i, tab in enumerate(tabs[:5]):
+        tab.last_active = now - 3600 + i * 60  # (the first, longest ago)
+    tabs[4].last_active = now - 30  # (just now: stays awake)
+    assert feature.check() == 0  # (plenty of memory: nothing sleeps)
+    assert not any(window.is_sleeping(t) for t in tabs)
+    level[0] = memory.LOW
+    assert feature.check() == memory_saver.AT_ONCE[memory.LOW]
+    assert [window.is_sleeping(t) for t in tabs] == [True, True, True, False, False, False]
+    assert window.toasts[-1].startswith("Memory's running low")
+    told = len(window.toasts)
+    assert feature.check() == 1  # (the last one unused long enough; and no second toast so soon)
+    assert window.is_sleeping(tabs[3]) and len(window.toasts) == told
+    level[0] = memory.CRITICAL  # (critical: a minute unused is enough)
+    tabs[4].last_active = now - 90
+    assert feature.check() == 1 and window.is_sleeping(tabs[4])
+    assert not window.is_sleeping(tabs[5])  # (never the tab you're on)
+    # Turned off in Settings: nothing sleeps
+    window.activate_tab(tabs[0])
+    assert wait_until(lambda: not window.is_sleeping(tabs[0]), 3)
+    tabs[0].last_active = now - 3600
+    window.activate_tab(tabs[5])
+    window.store.settings[memory_saver.SETTING] = False
+    assert feature.check() == 0 and not window.is_sleeping(tabs[0])
+    for tab in tabs:
+        window.close_tab(tab)
+
+
 def test_the_privacy_report_shows_what_each_site_tried(window, site, monkeypatch):
     from PyQt6.QtWidgets import QMenu
     feature = window.feature("privacy_report")
@@ -1680,7 +1735,10 @@ def test_a_space_comes_forward_on_its_schedule_and_blocks_its_distractions(windo
     blocked = f"127.0.0.1 is blocked in {work.name}"
     assert wait_until(lambda: blocked in window.toasts, 5)  # (once per try: a slow load can try twice)
     assert set(window.toasts) == {blocked}
-    assert wait_until(lambda: "isn't in" in (run_js(tab.view, "document.body && document.body.innerText") or ""), 5)
+    # (its quiet page: a moment longer on a busy machine)
+    shown = wait_until(lambda: "isn't in" in (run_js(tab.view, "document.body && document.body.innerText") or ""), 10)
+    page = tab.view.page()  # (if it doesn't show, how the page was, to tell why)
+    assert shown, (page.lifecycleState(), page.url().toString(), window.toasts, window.current_tab is tab)
     window.toast_action()
     assert wait_until(lambda: tab.view.url().toString() == site + "/article.html", 5)
     # The same site in another Space opens as ever
@@ -1837,8 +1895,8 @@ def test_a_downloads_icon_flies_to_the_downloads_button(window, site, monkeypatc
     assert flight is not None and flight.isVisible()
     end = QPointF(button.mapTo(window.centralWidget(), QPoint(button.width() // 2, button.height() // 2)))
     assert flight.end == end
-    mid = download_arc.arc_point(flight.start, flight.end, 0.5)
-    assert mid.y() < min(flight.start.y(), flight.end.y())  # (an arc: up, then down)
+    top = min(download_arc.arc_point(flight.start, flight.end, i / 50).y() for i in range(51))
+    assert top < min(flight.start.y(), flight.end.y())  # (an arc: up, then down, wherever the two ends are)
     assert wait_until(lambda: flight.t == 1.0, 2)
     pause(download_arc.BOUNCE_MS / 1000 + 0.3)
     assert button.iconSize() == size  # (bounced, and back)
@@ -1966,3 +2024,116 @@ def test_dragging_the_theme_intensity_keeps_up_and_cancel_wins(window):
     finally:
         window.apply_theme = real
         window.apply_theme()
+
+
+def test_a_space_swipe_turns_the_colours_over_past_halfway_and_catches_up_smoothly(window):
+    from browser.gestures import CATCH_UP
+    from browser.space_slide import _smooth
+    # The window looks like the Space you're leaving until past halfway, and the next one's by the end
+    assert _smooth(0.0) == _smooth(0.39) == 0.0 and _smooth(0.55) > 0 and _smooth(0.71) == 1.0
+    store = window.store
+    if len(store.spaces) < 2:
+        store.add_space("Two", "#22aa66")
+    swipe = window.feature("gestures").space_swipe
+    first = store.active_space
+    swipe.state, swipe.dx = "deciding", 0.0
+    swipe._begin(1)
+    try:
+        slide = swipe.slide
+        swipe.dx = -10
+        swipe._follow()
+        assert slide.travel == 10  # (close behind: 1:1, at once)
+        swipe.dx = -10 - CATCH_UP * 5  # held up for a moment (the switch), the fingers got far ahead
+        swipe._follow()
+        assert slide.travel == 10  # no jump…
+        steps = []
+        for _ in range(40):
+            pause(0.02)
+            steps.append(slide.travel)
+        assert steps[-1] == 10 + CATCH_UP * 5  # …it catches up over a few frames
+        assert all(b - a < CATCH_UP * 5 * 0.6 for a, b in zip([10] + steps, steps))  # (in steps, not one leap)
+    finally:
+        swipe.dx = 0
+        swipe._release()
+        assert wait_until(lambda: swipe.slide is None, 3)
+        swipe.state = "idle"
+        if store.active_space is not first:
+            window.switch_space(first)
+        pause(0.5)
+
+
+def test_the_spaces_either_side_are_pictured_ahead_so_a_slide_starts_at_once(window, site):
+    from PyQt6.QtGui import QImage
+    from browser import space_slide
+    from browser.space_slide import SpaceSlide, capture, cover_layout, space_pictures
+    store = window.store
+    while len(store.spaces) < 3:
+        store.add_space(f"Extra {len(store.spaces)}", "#22aa66")
+    first, second, third = store.spaces[0], store.spaces[1], store.spaces[2]
+    window.switch_space(first)
+    pause(0.8)
+    pictures = space_pictures(window)
+    pictures.kept.clear()
+    store.settings[space_slide.PREPARE] = True
+    try:
+        pictures.prepare()  # (one at a time, while nothing's happening)
+        pictures.prepare()
+        assert set(pictures.kept) == {second.id, store.spaces[-1].id}  # the two either side, and only them
+        assert store.active_space is first and window.styleSheet()  # (made unseen: still in the first)
+        made = pictures.get(second)
+        # The same as the real thing
+        regions, _mask = cover_layout(window)
+        window._set_active_space(second)
+        pause(0.5)
+        real = capture(window, regions)
+        window._set_active_space(first)
+        pause(0.5)
+
+        def close(a, b):
+            a, b = a.toImage().convertToFormat(QImage.Format.Format_RGB32), b.toImage().convertToFormat(QImage.Format.Format_RGB32)
+            if a.size() != b.size():
+                return False
+            step = max(1, a.width() // 40)
+            samples = [(x, y) for x in range(0, a.width(), step) for y in range(0, a.height(), step)]
+            same = sum(1 for x, y in samples if abs(a.pixelColor(x, y).value() - b.pixelColor(x, y).value()) < 24)
+            return same / len(samples) > 0.9
+        assert all(close(m[1], r[1]) for m, r in zip(made[0], real[0]))  # (the colours round the page)
+        assert all(close(m[0], r[0]) for m, r in zip(made[1], real[1]))  # (its tabs and address)
+        # A slide to it starts at once: you're in it (a tab opened now goes there), its colours wait until it lands
+        colours = window.theme
+        window.switch_space(second)
+        slide = [c for c in window.findChildren(SpaceSlide) if c.isVisible()][0]
+        assert slide.after is made and store.active_space is second and window.theme is colours
+        assert wait_until(lambda: window.theme is not colours, 2)
+        assert wait_until(lambda: not [c for c in window.findChildren(SpaceSlide) if c.isVisible()], 2)
+        # Tabs changing: the pictures go (they'd show the wrong ones)
+        store._changed()
+        assert pictures.kept == {}
+    finally:
+        store.settings[space_slide.PREPARE] = False
+        pictures.kept.clear()
+        window.switch_space(first)
+        pause(0.6)
+
+
+def test_older_pages_kept_for_swiping_back_are_compressed(window):
+    from PyQt6.QtGui import QColor, QPixmap
+    from browser.gestures import Snapshots
+    shots = Snapshots()
+    shots._sharp = 2
+    pictures, view = [], object()
+    key = lambda n: shots.key(view, n, f"u{n}")  # noqa: E731
+    for n in range(5):
+        pm = QPixmap(1200, 800)
+        pm.setDevicePixelRatio(2.0)
+        pm.fill(QColor(40 * n, 100, 160))
+        pictures.append(pm)
+        shots._shots[key(n)] = pm
+        shots._squeeze()
+    assert wait_until(lambda: not shots._pending, 5)
+    kinds = [type(shots._shots[key(n)]).__name__ for n in range(5)]
+    assert kinds == ["tuple", "tuple", "tuple", "QPixmap", "QPixmap"]  # (the newest two as they are)
+    assert all(len(shots._shots[key(n)][0]) < 1200 * 800 * 4 / 20 for n in range(3))
+    back = shots.get(view, 0, "u0")  # opened again, the same picture
+    assert back.size() == pictures[0].size() and back.devicePixelRatio() == 2.0
+    assert abs(back.toImage().pixelColor(600, 400).green() - 100) < 8

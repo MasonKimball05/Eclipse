@@ -117,6 +117,9 @@ def window(data_dir, qapp):
     store.is_new = False  # no first-launch Arc import offer
     store.settings["handoff"] = False  # nor test pages offered to your iPhone (Handoff)
     store.settings["power_saver"] = False  # nor your Mac's Low Power Mode changing how the tests run
+    store.settings["memory_saver"] = False  # nor its memory running short (tabs would sleep mid-test)
+    store.settings["up_next"] = False  # nor your calendar (a meeting coming up would show its card mid-test)
+    store.settings["prepare_spaces"] = False  # nor pictures of the next Spaces made while idle (they switch Spaces, unseen)
     w = MainWindow(store, build_profile(qapp))
     if w.feature("github") is not None:
         w.feature("github").repos.fetched = float("inf")  # never ask GitHub (gh) for your repos from a test

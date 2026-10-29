@@ -118,10 +118,43 @@ def test_pinned_tab_away_from_home(window, site):
     tab.view.load(QUrl(f"{site}/links.html"))
     assert loaded(tab.view)
     row = wait_until(lambda: next((r for r in window.sidebar.findChildren(TabRow) if r.tab is tab), None), 3)
-    assert wait_until(lambda: row.away_label.isVisible(), 3)
+    assert wait_until(lambda: row.shows_away, 3)
     window.go_home(tab)
     assert wait_until(lambda: tab.view.url().fileName() == "index.html", 5)
-    assert wait_until(lambda: not row.away_label.isVisible(), 3)
+    assert wait_until(lambda: not row.shows_away, 3)
+
+
+def test_a_tab_rows_drawn_buttons_work(window, site):
+    # (a row draws its own icon, title and buttons: one widget, not seven)
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QWidget
+    from browser.sidebar import TabRow
+    open_page(window, f"{site}/index.html")
+    tab = open_page(window, f"{site}/links.html")
+    row = wait_until(lambda: next((r for r in window.sidebar.findChildren(TabRow) if r.tab is tab), None), 3)
+    assert not row.findChildren(QWidget)
+    assert "close" in row.parts  # (the tab you're on shows its ×)
+    home = row.parts["icon"].center()
+
+    def point_at(row, at):  # (QTest.mouseMove moves the real pointer, which a window kept behind never sees)
+        QApplication.sendEvent(row, QMouseEvent(QEvent.Type.MouseMove, QPointF(at), row.mapToGlobal(QPointF(at)),
+                                                Qt.MouseButton.NoButton, Qt.MouseButton.NoButton,
+                                                Qt.KeyboardModifier.NoModifier))
+    point_at(row, row.parts["close"].center())
+    assert wait_until(lambda: row._part == "close", 2)
+    QTest.mouseClick(row, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, row.parts["close"].center())
+    assert wait_until(lambda: tab not in window.store.visible_tabs(), 3)
+    # A pinned tab that's wandered off: its icon takes it back
+    tab = open_page(window, f"{site}/index.html")
+    window.toggle_pin(tab)
+    tab.view.load(QUrl(f"{site}/links.html"))
+    assert loaded(tab.view)
+    row = wait_until(lambda: next((r for r in window.sidebar.findChildren(TabRow) if r.tab is tab and r.shows_away),
+                                  None), 3)
+    point_at(row, home)
+    assert row._part == "home"
+    QTest.mouseClick(row, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, home)
+    assert wait_until(lambda: tab.view.url().fileName() == "index.html", 5)
 
 
 def test_menus_show_ampersands(window, site):
@@ -286,7 +319,10 @@ def test_dragging_a_tab_parts_the_rows_where_it_will_land(window, site):
     _drag_event("move", today, top_c.center().y() - 6, b)  # the top half of C: before C
     assert today._gap is not gap and wait_until(lambda: gap.height() == 0, 3)  # the old one closes
     _drag_event("drop", today, top_c.center().y() - 6, b)
-    assert wait_until(lambda: [r.tab for r in today.rows] == [b, c, a], 3)
+    names = {a: "a", b: "b", c: "c"}
+    landed = wait_until(lambda: [r.tab for r in today.rows] == [b, c, a], 3)
+    assert landed, ([names.get(r.tab, r.tab) for r in today.rows],  # (if not, how it was, to tell why)
+                    [names.get(t, t) for t in window.store.active_space.today[:4]], today._gap)
     assert wait_until(lambda: not today.findChildren(DropGap), 3)
     # Picked up and let go of nowhere: it comes back
     row = next(r for r in today.rows if r.tab is a)
@@ -483,8 +519,13 @@ def test_a_favorite_squeezes_when_pressed_and_springs_back(window, site):
     assert len(middle) > 1  # the icon is still drawn in the middle of the tile (not just its background)
 
 
-def test_the_command_bar_highlight_glides_between_rows(window, site):
+def test_the_command_bar_highlight_glides_between_rows(window, site, monkeypatch):
     from PyQt6.QtGui import QKeyEvent
+    from browser import command_bar
+    glided = []  # every place the highlight goes (a busy machine can finish the glide between two looks)
+    animate = command_bar.motion.animate
+    monkeypatch.setattr(command_bar.motion, "animate", lambda target, start, end, step, *rest, **options: animate(
+        target, start, end, lambda y: (target is window.command_bar.list and glided.append(y), step(y)), *rest, **options))
     for url in ("https://github.com/", "https://gitlab.com/", "https://gitea.io/"):
         window.store.record_history(url, url)
     open_page(window, f"{site}/index.html")
@@ -497,9 +538,8 @@ def test_the_command_bar_highlight_glides_between_rows(window, site):
     QApplication.sendEvent(bar.input, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Down, Qt.KeyboardModifier.NoModifier))
     assert bar.list.currentRow() == 1  # the choice moves at once…
     second = bar.list.visualItemRect(bar.list.item(1)).top()
-    assert wait_until(lambda: bar.highlight_y is not None, 0.3)
-    assert first <= bar.highlight_y < second  # …and the highlight glides after it
-    assert wait_until(lambda: bar.highlight_y is None, 1)
+    assert wait_until(lambda: bar.highlight_y is None and glided, 1)
+    assert any(first <= y < second for y in glided)  # …and the highlight glided after it, through the rows between
     bar.input.setText("gith")
     bar.update_results()
     assert bar.highlight_y is None
@@ -1230,7 +1270,7 @@ def test_pinned_tabs_get_their_icons_without_loading(window, site, site_root, mo
         assert tab.view is None  # (the page itself never loaded)
         pause(0.2)
         row = next(r for r in window.sidebar.findChildren(TabRow) if r.tab is tab)
-        picture = row.icon_label.pixmap().toImage()
+        picture = row.icon_picture.toImage()
         middle = picture.pixelColor(picture.width() // 2, picture.height() // 2)
         assert middle.green() > 150 and middle.red() < 100  # the site's own green icon, not a letter
     finally:
