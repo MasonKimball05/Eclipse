@@ -4,6 +4,8 @@
 # window keeps for the ⌃Tab switcher, so previews cost nothing until you look at one. Under the title: the
 # site, whether the tab's asleep or kept awake, and how much memory its page is using.
 
+import html
+
 from PyQt6 import sip
 from PyQt6.QtCore import QPoint, QRectF, Qt, QTimer
 from PyQt6.QtGui import QFontMetrics, QPainter, QPainterPath, QPixmap
@@ -39,6 +41,32 @@ def rounded(picture: QPixmap, width: int, ratio: float, radius=7, shape=ASPECT) 
     return out
 
 
+# Live previews, as Arc's: resting on a mail or calendar tab shows what's in it (your newest unread mail, what's
+# coming up), read from the page that's open, instead of its picture. Read in the page's isolated world; nothing
+# found (the site changed, signed out), and it's the picture as ever.
+LIVE_ITEMS = 4
+LIVE = {
+    "mail": ("Unread", r"""
+        [...document.querySelectorAll('tr.zA.zE')].slice(0, %d).map(row => {
+            const who = row.querySelector('.yX [name], .yX [email], .zF, .yP');
+            const subject = row.querySelector('.bog, .bqe, .y6');
+            return [who && (who.getAttribute('name') || who.textContent), subject && subject.textContent]
+                .filter(Boolean).map(s => s.trim()).join(' — ');
+        }).filter(Boolean)"""),
+    "calendar": ("Coming up", r"""
+        [...document.querySelectorAll('[data-eventid]')].map(chip => {
+            const text = (chip.querySelector('.XuJrye') || chip).textContent || chip.getAttribute('aria-label') || '';
+            return text.split(',').slice(0, 2).map(s => s.trim()).filter(Boolean).join(' · ');
+        }).filter((text, i, all) => text && all.indexOf(text) === i).slice(0, %d)"""),
+}
+
+
+def live_kind(url: str) -> str | None:
+    """"mail" or "calendar" for the pages with a live preview, else None."""
+    host = display_host(url)
+    return {"mail.google.com": "mail", "calendar.google.com": "calendar"}.get(host)
+
+
 def memory_text(browser, tab) -> str:
     """How much memory a tab's page is using ("180 MB"), as Chrome's previews say, so Memory Saver isn't a mystery;
     "" when it isn't open (or that can't be told). Pages of one site can share a process: then it says so."""
@@ -71,13 +99,21 @@ class TabPreview(QFrame):
         self.title.setTextFormat(Qt.TextFormat.PlainText)
         self.host = QLabel()
         self.host.setObjectName("TabPreviewHost")
+        self.live = QLabel()  # (a mail or calendar tab's newest: in the picture's place)
+        self.live.setObjectName("TabPreviewLive")
+        self.live.setTextFormat(Qt.TextFormat.RichText)  # (its heading small and dim, as the app's section labels)
+        self.live.setContentsMargins(8, 6, 8, 7)
+        self.live.hide()
         layout.addWidget(self.picture)
+        layout.addWidget(self.live)
         layout.addSpacing(3)
         for label in (self.title, self.host):
             label.setContentsMargins(4, 0, 4, 0)
             layout.addWidget(label)
         self.row = None
         self._warm = False
+        self._live: dict[str, list] = {}  # tab id → what was read from it (newest mail, what's coming up)
+        self._live_for = None  # (the row those were read for)
         self._timer = QTimer(self, singleShot=True, interval=DELAY_MS, timeout=self._show)
         self._cool = QTimer(self, singleShot=True, interval=WARM_MS, timeout=self._cool_down)
         self.hide()
@@ -94,6 +130,7 @@ class TabPreview(QFrame):
         if self.isVisible() or self._warm:
             self._show()
         else:
+            self._read_live(row)  # (while it waits: ready by the time it shows, so it doesn't change size then)
             self._timer.start()
 
     def leave(self, row):
@@ -132,6 +169,10 @@ class TabPreview(QFrame):
             self.picture.show()
         else:
             self.picture.hide()
+        items = self._live.get(tab.id) if self._live_for is row else None
+        self._set_live(row, items)
+        if items is None:
+            self._read_live(row)  # (not read yet: shown when it comes)
         metrics = QFontMetrics(self.title.font())
         self.title.setText(metrics.elidedText(tab.label, Qt.TextElideMode.ElideRight, (inner - 8) * 2 - 24))
         sleeping = self.browser.is_sleeping(tab)
@@ -146,6 +187,49 @@ class TabPreview(QFrame):
         self.raise_()
         if not self.isVisible() or getattr(self, "_pb_fade_target", True) is False:
             motion.fade(self, True, 120)
+
+    def _read_live(self, row):
+        """A mail or calendar tab: its newest, read from its page, shown in the picture's place when they come."""
+        tab = row.tab
+        kind = live_kind(tab.url)
+        page = tab.view.page() if kind and hasattr(tab.view, "page") and not self.browser.is_sleeping(tab) else None
+        if page is None:
+            return
+        heading, script = LIVE[kind]
+
+        def got(items):
+            if self.row is not row or sip.isdeleted(row):
+                return  # (gone on to another tab)
+            self._live_for = row
+            self._live[tab.id] = [str(i) for i in items[:LIVE_ITEMS]] if isinstance(items, list) and items else []
+            if self.isVisible():  # (shown before it came: in now, with a quick fade so it doesn't jump)
+                self._set_live(row, self._live[tab.id], fade=True)
+        page.runJavaScript(script % LIVE_ITEMS, 1, got)  # (1: the isolated world, apart from the page's own)
+
+    def _set_live(self, row, items, fade=False):
+        """The newest from a mail or calendar tab in the picture's place; none (or nothing found): the picture."""
+        if not items:
+            self.live.hide()
+            return
+        heading = LIVE[live_kind(row.tab.url)][0]
+        metrics = QFontMetrics(self.live.font())
+        dim = self.browser.theme.panel_text
+        lines = "".join(f"<div style='margin-top: 3px'>{html.escape(metrics.elidedText(item, Qt.TextElideMode.ElideRight, WIDTH - 40))}</div>"
+                        for item in items)
+        self.live.setText(f"<div style='font-size: 10px; font-weight: 600; color: rgba({dim.red()},{dim.green()},"
+                          f"{dim.blue()},140)'>{html.escape(heading.upper())}</div>{lines}")
+        if fade:
+            motion.crossfade(self, self, lambda: self._swap_in_live(row), ms=120)
+        else:
+            self.picture.hide()
+            self.live.show()
+
+    def _swap_in_live(self, row):
+        self.picture.hide()
+        self.live.show()
+        self.layout().activate()
+        self.setFixedHeight(self.layout().sizeHint().height())
+        self._place(row)
 
     def _place(self, row):
         window = self.browser

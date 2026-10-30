@@ -96,6 +96,11 @@ class SpaceSlide(QWidget):
         from .motion import FAST, animate
         if not self.isVisible():
             return  # (already put away: a newer switch took over)
+        if getattr(self, "_lifting", False):
+            return  # (lifting already: asked again, it would start over from fully covered, a jump)
+        if self._wait_for_page():
+            return  # (lifted once the page under it has drawn)
+        self._lifting = True
         if self.after is not None and self.progress >= 1.0:
             # The new Space's tabs and address pictured again, as the sidebar is now: taken as the switch began (or
             # ready beforehand), they can be a few points off what's under it by now (the sidebar still settling), and
@@ -110,6 +115,32 @@ class SpaceSlide(QWidget):
             self.update()
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, False)  # (see-through from here on)
         animate(self, 1.0, 0.0, step, FAST, lambda: (self.hide(), self.deleteLater()))
+
+    def _wait_for_page(self) -> bool:
+        """With no tab open the cover holds the page area too: landing on a Space with a page open, it stays till that
+        page (out of sight till now) has drawn, then fades from the start view into it. Lifted at once, the page
+        area showed nothing for a moment first. True if it's waiting (lift comes again then)."""
+        from .content import VEIL_MAX_MS, VEIL_SETTLE_MS
+        if getattr(self, "_waited", False) or not self.mask().isEmpty():
+            return False  # (a page was open as it began: the page area was never covered)
+        tab = self.window_.current_tab
+        view = tab.view if tab is not None else None
+        drawn = view.focusProxy() if hasattr(view, "page") and view.isVisible() else None
+        if drawn is None:
+            return False
+        self._waited = True
+        window = self
+
+        class Drawn(QObject):
+            def eventFilter(self, obj, event):
+                if event.type() in (QEvent.Type.Paint, QEvent.Type.UpdateRequest):
+                    obj.removeEventFilter(self)
+                    QTimer.singleShot(VEIL_SETTLE_MS, lambda: not sip.isdeleted(window) and window.lift())
+                return False
+        self._drawn = Drawn(self)
+        drawn.installEventFilter(self._drawn)
+        QTimer.singleShot(VEIL_MAX_MS, lambda: not sip.isdeleted(self) and self.lift())  # (never stuck)
+        return True
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -368,6 +399,9 @@ class SpacePictures(QObject):
             store.active_space_id, w.current_tab = real_space, real_tab
             w.apply_theme()
             _lay_out(w)
+        # This Space pictured too, and thrown away: the first picture after a restyle costs several times the next
+        # (up to 30 ms with no tab open), and the next swipe's first picture would have been that one, as it began
+        capture(w, regions)
         return pictures
 
 

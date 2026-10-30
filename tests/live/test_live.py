@@ -308,6 +308,79 @@ def _drag_event(kind, section, y, tab, together=()):
     return mime  # (kept alive while the event is used)
 
 
+def test_a_folder_can_have_its_own_colour_and_icon(window, site):
+    from browser.models import Folder, PINNED, Tab
+    from browser.sidebar import FolderRow
+    folder = Folder("Reading", [Tab(f"{site}/index.html", "a page")])
+    window.store.active_space.pinned.append(folder)
+    window.store.structure_changed.emit()
+    row = wait_until(lambda: next((r for r in window.sidebar.findChildren(FolderRow) if r.folder is folder), None), 2)
+    plain = row.icon_picture.toImage()
+    window.style_folder(folder, color="#ef4444", icon="ph.star")
+    tinted = row.icon_picture.toImage()
+    assert tinted != plain
+    reds = [tinted.pixelColor(x, y) for x in range(tinted.width()) for y in range(tinted.height())
+            if tinted.pixelColor(x, y).alpha() > 200]
+    assert reds and all(c.red() > 200 and c.green() < 120 for c in reds)  # the star, in red
+    saved = folder.to_dict()
+    assert saved["color"] == "#ef4444" and saved["icon"] == "ph.star"  # (kept: sync and backups too)
+    window.style_folder(folder, color=None, icon=None)
+    assert "color" not in folder.to_dict() and row.icon_picture.toImage() == plain  # back to the usual
+
+
+def test_the_sidebar_collapses_to_its_tabs_icons_and_back(window, site):
+    from browser.sidebar import COMPACT_WIDTH, TabRow
+    from browser.window import COMPACT_SETTING
+    tab = open_page(window, f"{site}/index.html")
+    open_page(window, f"{site}/links.html")
+    width = window.sidebar.width()
+    window.toggle_compact_sidebar()
+    assert wait_until(lambda: window.sidebar.width() == COMPACT_WIDTH, 2)
+    assert window.store.settings[COMPACT_SETTING] is True
+    row = next(r for r in window.sidebar.findChildren(TabRow) if r.tab is tab)
+    assert set(row.parts) == {"icon"}  # just its icon…
+    assert abs(row.parts["icon"].center().x() - row.width() / 2) <= 1  # …in the middle
+    assert not window.sidebar.url_pill.isVisible() and window.sidebar.compact_search.isVisible()
+    assert window.sidebar.compact_search.y() >= 26 + window.sidebar.layout().contentsMargins().top()  # (below the lights)
+    assert not window.sidebar.space_title.text()
+    window.toggle_compact_sidebar()
+    assert wait_until(lambda: window.sidebar.width() == width, 2)  # back to the width it had
+    assert "title" in row.parts and window.sidebar.url_pill.isVisible()
+    assert window.store.settings[COMPACT_SETTING] is False
+
+
+def test_dropping_a_tab_on_a_spaces_button_moves_it_there(window, site):
+    from PyQt6.QtCore import QMimeData
+    from PyQt6.QtGui import QDragEnterEvent, QDropEvent
+    from browser.sidebar import TAB_MIME, SpaceDot
+    store = window.store
+    while len(store.spaces) < 2:
+        store.add_space(f"Extra {len(store.spaces)}", "#22aa66")
+    first, other = store.spaces[0], store.spaces[1]
+    window.switch_space(first)
+    pause(0.6)
+    tab = open_page(window, f"{site}/index.html")
+    open_page(window, f"{site}/links.html")
+    dots = {d.space.id: d for d in window.sidebar.findChildren(SpaceDot) if d.isVisible()}
+    mime = QMimeData()
+    mime.setData(TAB_MIME, tab.id.encode())
+
+    def held_over(dot):
+        event = QDragEnterEvent(QPoint(5, 5), Qt.DropAction.MoveAction, mime, Qt.MouseButton.LeftButton,
+                                Qt.KeyboardModifier.NoModifier)
+        QApplication.sendEvent(dot, event)
+        return event.isAccepted()
+    assert not held_over(dots[first.id])  # (the Space it's already in)
+    assert held_over(dots[other.id]) and dots[other.id].property("drop") is True  # lit up
+    drop = QDropEvent(QPointF(5, 5), Qt.DropAction.MoveAction, mime, Qt.MouseButton.LeftButton,
+                      Qt.KeyboardModifier.NoModifier)
+    QApplication.sendEvent(dots[other.id], drop)
+    assert wait_until(lambda: (store.locate(tab) or (None, None))[1] is other, 3)  # moved there
+    assert store.active_space is first and window.toasts[-1] == f"Moved a tab to {other.name}"
+    window.move_tab(tab, "favorites")  # Favorites are in every Space: they don't go to one
+    assert not held_over(dots[other.id])
+
+
 def test_dragging_a_tab_parts_the_rows_where_it_will_land(window, site):
     from browser.sidebar import DropGap
     a = open_page(window, f"{site}/index.html")
@@ -962,6 +1035,40 @@ def test_keep_awake_mute_others_and_reload_a_folder(window, site):
     window.reload_tabs(Folder("Work", [other, kept]).children)
     assert saved["text"] == "Reloaded 1 tab"  # the sleeping one isn't open
     assert wait_until(lambda: run_js(other.view, "window.marker === undefined"), 5)
+
+
+def test_resting_on_a_mail_tab_shows_its_newest_unread(window, site, monkeypatch):
+    from browser import tab_preview
+    preview = window.tab_preview
+    monkeypatch.setattr(tab_preview, "live_kind",
+                        lambda url: "mail" if "mail.html" in url else "calendar" if "calendar.html" in url else None)
+    calendar = open_page(window, f"{site}/calendar.html")  # (shaped like Google Calendar)
+    mail = open_page(window, f"{site}/mail.html")  # (shaped like Gmail's inbox)
+    plain = open_page(window, f"{site}/index.html")
+    open_page(window, f"{site}/links.html")
+    row = next(r for r in window.sidebar.today.rows if r.tab is mail)
+    preview.hover(row)
+    assert wait_until(lambda: preview.live.isVisible(), 3)
+    words = preview.live.text()
+    assert "UNREAD" in words and "Ada Lovelace — Engine notes" in words and "Grace Hopper — Compiler is ready" in words
+    assert "Already read" not in words  # (not the read one)
+    assert not preview.picture.isVisible()
+    preview.leave(row)
+    row = next(r for r in window.sidebar.today.rows if r.tab is calendar)
+    preview.dismiss()
+    preview.hover(row)
+    assert wait_until(lambda: preview.live.isVisible() and preview.row is row, 3)
+    words = preview.live.text()
+    assert "COMING UP" in words and "10am to 10:30am · Standup" in words and words.count("Design review") == 1
+    preview.leave(row)
+    # Nothing to read (another page): the picture, as ever
+    other = next(r for r in window.sidebar.today.rows if r.tab is plain)
+    preview.dismiss()
+    preview.hover(other)
+    assert wait_until(lambda: preview.isVisible() and preview.row is other, 2)
+    pause(0.3)
+    assert not preview.live.isVisible()
+    preview.leave(other)
 
 
 def test_resting_on_a_tab_shows_its_preview(window, site):

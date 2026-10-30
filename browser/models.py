@@ -95,9 +95,12 @@ class Tab(QObject):
 class Folder:
     """A group of tabs (and other folders), in a Space's Pinned or Today section."""
 
-    def __init__(self, name="New Folder", children=None, folder_id=None, expanded=True, live=None):
+    def __init__(self, name="New Folder", children=None, folder_id=None, expanded=True, live=None, color=None,
+                 icon=None):
         self.id = folder_id or new_id()
         self.name = name
+        self.color: str | None = color  # (its icon's colour, "#3b82f6", and a symbol in place of the folder's own:
+        self.icon: str | None = icon    # picked in its menu; None for the usual)
         self.children: list = children or []
         self.expanded = expanded
         # A Live Folder's source, e.g. {"kind": "feed", "url": …} or {"kind": "github", "query": "review"},
@@ -113,13 +116,16 @@ class Folder:
              "children": [n.to_dict() for n in self.children]}
         if self.live:
             d["live"] = self.live
+        for key in ("color", "icon"):
+            if getattr(self, key):
+                d[key] = getattr(self, key)
         return d
 
 
 def node_from_dict(d: dict):
     if d.get("type") == "folder":
         return Folder(d.get("name", "Folder"), [node_from_dict(c) for c in d.get("children", [])],
-                      d.get("id"), d.get("expanded", True), d.get("live"))
+                      d.get("id"), d.get("expanded", True), d.get("live"), d.get("color"), d.get("icon"))
     return Tab.from_dict(d)
 
 

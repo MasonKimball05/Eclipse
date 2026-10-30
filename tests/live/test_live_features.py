@@ -1654,6 +1654,31 @@ def test_low_power_mode_pauses_background_tabs_and_motion(window, site, monkeypa
     window.close_tab(front)
 
 
+def test_a_web_panel_keeps_a_site_open_beside_every_tab(window, site):
+    from PyQt6.QtWidgets import QMenu
+    from browser.web_panel import SETTING
+    feature = window.feature("web_panel")
+    panel = feature.panel
+    chat = open_page(window, f"{site}/links.html")
+    menu = QMenu()
+    feature.tab_menu(menu, chat, "today")
+    assert [a.text() for a in menu.actions()] == ["Open in Web Panel"]
+    menu.actions()[0].trigger()
+    assert wait_until(lambda: panel.isVisible() and loaded(panel.view), 5)
+    assert panel.url == f"{site}/links.html" and panel.x() > window.content.x()  # beside the page, on its far side
+    other = open_page(window, f"{site}/index.html")
+    window.activate_tab(other)
+    assert panel.isVisible() and panel.url == f"{site}/links.html"  # still there, whatever tab you're on
+    assert window.store.settings[SETTING] == {"url": f"{site}/links.html", "open": True}
+    panel.close_panel()
+    assert not panel.isVisible() and window.store.settings[SETTING]["open"] is False
+    feature.toggle()  # (back, with the same site)
+    assert panel.isVisible() and panel.url == f"{site}/links.html"
+    tabs_before = len(list(window.store.all_tabs()))
+    panel.open_as_tab()
+    assert not panel.isVisible() and len(list(window.store.all_tabs())) == tabs_before + 1
+
+
 def test_resting_on_a_sleeping_tab_wakes_it_before_the_click(window, site):
     from PyQt6.QtGui import QEnterEvent
     from browser.sidebar import WAKE_AHEAD_MS
@@ -2145,6 +2170,31 @@ def test_switching_spaces_holds_the_old_page_till_the_new_one_draws(window, site
     assert there.id in window.thumbnails  # (and its thumbnail, from the same picture)
     assert wait_until(lambda: not [v for v in window.content.findChildren(PageVeil) if v.isVisible()],
                       (VEIL_MAX_MS + VEIL_FADE_MS) / 1000 + 1)  # …faded once the new page drew
+    # To a Space with no tab open: the page fades into its start view, at once (there's nothing to wait for)
+    from PyQt6 import sip
+    from browser.space_slide import SpaceSlide
+    window.close_tab(there)
+    window.switch_space(first)
+    assert wait_until(lambda: window.current_tab is here, 3)
+    pause(0.8)
+    window.switch_space(second)
+    assert wait_until(lambda: window.content.blank, 3)
+    veil = window.content.findChildren(PageVeil)
+    assert veil and wait_until(lambda: not veil[0].isVisible() if not sip.isdeleted(veil[0]) else True,
+                                (VEIL_FADE_MS + 300) / 1000 + 0.5)
+    # From there, to a page: the slide's cover (over the start view too) stays till the page has drawn
+    pause(0.8)
+    lifted = []
+    real_lift = SpaceSlide.lift
+    SpaceSlide.lift = lambda self: (lifted.append(getattr(self, "_waited", False)), real_lift(self))
+    try:
+        window.switch_space(first)
+        assert wait_until(lambda: window.current_tab is here, 3)
+        assert wait_until(lambda: not [c for c in window.findChildren(SpaceSlide) if c.isVisible()],
+                          (VEIL_MAX_MS + VEIL_FADE_MS) / 1000 + 1)
+    finally:
+        SpaceSlide.lift = real_lift
+    assert lifted[:1] == [False] and True in lifted  # (asked to lift as it landed, it waited, then lifted)
 
 
 def test_a_swipe_not_far_enough_springs_back_smoothly(window):

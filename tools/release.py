@@ -514,11 +514,35 @@ def next_version(kind: str, published: list, year: int | None = None) -> str:
     return f"{yy}.{major}.{week + 1}.0"
 
 
+WHATS_NEW = ROOT / "browser" / "whats_new.py"
+
+
+def this_week(source: str) -> tuple[int, list[str]]:
+    """(What's New's EDITION, the lines under its "## This week", each on one line and the maker's own left out)."""
+    edition = re.search(r"^EDITION = (\d+)", source, re.M)
+    notes = re.search(r'^NOTES = """(.*?)"""', source, re.M | re.S)
+    lines = []
+    if notes:
+        section = re.search(r"^## This week\n(.*?)(?=^## |\Z)", notes.group(1), re.M | re.S)
+        for line in (section.group(1) if section else "").splitlines():
+            if line.startswith("- "):
+                lines.append(line)
+            elif line.startswith("  ") and lines:
+                lines[-1] += " " + line.strip()  # (a wrapped line, back on the one it belongs to)
+    return int(edition.group(1)) if edition else 0, [line for line in lines if not line.startswith("- [mine]")]
+
+
 def release_notes() -> str:
-    """What's changed since the last release: the commit subjects."""
+    """What's changed since the last release: What's New's "This week" (once its edition has gone up since the last
+    release, so last week's are never offered again), then the commit subjects. The update window shows the first
+    few lines, so What's New's come first."""
     git("fetch", "--quiet", "--tags")  # (releases are tagged on GitHub: the latest isn't here otherwise)
     last = git("describe", "--tags", "--abbrev=0", "--match", "release-*")
     log = git("log", "--format=- %s", "-n", "30", f"{last}..HEAD" if last else "HEAD")
+    edition, week = this_week(WHATS_NEW.read_text())
+    before, _ = this_week(git("show", f"{last}:browser/whats_new.py") or "") if last else (0, [])
+    if week and edition > before:
+        return "\n".join(week) + ("\n\n### Changes\n" + log if log else "")
     return log or "- Small fixes"
 
 
@@ -656,8 +680,12 @@ def main():
     bump.add_argument("--major", dest="kind", action="store_const", const="major",
                       help="a major release (26.1.3.0 → 26.2.0.0); the default is the week's (26.1.3.0 → 26.1.4.0)")
     parser.add_argument("--next-version", action="store_true", help="just say what the next version would be")
+    parser.add_argument("--notes", action="store_true", help="just show the next release's notes")
     parser.set_defaults(kind="week")
     args = parser.parse_args()
+    if args.notes:
+        print(release_notes())
+        return
     if args.next_version:
         published = published_versions()
         latest = ".".join(map(str, max(published))) if published else "none yet"

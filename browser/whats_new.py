@@ -11,11 +11,26 @@ from .shortcuts import for_here
 from .motion import FadesIn
 from .theme import quiet_scrollbars, stylesheet
 
-EDITION = 24
+EDITION = 25
 SETTING = "whats_new_seen"
 
 NOTES = """
 ## This week
+
+- **Switching to or from a Space with no tab open**: the page you leave fades into the start view, and the start
+  view into the page you arrive at, instead of a blank moment between.
+- **Swipes start quicker**: the first frame of a swipe between Spaces shows at once.
+- **Drop a tab on a Space**: drag a tab (or several) onto a Space's button at the bottom of the sidebar to move it
+  there, as in Arc.
+- **Collapse the sidebar to icons**: ⌥⌘S (or View → Collapse Sidebar to Icons) shrinks it to a strip of your tabs'
+  icons, like Zen's; rest on one for its preview. ⌥⌘S again brings it back as it was.
+- **Mail and calendar at a glance**: rest on a Gmail tab to see your newest unread mail, or on Google Calendar for
+  what's coming up, instead of a picture of the page.
+- **Folders in colour**: right-click a folder → Colour or Icon to tell it apart at a glance.
+- **Web panels**: right-click a tab → Open in Web Panel keeps its site (a chat, music, a to-do list) open beside
+  whatever tab you're on. ⌥⌘B shows or hides it.
+
+## Lately
 
 - **Swiping between Spaces, smoother still**: a swipe goes on to the next Space without needing to come halfway,
   it never stalls partway, fingers down again catch a swipe still settling, and with a page open the page you
@@ -25,9 +40,6 @@ NOTES = """
   starts waking it, so it's ready by the time you click.
 - **More card shapes and colours**: eight new colours and twelve new shapes for your Eclipse card, from a crescent
   to a sunburst.
-
-## Lately
-
 - **Watch a page for changes**: right-click a tab → *Watch for Changes…*, or select part of a page, right-click
   and choose *Watch This*. Eclipse checks it in the background and tells you when it really changes ("Price
   dropped to $249"), not when it only says it's later. Settings → Watched Pages pauses them or changes how often.

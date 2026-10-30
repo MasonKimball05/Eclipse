@@ -130,6 +130,13 @@ PILL_PLACEHOLDER = "Search or Enter URL…"
 SPACE_BUTTON = 26  # (a Space's button in the bottom bar, when there's room)
 SPACE_BUTTON_SMALLEST = 18  # (with many Spaces in a narrow sidebar: fewer show, rather than smaller)
 SPACE_MORE = 10  # (the arrows beside them that say some are hidden, and where)
+FOLDER_COLORS = [("Red", "#ef4444"), ("Orange", "#f97316"), ("Yellow", "#eab308"), ("Green", "#22c55e"),
+                 ("Teal", "#14b8a6"), ("Blue", "#3b82f6"), ("Purple", "#8b5cf6"), ("Pink", "#ec4899")]
+FOLDER_ICONS = [("Star", "ph.star"), ("Briefcase", "ph.briefcase"), ("Book", "ph.book-open"), ("Code", "ph.code"),
+                ("Heart", "ph.heart"), ("Music", "ph.music-notes"), ("House", "ph.house"),
+                ("Graduation", "ph.graduation-cap"), ("Flask", "ph.flask"), ("Game", "ph.game-controller"),
+                ("Airplane", "ph.airplane"), ("Shopping", "ph.shopping-bag")]
+COMPACT_WIDTH = 76  # the collapsed sidebar: just its tabs' icons (room for the traffic lights above them)
 SPACE_SHOWN = 3  # (at most this many at once, at a size that's easy to hit; the arrows and swipes reach the rest)
 
 class SpokenTooltips(QObject):
@@ -492,6 +499,9 @@ class TabRow(HoverFade, DraggableTab, QFrame):
         on the right (a hidden one takes no room)."""
         _, small, badge_font = self._fonts()
         mid = ROW_HEIGHT // 2
+        if compact(self.browser):  # (the collapsed sidebar: the icon alone, in the middle; its preview says the rest)
+            self.parts = {"icon": QRect(self.width() // 2 - 8, mid - 8, 16, 16)}
+            return
         x = 10 + self.depth * INDENT
         parts = {"icon": QRect(x, mid - 8, 16, 16)}
         x += 16 + ROW_SPACING
@@ -543,6 +553,14 @@ class TabRow(HoverFade, DraggableTab, QFrame):
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         parts = self.parts
         p.drawPixmap(parts["icon"], self.icon_picture)
+        if "title" not in parts:  # (collapsed: an unread badge is a dot on the icon's corner)
+            if self._badge:
+                corner = parts["icon"].topRight()
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(theme.accent))
+                p.drawEllipse(QRectF(corner.x() - 3, corner.y() - 3, 7, 7))
+            p.end()
+            return
         if "slash" in parts:
             p.setFont(small)
             p.setPen(_with_alpha(QColor(theme.text), 0.55))
@@ -596,8 +614,9 @@ class TabRow(HoverFade, DraggableTab, QFrame):
             tip = {"close": ("Unload Tab" if self.kind == PINNED else "Close Tab"),
                    "audio": "Unmute Tab" if self._muted else "Mute Tab",
                    "home": "Back to the pinned page"}.get(part)
-            if tip is None and self.parts.get("title", QRect()).contains(pos):
-                tip = self._title_tip
+            if tip is None and (self.parts.get("title", QRect()).contains(pos) or "title" not in self.parts):
+                tip = self._title_tip or ("" if "title" in self.parts or self.browser.store.settings.get(
+                    "tab_previews", True) else self.tab.label)  # (collapsed, with no previews: its title)
             if tip:
                 QToolTip.showText(event.globalPos(), tip, self, self.parts.get(part or "title", QRect()))
             else:
@@ -690,15 +709,18 @@ class FolderRow(HoverFade, QFrame):
             icon = _row_icon("ph.github-logo" if live.get("kind") == "github" else "ph.rss", theme.accent_text)
         elif self._github_section():  # a section of the GitHub folder, or one of your repos
             icon = _row_icon(GITHUB_SECTION_ICONS.get(self.folder.name, "ph.book-bookmark"), color)
-        else:
-            icon = _row_icon("ph.folder-open" if self.folder.expanded else "ph.folder", color)
+        else:  # (its own colour and symbol, if you've picked them in its menu)
+            tint = QColor(self.folder.color) if self.folder.color else color
+            name = self.folder.icon or ("ph.folder-open" if self.folder.expanded else "ph.folder")
+            icon = _row_icon(name, tint)
         self.icon_picture = icon.pixmap(16, 16)
         self.setAccessibleName(f"{self.folder.name}, folder, {'open' if self.folder.expanded else 'closed'}")
         fresh = sum(1 for t in walk_tabs(self.folder.children) if t.fresh)
         # Only a Live Folder's new items get a count, like Arc; how many tabs a folder holds is in its tooltip
         self.count_text = f"{fresh} new" if fresh else ""
         count = sum(1 for _ in walk_tabs(self.folder.children))
-        self.setToolTip(f"{count} tab{'s' if count != 1 else ''}" if not self.folder.expanded else "")
+        tip = f"{count} tab{'s' if count != 1 else ''}" if not self.folder.expanded else ""
+        self.setToolTip(f"{self.folder.name}\n{tip}".strip() if compact(self.browser) else tip)
         self.update()
 
     def paintEvent(self, event):
@@ -711,6 +733,15 @@ class FolderRow(HoverFade, QFrame):
         small.setPixelSize(11)
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if compact(self.browser):  # (collapsed: its icon alone, and a dot if it has something new)
+            icon = QRect(self.width() // 2 - 8, ROW_HEIGHT // 2 - 8, 16, 16)
+            p.drawPixmap(icon, self.icon_picture)
+            if self.count_text:
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QColor(self.browser.theme.accent))
+                p.drawEllipse(QRectF(icon.right() - 3, icon.top() - 3, 7, 7))
+            p.end()
+            return
         x = 10 + self.depth * INDENT
         p.drawPixmap(QRect(x, ROW_HEIGHT // 2 - 8, 16, 16), self.icon_picture)
         x += 16 + ROW_SPACING
@@ -848,6 +879,57 @@ class FavoriteTile(HoverFade, DraggableTab, QToolButton):
             p.setPen(QColor(self.browser.theme.on_accent))
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
         p.end()
+
+
+def compact(browser) -> bool:
+    """Whether the sidebar's collapsed to its tabs' icons (Sidebar.set_compact)."""
+    sidebar = getattr(browser, "sidebar", None)
+    return bool(getattr(sidebar, "compact", False))
+
+
+class SpaceDot(QToolButton):
+    """A Space's button at the bottom of the sidebar. Drop a tab (or several picked tabs) on it to move them to
+    that Space, as in Arc; it lights up while one's held over it."""
+
+    def __init__(self, browser, space):
+        super().__init__()
+        self.browser, self.space = browser, space
+        self.setObjectName("SpaceDot")
+        self.setAcceptDrops(True)
+
+    def _tabs(self, event) -> list:
+        """The tabs being dragged, if they can go to this Space (not Favorites: they're in every Space)."""
+        if self.space.id == self.browser.store.active_space_id or not event.mimeData().hasFormat(TAB_MIME):
+            return []
+        tabs = dragged_tabs(self.browser, event) or [
+            self.browser.store.find_tab(bytes(event.mimeData().data(TAB_MIME)).decode())]
+        return [t for t in tabs if t is not None and (self.browser.store.locate(t) or (None,))[0] in (TODAY, PINNED)]
+
+    def dragEnterEvent(self, event):
+        if self._tabs(event):
+            event.acceptProposedAction()
+            repolish(self, drop=True)
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        event.acceptProposedAction() if self.property("drop") else event.ignore()
+
+    def dragLeaveEvent(self, event):
+        repolish(self, drop=False)
+
+    def dropEvent(self, event):
+        repolish(self, drop=False)
+        tabs = self._tabs(event)
+        if not tabs:
+            event.ignore()
+            return
+        event.acceptProposedAction()
+        space = self.space
+        # (once the drag's over: moving a tab mid-drag rebuilt the list under it)
+        QTimer.singleShot(0, lambda: self.browser.move_tabs_to_space(tabs, space))
+        count = len(tabs)
+        self.browser.toast(f"Moved {'a tab' if count == 1 else f'{count} tabs'} to {space.name}")
 
 
 def dragged_tabs(browser, event) -> list:
@@ -1448,6 +1530,8 @@ class FavoritesGrid(DropZone):
     def _columns_that_fit(self) -> int:
         """How many tiles fit side by side at this width (up to FAVORITE_COLUMNS)."""
         sidebar = self.browser.sidebar if hasattr(self.browser, "sidebar") else None
+        if compact(self.browser):
+            return 1  # (collapsed: one above another)
         if sidebar is None or sidebar.width() <= 0 or not self.tiles:
             return FAVORITE_COLUMNS
         margins = sidebar.layout().contentsMargins()
@@ -1592,6 +1676,9 @@ class Sidebar(QWidget):
         # gaps between back, forward and reload give way instead when the sidebar is narrow
         self._lights_gap = QSpacerItem(66 if sys.platform == "darwin" else 0, 0, QSizePolicy.Policy.Fixed)
         top.addItem(self._lights_gap)
+        # (the row keeps its height with its buttons hidden, the collapsed sidebar's: or what's below rose under the
+        # traffic lights)
+        top.addItem(QSpacerItem(0, 26, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed))
         self.toggle_btn = IconButton("msc.layout-sidebar-left", "Toggle Sidebar (⌘S)")
         self.back_btn = IconButton("ph.arrow-left", "Back (⌘[)")
         self.forward_btn = IconButton("ph.arrow-right", "Forward (⌘])")
@@ -1663,6 +1750,11 @@ class Sidebar(QWidget):
             if chip.property("pill_end"):
                 pill_layout.addWidget(chip)
         layout.addWidget(self.url_pill)
+        # Collapsed, the pill gives way to a magnifying glass (⌘L, as the pill does)
+        self.compact_search = IconButton("ph.magnifying-glass", "Search or Enter URL (⌘L)")
+        self.compact_search.clicked.connect(lambda: browser.open_command_bar("current"))
+        self.compact_search.hide()
+        layout.addWidget(self.compact_search, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addSpacing(2)
 
         self.favorites = FavoritesGrid(browser)
@@ -1694,6 +1786,7 @@ class Sidebar(QWidget):
         title_row.addWidget(self.profile_badge)
         title_row.addStretch(1)
         body_layout.addLayout(title_row)
+        self._title_row = title_row
 
         self.pinned = TabSection(browser, PINNED, "Drag tabs here to pin them")
         body_layout.addWidget(self.pinned)
@@ -1736,7 +1829,8 @@ class Sidebar(QWidget):
         self.list_fade = ListFade(self, self.scroll)
         layout.addWidget(self.scroll, 1)
 
-        for card in browser.gather("sidebar_cards"):  # (Up Next, Now Playing…)
+        self.cards = browser.gather("sidebar_cards")
+        for card in self.cards:  # (Up Next, Now Playing…)
             layout.addWidget(card)
 
         # Bottom: archive, the Space switcher, and "new Space"
@@ -1806,6 +1900,37 @@ class Sidebar(QWidget):
         self._lights_gap.changeSize(gap, 0, QSizePolicy.Policy.Fixed)
         layout.invalidate()
 
+    compact = False
+
+    def set_compact(self, on: bool):
+        """Collapsed to a strip of its tabs' icons (Zen's collapsed sidebar), or back. Rows draw just their icon;
+        what needs words (the address, the Space's name, Clear, the cards, the buttons along the bottom) gives way,
+        and the search button opens ⌘T in the pill's place."""
+        self.compact = on
+        self.setMinimumWidth(COMPACT_WIDTH if on else 190)
+        self.setMaximumWidth(COMPACT_WIDTH if on else 420)
+        for widget in (self.toggle_btn, self.back_btn, self.forward_btn, self.reload_btn, self.url_pill,
+                       *self._bottom_buttons):
+            widget.setVisible(not on)
+        self.compact_search.setVisible(on)
+        self.new_tab_row.text_label.setVisible(not on)
+        self.pinned.hint.setText("" if on else "Drag tabs here to pin them")
+        for card in self.cards:  # (they show and hide themselves: held at no height instead)
+            card.setMaximumHeight(0 if on else 16777215)
+        self.favorites._built = None  # (its columns change)
+        # The Space's icon in the middle of the strip, as everything else in it is
+        first = self._title_row.itemAt(0)
+        if on and first.widget() is not None:
+            self._title_row.insertStretch(0, 1)
+        elif not on and first.widget() is None:
+            self._title_row.takeAt(0)
+        self.rebuild()
+        for row in self.findChildren(TabRow) + self.findChildren(FolderRow):
+            if hasattr(row, "_lay_out"):
+                row._lay_out()
+            row.refresh() if isinstance(row, FolderRow) else None
+            row.update()
+
     def rebuild(self):
         if getattr(self, "drag_active", False):
             self._rebuild_after_drag = True  # (see start_drag)
@@ -1814,18 +1939,18 @@ class Sidebar(QWidget):
         space = store.active_space
         theme = self.browser.theme
         for btn in (self.toggle_btn, self.back_btn, self.forward_btn, self.reload_btn,
-                    self.archive_btn, self.downloads_btn, self.new_space_btn):
+                    self.archive_btn, self.downloads_btn, self.new_space_btn, self.compact_search):
             btn.set_color(theme.text)
         self.new_tab_row.set_color(theme.text)
 
         preview = getattr(self.browser, "tab_preview", None)
         if preview is not None:
             preview.dismiss()  # (its row may be about to go)
-        self.space_title.setText(space.name)
+        self.space_title.setText("" if self.compact else space.name)
         self.space_title.setIcon(space_icon(space, theme.text, 32))
         self.profile_badge.setText(space.profile)
         self.profile_badge.setToolTip(f"This Space uses the “{space.profile}” profile (its own logins and cookies)")
-        self.profile_badge.setVisible(space.profile != "default")
+        self.profile_badge.setVisible(space.profile != "default" and not self.compact)
         self.favorites.set_tabs(store.favorites)
         # Rows slide in and out for changes within a Space; switching Spaces just shows the new one
         same_space = getattr(self, "_built_space", None) == space.id
@@ -1835,7 +1960,7 @@ class Sidebar(QWidget):
         self.pinned.animate_changes = self.today.animate_changes = same_space
         self.pinned.set_tabs(space.pinned)
         self.today.set_tabs(space.today)
-        self.clear_btn.setVisible(bool(space.today))
+        self.clear_btn.setVisible(bool(space.today) and not self.compact)
         self._update_tidy_visibility()
         self._rebuild_switcher()
         self.update_selection()
@@ -1856,7 +1981,8 @@ class Sidebar(QWidget):
     def _update_tidy_visibility(self):
         claude = self.browser.feature("claude")  # (Tidy is Claude's: no Claude, no Tidy)
         loose = sum(1 for n in self.browser.store.active_space.today if isinstance(n, Tab))
-        self.tidy_btn.setVisible(claude is not None and (self._tidy_state != "idle" or claude.can_tidy(loose)))
+        self.tidy_btn.setVisible(claude is not None and not self.compact
+                                 and (self._tidy_state != "idle" or claude.can_tidy(loose)))
 
     def _tidy_clicked(self):
         claude = self.browser.feature("claude")
@@ -1883,8 +2009,7 @@ class Sidebar(QWidget):
         text = self.browser.theme.text
         for i, space in enumerate(store.spaces):
             active = space.id == store.active_space_id
-            btn = QToolButton()
-            btn.setObjectName("SpaceDot")
+            btn = SpaceDot(self.browser, space)
             btn.setFixedSize(SPACE_BUTTON, SPACE_BUTTON)
             btn.setProperty("has_icon", bool(space.icon))
             btn.setCursor(Qt.CursorShape.PointingHandCursor)

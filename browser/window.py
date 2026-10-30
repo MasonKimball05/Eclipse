@@ -59,7 +59,7 @@ from .peek import PeekOverlay
 from .split import MAX_PANES
 from .models import FAVORITES, PINNED, TODAY, Folder, Tab, display_host, node_path, walk_folders, walk_tabs
 from .settings import ARCHIVE_CHOICES, DEFAULT_SLEEP_MINUTES, SettingsWindow
-from .sidebar import Sidebar
+from .sidebar import COMPACT_WIDTH, FOLDER_COLORS, FOLDER_ICONS, Sidebar
 from .icons import space_icon
 from .space_editor import SpaceEditor
 from .theme import PALETTE, PlainMenu, ThemedBackground, dot_icon, stylesheet, theme_for_space
@@ -77,6 +77,7 @@ DARK_PAGE_BLANK = "#1b1b1e"  # (theme.py's page-area colour on a dark Space)
 KEEP_RUNNING = "keep_running"  # (closing the window leaves Eclipse open, on a Mac)
 AUTOPLAY_SETTING = "media_waits_for_click"  # (Settings → Privacy: videos don't play until you click)
 SIDEBAR_WIDTH = 250  # default; drag the sidebar's edge to change it
+COMPACT_SETTING = "sidebar_compact"  # (collapsed to its icons: Sidebar.set_compact)
 SIDEBAR_GAP = 12     # between the sidebar's contents and the page: all of it is the resize edge
 
 
@@ -174,7 +175,9 @@ class MainWindow(QMainWindow):
         if self.sidebar_on_right:
             self.splitter.insertWidget(1, self.sidebar)
         self.splitter.setStretchFactor(self._content_index, 1)
-        self._set_sidebar_size(store.settings["sidebar_width"])
+        if store.settings.get(COMPACT_SETTING):
+            self.sidebar.set_compact(True)  # (collapsed to its icons, as you left it)
+        self._set_sidebar_size(COMPACT_WIDTH if self.sidebar.compact else store.settings["sidebar_width"])
         self.splitter.splitterMoved.connect(self._on_splitter_moved)
         self._dress_handle()
         root_layout.addWidget(self.splitter)
@@ -375,7 +378,23 @@ class MainWindow(QMainWindow):
         self._set_sidebar_size(SIDEBAR_WIDTH)
         self._on_splitter_moved()
 
+    def toggle_compact_sidebar(self):
+        """Collapse the sidebar to a strip of its tabs' icons, or back (Zen's collapsed sidebar). ⌥⌘S."""
+        on = not self.sidebar.compact
+        self.store.settings[COMPACT_SETTING] = on
+        self.store.schedule_save()
+        if self.sidebar.isHidden() and not self.floating_sidebar.active:
+            self.toggle_sidebar()  # (hidden: it comes back, in the way asked for)
+
+        def change():
+            self.sidebar.set_compact(on)
+            self._set_sidebar_size(COMPACT_WIDTH if on else self.store.settings.get("sidebar_width", SIDEBAR_WIDTH))
+            self._update_content_margins()
+        motion.crossfade(self.centralWidget(), self.splitter, change)
+
     def _on_splitter_moved(self, *_):
+        if self.sidebar.compact:
+            return  # (collapsed, it's fixed at its icons' width: the width you chose is kept for when it's back)
         self.store.settings["sidebar_width"] = self.splitter.sizes()[self._sidebar_index]
         self.store.schedule_save()
         if self.sidebar_on_right:
@@ -1522,11 +1541,39 @@ class MainWindow(QMainWindow):
         self._act(menu, "ph.list-bullets", "Copy Links", lambda: self.copy_links(walk_tabs(folder.children)))
         if not folder.live:
             self._act(menu, "ph.arrows-clockwise", "Reload Tabs", lambda: self.reload_tabs(walk_tabs(folder.children)))
+            # Its own colour and symbol, to tell it apart at a glance (Zen's tab groups)
+            colours = self._submenu(menu, "ph.palette", "Colour")
+            for name, hex_ in FOLDER_COLORS:
+                act = colours.addAction(qta.icon("ph.circle-fill", color=hex_), name,
+                                        lambda h=hex_: self.style_folder(folder, color=h))
+                act.setCheckable(True)
+                act.setChecked(folder.color == hex_)
+            colours.addSeparator()
+            colours.addAction("No Colour", lambda: self.style_folder(folder, color=None))
+            icons = self._submenu(menu, "ph.smiley", "Icon")
+            tint = QColor(folder.color) if folder.color else self.theme.panel_text
+            for name, icon in FOLDER_ICONS:
+                act = icons.addAction(qta.icon(icon, color=tint), name, lambda i=icon: self.style_folder(folder, icon=i))
+                act.setCheckable(True)
+                act.setChecked(folder.icon == icon)
+            icons.addSeparator()
+            icons.addAction(qta.icon("ph.folder", color=tint), "Folder", lambda: self.style_folder(folder, icon=None))
         self.emit("folder_menu", menu, folder)  # (a Live Folder's Refresh Now, Mark All as Seen…)
         menu.addSeparator()
         self._act(menu, "ph.folder-minus", "Ungroup (Keep Tabs)", lambda: self.store.ungroup_folder(folder))
         self._act(menu, "ph.trash", "Delete Folder…", lambda: self.delete_folder(folder))
         menu.exec(pos)
+
+    _UNSET = object()
+
+    def style_folder(self, folder, color=_UNSET, icon=_UNSET):
+        """A folder's own colour (its icon's) and symbol; None for the usual."""
+        if color is not self._UNSET:
+            folder.color = color
+        if icon is not self._UNSET:
+            folder.icon = icon
+        self.store.schedule_save()
+        self.sidebar.refresh_folder(folder)
 
     def toggle_pin(self, tab=None):
         tab = tab or self.current_tab
@@ -2323,6 +2370,8 @@ class MainWindow(QMainWindow):
                 self.content.veil(picture, tab.view)
         else:
             self._show_nothing()
+            if picture is not None:
+                self.content.veil(picture, None)  # (the page left fades into the start view: no cut)
         self._left_picture = None
 
     def switch_space(self, space, direction=None):
@@ -2535,6 +2584,8 @@ class MainWindow(QMainWindow):
         cmds = [
             ("New Space", "ph.plus", self.new_space),
             ("Toggle Sidebar", "ph.arrows-out-simple", self.toggle_sidebar),
+            ("Expand Sidebar" if self.sidebar.compact else "Collapse Sidebar to Icons", "ph.caret-double-left",
+             self.toggle_compact_sidebar),
             ("Move Sidebar to the Left" if self.sidebar_on_right else "Move Sidebar to the Right", "ph.arrows-left-right",
              lambda: self.set_sidebar_side("left" if self.sidebar_on_right else "right")),
             ("Copy URL", "ph.link", self.copy_url),
@@ -2656,6 +2707,7 @@ class MainWindow(QMainWindow):
 
         view = bar.addMenu("View")
         add(view, "Toggle Sidebar", "Ctrl+S", self.toggle_sidebar)
+        add(view, "Collapse Sidebar to Icons", "Ctrl+Alt+S", self.toggle_compact_sidebar)
         view.addSeparator()
         add(view, "Reload", "Ctrl+R", self.reload)
         add(view, "Hard Reload", "Ctrl+Shift+R", self.hard_reload)

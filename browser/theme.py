@@ -616,6 +616,7 @@ def stylesheet(t: Theme) -> str:
     }}
     QToolButton#SpaceDot:hover {{ background: {hover}; }}
     QToolButton#SpaceDot[selected="true"] {{ background: {selected}; }}
+    QToolButton#SpaceDot[drop="true"] {{ background: {selected}; border: 1.5px solid {rgba(t.accent_text)}; }}
 
     QToolButton#IconChoice {{
         background: transparent; border: 2px solid transparent; border-radius: 14px; padding: 2px;
@@ -734,6 +735,8 @@ def stylesheet(t: Theme) -> str:
     #PreviewCard {{ background: {panel}; border: 1px solid {panel_line}; border-radius: 12px; }}
     /* Ask About This Page: a second sidebar on the window's own colours, made like the first */
     #PageChat {{ background: transparent; }}
+    #WebPanel {{ background: transparent; }}
+    #WebPanel QLabel#WebPanelTitle {{ color: {text}; font-size: 13px; font-weight: 600; }}  /* (as Ask About This Page's) */
     #PageChat QLabel#PageChatTitle {{ color: {text}; font-size: 13px; font-weight: 600; }}
     #PageChat QLabel#PageChatSite {{ color: {dim}; font-size: 11px; }}
     #PageChat QTextBrowser#Answer {{
@@ -755,6 +758,7 @@ def stylesheet(t: Theme) -> str:
     #TabPreview {{ background: {panel}; border: 1px solid {panel_line}; border-radius: 12px; }}
     #TabPreviewTitle {{ color: {panel_text}; font-size: 13px; font-weight: 600; }}
     #TabPreviewHost {{ color: {rgba(t.panel_text, 0.6)}; font-size: 11px; }}
+    #TabPreviewLive {{ color: {panel_text}; font-size: 12px; background: {rgba(t.panel_text, 0.05)}; border-radius: 7px; }}
     #PreviewHost {{ color: {rgba(t.accent_text)}; font-size: 11px; font-weight: 600; }}
     #PreviewTitle {{ color: {panel_text}; font-size: 14px; font-weight: 600; }}
     #PreviewSummary {{ color: {panel_dim}; font-size: 13px; }}

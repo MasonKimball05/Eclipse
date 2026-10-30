@@ -333,7 +333,8 @@ class PreviewCard(QFrame):
 class PageVeil(QWidget):
     """The page you've just left, held over the page area while the one you've gone to draws its first frame, then
     faded away: a page that's been out of sight takes a moment to draw again, and until it had, the page area showed
-    black (or nothing), then the new page cut in. Gone after VEIL_MAX_MS whatever happens."""
+    black (or nothing), then the new page cut in. Gone after VEIL_MAX_MS whatever happens. Going to no tab (the start
+    view, which draws at once), it simply fades into it."""
 
     def __init__(self, content, picture, view):
         super().__init__(content)
@@ -348,7 +349,9 @@ class PageVeil(QWidget):
         self._watched = drawn
         if drawn is not None:
             drawn.installEventFilter(self)
-        QTimer.singleShot(VEIL_MAX_MS, self.fade)  # (whatever happens, never stuck over the page)
+            QTimer.singleShot(VEIL_MAX_MS, self.fade)  # (whatever happens, never stuck over the page)
+        else:
+            QTimer.singleShot(VEIL_SETTLE_MS, self.fade)  # (no page to wait for: the start view's there at once)
 
     def eventFilter(self, obj, event):
         if obj is self._watched and event.type() in (QEvent.Type.Paint, QEvent.Type.UpdateRequest):

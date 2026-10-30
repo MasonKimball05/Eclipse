@@ -85,3 +85,34 @@ def test_published_versions_come_from_the_release_titles(monkeypatch):
     monkeypatch.setattr(release.subprocess, "run",
                         lambda *a, **k: type("Done", (), {"returncode": 0, "stdout": titles})())
     assert release.published_versions() == [(26, 1, 3, 0), (26, 1, 2, 0)]  # (the old dated ones aren't numbered)
+
+
+SOURCE = '''EDITION = {edition}
+
+NOTES = """
+## This week
+
+- **Smoother swipes**: a swipe goes on to the next Space
+  without needing to come halfway.
+- [mine] **Homebase**: only on the maker's copy.
+
+## Lately
+
+- **Older**: last week's.
+"""
+'''
+
+
+def test_release_notes_are_this_weeks_whats_new_then_the_commits(monkeypatch):
+    release = _release()
+    assert release.this_week(SOURCE.format(edition=24)) == (
+        24, ["- **Smoother swipes**: a swipe goes on to the next Space without needing to come halfway."])
+    answers = {"describe": "release-1", "log": "- A commit\n- Another", "show": SOURCE.format(edition=23)}
+    monkeypatch.setattr(release, "git", lambda *args: answers.get(args[0], ""))
+    monkeypatch.setattr(release, "WHATS_NEW", type("File", (), {"read_text": lambda self: SOURCE.format(edition=24)})())
+    notes = release.release_notes()
+    assert notes.splitlines()[0].startswith("- **Smoother swipes**") and "Homebase" not in notes and "Older" not in notes
+    assert notes.endswith("### Changes\n- A commit\n- Another")
+    # The edition hasn't gone up since the last release: "This week" is last week's, so just the commits
+    answers["show"] = SOURCE.format(edition=24)
+    assert release.release_notes() == "- A commit\n- Another"
