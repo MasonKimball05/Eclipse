@@ -490,12 +490,26 @@ def published_versions() -> list[tuple[int, int, int, int]]:
     """The versions of the releases on GitHub (their titles: "Eclipse 26.1.3.0"); [] if none are numbered yet."""
     found = subprocess.run(["gh", "release", "list", "--limit", "200", "--json", "name", "--jq", ".[].name"],
                            capture_output=True, text=True)
+    if found.returncode != 0:  # (offline, or gh not signed in: guessing would number it as the year's first)
+        raise SystemExit(f"Couldn't read the releases on GitHub to number this one: {found.stderr.strip()}")
     versions = []
-    for title in found.stdout.splitlines() if found.returncode == 0 else []:
+    for title in found.stdout.splitlines():
         match = VERSION.match(title.removeprefix(NAME).strip())
         if match:
             versions.append(tuple(int(n) for n in match.groups()))
     return versions
+
+
+def latest_tag_warning() -> str:
+    """A warning when the latest release on GitHub isn't tagged release-<build>: copies already out there read their
+    update's build number from that tag (release_update.py), so one renamed by hand offers nobody the update."""
+    found = subprocess.run(["gh", "release", "view", "--json", "tagName", "--jq", ".tagName"],
+                           capture_output=True, text=True)
+    tag = found.stdout.strip()
+    if found.returncode != 0 or not tag or tag.startswith("release-"):
+        return ""
+    return (f"Note: the latest release on GitHub is tagged \"{tag}\". Updates only find releases tagged "
+            f"release-<build>: rename its title, but keep its tag (this release, tagged as it should be, puts it right).")
 
 
 def next_version(kind: str, published: list, year: int | None = None) -> str:
@@ -608,6 +622,8 @@ def release(identity: str, notary_profile: str | None, install: bool, publishing
     # The version people see (26.1.3.0), and the build number updates compare (the minute it was built)
     version, build = next_version(kind, published_versions()), time.strftime("%Y%m%d%H%M")
     print(f"{NAME} {version} (build {build})")
+    if warning := latest_tag_warning():
+        print(warning)
     app = DIST / f"{NAME}.app"
     shutil.rmtree(app, ignore_errors=True)
     contents = app / "Contents"
@@ -690,6 +706,8 @@ def main():
         published = published_versions()
         latest = ".".join(map(str, max(published))) if published else "none yet"
         print(f"Latest: {latest}. Next: {next_version(args.kind, published)} ({args.kind})")
+        if warning := latest_tag_warning():
+            print(warning)
         return
     if args.publish_built:
         publish_built()

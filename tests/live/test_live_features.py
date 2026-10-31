@@ -1664,19 +1664,66 @@ def test_a_web_panel_keeps_a_site_open_beside_every_tab(window, site):
     feature.tab_menu(menu, chat, "today")
     assert [a.text() for a in menu.actions()] == ["Open in Web Panel"]
     menu.actions()[0].trigger()
-    assert wait_until(lambda: panel.isVisible() and loaded(panel.view), 5)
+    assert wait_until(lambda: panel.isVisible() and loaded(panel.current.view), 5)
     assert panel.url == f"{site}/links.html" and panel.x() > window.content.x()  # beside the page, on its far side
     other = open_page(window, f"{site}/index.html")
     window.activate_tab(other)
     assert panel.isVisible() and panel.url == f"{site}/links.html"  # still there, whatever tab you're on
-    assert window.store.settings[SETTING] == {"url": f"{site}/links.html", "open": True}
+    assert window.store.settings[SETTING] == {"sites": [f"{site}/links.html"], "current": 0, "open": True}
     panel.close_panel()
     assert not panel.isVisible() and window.store.settings[SETTING]["open"] is False
     feature.toggle()  # (back, with the same site)
     assert panel.isVisible() and panel.url == f"{site}/links.html"
     tabs_before = len(list(window.store.all_tabs()))
-    panel.open_as_tab()
-    assert not panel.isVisible() and len(list(window.store.all_tabs())) == tabs_before + 1
+    panel.open_as_tab()  # moved into a tab: the panel had only it, so it goes
+    assert not panel.isVisible() and len(list(window.store.all_tabs())) == tabs_before + 1 and not panel.sites
+
+
+def test_a_web_panel_holds_several_sites(window, site):
+    from browser.web_panel import SETTING, WebPanel
+    second_site = site.replace("127.0.0.1", "localhost")  # (another host, as far as the panel's concerned)
+    panel = window.feature("web_panel").panel
+    panel.open(f"{site}/links.html")
+    panel.open(f"{second_site}/index.html")  # another site: added beside it
+    assert wait_until(lambda: loaded(panel.current.view), 5)
+    first, second = panel.sites
+    assert panel.current is second and panel.pages.currentWidget() is second.view
+    assert second.button.property("selected") is True and first.button.property("selected") is False
+    panel.open(f"{site}/index.html")  # a site it has already: that one again, not another
+    assert len(panel.sites) == 2 and panel.current is first and first.url == f"{site}/links.html"
+    view = second.view
+    panel.show_site(second)  # flipping back: the same page, still loaded
+    assert second.view is view and panel.pages.currentWidget() is view
+    assert window.store.settings[SETTING]["sites"] == [f"{site}/links.html", f"{second_site}/index.html"]
+    assert window.store.settings[SETTING]["current"] == 1
+    window.activate_tab(open_page(window, f"{site}/index.html?third"))
+    panel.add_current_tab()  # + is the current tab's site, which it has: shown
+    assert panel.current is first
+    # Kept, as they were, for next time (each loaded once it's shown)
+    again = WebPanel(window, window.content_wrap)
+    again.load(window.store.settings[SETTING])
+    assert [s.url for s in again.sites] == [s.where for s in panel.sites] and again.current is again.sites[0]
+    assert all(s.view is None for s in again.sites)
+    again.deleteLater()
+    old = WebPanel(window, window.content_wrap)  # (as it was kept before there were several)
+    old.load({"url": f"{site}/links.html", "open": True})
+    assert [s.url for s in old.sites] == [f"{site}/links.html"]
+    old.deleteLater()
+    # The sidebar to the right: the panel goes to the far side of the page with it, its strip on the window's edge
+    window.set_sidebar_side("right")
+    assert wait_until(lambda: panel.x() < window.content.x(), 2)
+    assert panel.current.view.x() > first.button.x()
+    window.set_sidebar_side("left")
+    assert wait_until(lambda: panel.x() > window.content.x(), 2)
+    size, wide = window.size(), panel.current.view.width()
+    window.resize(820, 600)  # a narrow window: the page keeps the larger share
+    assert wait_until(lambda: window.content.width() > panel.current.view.width() < wide, 2)
+    window.resize(size)
+    assert wait_until(lambda: panel.current.view.width() == wide, 2)
+    panel.remove(first)  # the one showing goes: its neighbour's out instead
+    assert panel.sites == [second] and panel.current is second and panel.isVisible()
+    panel.remove(second)
+    assert not panel.sites and not panel.isVisible()
 
 
 def test_resting_on_a_sleeping_tab_wakes_it_before_the_click(window, site):

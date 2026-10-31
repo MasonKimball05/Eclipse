@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton,
 
 import qtawesome as qta
 
+from . import motion
 from .ai import page_block
 from .features import Feature
 from .models import display_host
@@ -242,8 +243,8 @@ class PageChat(QFrame):
             self.cancel()
             if self.popped:
                 self.window_.hide()
-            else:
-                self.hide()
+            else:  # (the page area crossfading as it takes the room back, as for the web panel and Split View)
+                motion.crossfade(self.browser.centralWidget(), self.browser.content_wrap, self.hide)
             view = self.browser._current_view()
             if view is not None:
                 self.browser.activateWindow()
@@ -268,17 +269,23 @@ class PageChat(QFrame):
     def dock(self):
         """Beside the page, on the far side from the sidebar."""
         layout = self.browser.content_layout
-        if self.popped:
-            self.window_.layout().removeWidget(self)
-        layout.removeWidget(self)
-        self.setParent(layout.parentWidget())
-        layout.insertWidget(0 if self.browser.sidebar_on_right else 1, self)
-        self.setMinimumWidth(0)
-        self.setMaximumWidth(16777215)
-        self.setFixedWidth(self._saved_width())
-        self.browser.store.settings[POPPED_SETTING] = False
-        self.restyle()
-        self.show()
+
+        def change():  # (the page area crossfading as it makes room, as for the web panel and Split View)
+            if self.popped:
+                self.window_.layout().removeWidget(self)
+            layout.removeWidget(self)
+            self.setParent(layout.parentWidget())
+            layout.insertWidget(0 if self.browser.sidebar_on_right else 1, self)
+            self.setMinimumWidth(0)
+            self.setMaximumWidth(16777215)
+            self.setFixedWidth(self._saved_width())
+            self.browser.store.settings[POPPED_SETTING] = False
+            self.restyle()
+            self.show()
+        if self.isVisible() and not self.popped:
+            change()  # (already beside the page)
+        else:
+            motion.crossfade(self.browser.centralWidget(), self.browser.content_wrap, change)
 
     def pop_out(self):
         if self.window_ is None:

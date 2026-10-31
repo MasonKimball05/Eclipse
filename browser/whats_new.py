@@ -23,12 +23,17 @@ NOTES = """
 - **Drop a tab on a Space**: drag a tab (or several) onto a Space's button at the bottom of the sidebar to move it
   there, as in Arc.
 - **Collapse the sidebar to icons**: ⌥⌘S (or View → Collapse Sidebar to Icons) shrinks it to a strip of your tabs'
-  icons, like Zen's; rest on one for its preview. ⌥⌘S again brings it back as it was.
+  icons, like Zen's; rest on one for its preview. Rest on the strip itself and the whole sidebar spreads out over
+  the page, folding back when you move away (⌘T → Turn Sidebar Expand on Hover On / Off). ⌥⌘S again brings it back
+  as it was.
 - **Mail and calendar at a glance**: rest on a Gmail tab to see your newest unread mail, or on Google Calendar for
   what's coming up, instead of a picture of the page.
 - **Folders in colour**: right-click a folder → Colour or Icon to tell it apart at a glance.
 - **Web panels**: right-click a tab → Open in Web Panel keeps its site (a chat, music, a to-do list) open beside
-  whatever tab you're on. ⌥⌘B shows or hides it.
+  whatever tab you're on. Add a few and flip between them with the icons down the panel's side, as in Zen; each
+  stays loaded. ⌥⌘B shows or hides it.
+- **Smoother all round**: Ask About This Page fades in and out beside the page, the mini player's and Split View's
+  buttons fade as you point at them, and the Up Next card no longer makes the sidebar jump.
 
 ## Lately
 

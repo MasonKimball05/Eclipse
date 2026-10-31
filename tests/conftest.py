@@ -63,6 +63,43 @@ def store(data_dir):
 
 def pytest_addoption(parser):
     parser.addoption("--live", action="store_true", help="also run the live tests in tests/live")
+    parser.addoption("--shard", default=None, metavar="I/N",
+                     help="run the Ith of N even shares of the live tests (tools/live_tests.py runs all N at once)")
+
+
+DURATIONS = "eclipse/live_durations"  # (pytest's cache: how long each live test took last time, to share them out)
+_took = {}
+
+
+def _shard(config, items):
+    """Keep this run's share of the live tests: the longest first, each to the share with the least so far, by how
+    long they took last time (every share works it out the same, so between them they run each test once)."""
+    index, count = (int(n) for n in config.getoption("--shard").split("/"))
+    known = config.cache.get(DURATIONS, {})
+    known = {nodeid: took for nodeid, took in known.items() if took >= 0.05}  # (a time that can't be real: unknown)
+    usual = sorted(known.values())[len(known) // 2] if known else 2.0  # (a new test: a typical one's time)
+    totals, mine = [0.0] * count, set()
+    for item in sorted(items, key=lambda i: (-known.get(i.nodeid, usual), i.nodeid)):
+        share = totals.index(min(totals))
+        totals[share] += known.get(item.nodeid, usual)
+        if share == index - 1:
+            mine.add(item.nodeid)
+    kept = [item for item in items if item.nodeid in mine]
+    config.hook.pytest_deselected(items=[item for item in items if item.nodeid not in mine])
+    items[:] = kept
+
+
+def pytest_runtest_logreport(report):
+    # (not a skipped one: plain `pytest` skips them all, and would have them all take no time)
+    if "tests/live/" in report.nodeid and report.when in ("setup", "call", "teardown") and not report.skipped:
+        _took[report.nodeid] = _took.get(report.nodeid, 0.0) + report.duration
+
+
+def pytest_sessionfinish(session):
+    if _took and session.config.cache is not None:
+        known = session.config.cache.get(DURATIONS, {})
+        known.update({nodeid: round(took, 2) for nodeid, took in _took.items()})
+        session.config.cache.set(DURATIONS, known)
 
 
 def pytest_configure(config):
@@ -76,6 +113,8 @@ def pytest_collection_modifyitems(config, items):
             if item.get_closest_marker("mac"):
                 item.add_marker(not_here)
     if config.getoption("--live"):
+        if config.getoption("--shard"):
+            _shard(config, items)
         return
     skip = pytest.mark.skip(reason="live test: run with --live")
     for item in items:

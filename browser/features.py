@@ -67,6 +67,9 @@ class Feature:
     def theme_changed(self):
         """The Space's colours changed."""
 
+    def sidebar_side_changed(self):
+        """The sidebar moved to the other side of the window."""
+
     # --- Pages ----------------------------------------------------------------------------------------
 
     def profile_ready(self, profile):

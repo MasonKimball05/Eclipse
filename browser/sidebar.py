@@ -2294,6 +2294,9 @@ class Sidebar(QWidget):
         self.shield_btn.show()
         self._fit_pill_text()
 
+    def enterEvent(self, event):
+        self.browser.sidebar_mouse_entered()
+
     def leaveEvent(self, event):
         self.browser.sidebar_mouse_left()
 

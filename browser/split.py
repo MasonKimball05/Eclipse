@@ -9,6 +9,7 @@ from PyQt6 import sip
 from PyQt6.QtCore import QSize, Qt
 from PyQt6.QtWidgets import QFrame, QSplitter, QToolButton, QVBoxLayout
 
+from . import motion
 from .content import RADIUS, Corner
 
 MAX_PANES = 4
@@ -51,11 +52,11 @@ class Pane(QFrame):
         return None
 
     def enterEvent(self, event):
-        self.close_btn.show()
         self.close_btn.raise_()
+        motion.fade(self.close_btn, True)  # (fading, as the other hover controls do)
 
     def leaveEvent(self, event):
-        self.close_btn.hide()
+        motion.fade(self.close_btn, False)
 
     def resizeEvent(self, event):
         w, h = self.width(), self.height()

@@ -184,13 +184,13 @@ class SpaceSlide(QWidget):
 
 def cover_layout(window):
     """(the regions the cover holds pictures of, the mask that keeps the rest of the window live, or None)"""
-    floating = getattr(window, "floating_sidebar", None) is not None and window.floating_sidebar.active
+    floating = any(getattr(getattr(window, name, None), "active", False) for name in ("floating_sidebar", "spread_sidebar"))
     if getattr(window.content, "blank", False):
         # No tab open: the "page" is the start view, in the Space's colours and with its name, so it's covered too
         # (left live, it turned to the new Space's the moment a swipe began)
         return [QRectF(window.rect())], None
     if floating:
-        # The hidden sidebar come out over a page: the cover is the sidebar's card, the page all round it left live
+        # The hidden sidebar come out over a page (or the collapsed one spread out): the cover is the sidebar's card, the page all round it left live
         side = _in_window(window, window.sidebar)
         card = QPainterPath()
         card.addRoundedRect(side, CONTENT_RADIUS, CONTENT_RADIUS)

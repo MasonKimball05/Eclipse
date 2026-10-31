@@ -14,6 +14,7 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, QSize, Qt, QTimer, QUrl
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
+from . import motion
 from .features import Feature
 from .timefmt import portable
 
@@ -151,10 +152,19 @@ class UpNext(QObject):
         now = datetime.datetime.now().astimezone()
         self.event = next_event(feed, now) if feed else None
         if self.event is None:
-            self.card.hide()
+            self._in_or_out(False, self.card.hide)
             return
         soon = (self.event["start"] - now).total_seconds() < SOON_MINUTES * 60
-        self.card.set_event(self.event, when_text(self.event, now), soon, self.browser.theme)
+        event, when = self.event, when_text(self.event, now)
+        self._in_or_out(True, lambda: self.card.set_event(event, when, soon, self.browser.theme))
+
+    def _in_or_out(self, showing, change):
+        """Coming or going, the sidebar crossfades round it (rather than what's below it jumping); just changing, as
+        the minutes count down, it simply changes."""
+        if showing == (not self.card.isHidden()):
+            change()
+        else:
+            motion.crossfade(self.browser.centralWidget(), self.browser.sidebar, change)
 
     def join(self):
         if self.event and self.event["link"]:

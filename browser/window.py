@@ -45,7 +45,7 @@ from .external_links import ExternalLinks
 from . import features as feature_loader
 from .sidebar_edge import SidebarEdge
 from .favicons import Favicons
-from .floating_sidebar import EDGE as FLOAT_EDGE, FloatingSidebar
+from .floating_sidebar import EDGE as FLOAT_EDGE, SPREAD_SETTING, FloatingSidebar, SpreadSidebar
 from .traffic_lights import TrafficLights
 from .space_slide import slide_region
 from .tab_preview import TabPreview
@@ -134,6 +134,7 @@ class MainWindow(QMainWindow):
         self._printing = None  # (view, printer) while a page prints
         self.traffic_lights = TrafficLights(self)  # with the sidebar, dim until pointed at
         self.floating_sidebar = FloatingSidebar(self)  # the hidden sidebar, out over the page on hover
+        self.spread_sidebar = SpreadSidebar(self)  # the one collapsed to icons, spread out on hover
 
         # The features (after the core's services, which they may use; before the first profile, which they hook)
         self.features = feature_loader.load(self)
@@ -316,12 +317,13 @@ class MainWindow(QMainWindow):
         """"left" or "right", like Arc's Sidebar Position."""
         if side == ("right" if self.sidebar_on_right else "left"):
             return
+        self.spread_sidebar.fold(animate=False)
         if self.floating_sidebar.active:
             self.sidebar.hide()
             self._dock_sidebar()
         self.store.settings["sidebar_side"] = side
         self.store.schedule_save()
-        width = self.store.settings.get("sidebar_width", SIDEBAR_WIDTH)
+        width = COMPACT_WIDTH if self.sidebar.compact else self.store.settings.get("sidebar_width", SIDEBAR_WIDTH)
 
         def change():
             self.splitter.insertWidget(self._sidebar_index, self.sidebar)
@@ -331,6 +333,7 @@ class MainWindow(QMainWindow):
             self._dress_handle()
             self._update_content_margins()
             self.sidebar.align_with_traffic_lights()
+            self.emit("sidebar_side_changed")  # (the web panel goes to the far side of the page with it)
         motion.crossfade(self.centralWidget(), self.splitter, change)
 
     def _sidebar_margins(self):
@@ -380,6 +383,7 @@ class MainWindow(QMainWindow):
 
     def toggle_compact_sidebar(self):
         """Collapse the sidebar to a strip of its tabs' icons, or back (Zen's collapsed sidebar). ⌥⌘S."""
+        self.spread_sidebar.fold(animate=False)  # (spread out over the page: the strip it's from)
         on = not self.sidebar.compact
         self.store.settings[COMPACT_SETTING] = on
         self.store.schedule_save()
@@ -390,10 +394,12 @@ class MainWindow(QMainWindow):
             self.sidebar.set_compact(on)
             self._set_sidebar_size(COMPACT_WIDTH if on else self.store.settings.get("sidebar_width", SIDEBAR_WIDTH))
             self._update_content_margins()
+            if self.floating_sidebar.active:  # (the hidden one, out over the page: at its new width)
+                self.floating_sidebar.place()
         motion.crossfade(self.centralWidget(), self.splitter, change)
 
     def _on_splitter_moved(self, *_):
-        if self.sidebar.compact:
+        if self.sidebar.compact or self.spread_sidebar.active:
             return  # (collapsed, it's fixed at its icons' width: the width you chose is kept for when it's back)
         self.store.settings["sidebar_width"] = self.splitter.sizes()[self._sidebar_index]
         self.store.schedule_save()
@@ -407,6 +413,8 @@ class MainWindow(QMainWindow):
             self.peek.setGeometry(self.centralWidget().rect())
         if self.floating_sidebar.active:
             self._place_floating_sidebar()
+        elif self.spread_sidebar.active:
+            self.spread_sidebar.place()
         elif self.sidebar_on_right:
             self.place_traffic_lights()  # (the sidebar's edge, where they are, moved with the window's)
         self.notifications.relayout()
@@ -892,6 +900,7 @@ class MainWindow(QMainWindow):
         if self._fullscreen:
             # Whether the sidebar is meant to be there (the hidden one, slid out over the page, isn't)
             self._sidebar_before_fullscreen = self.store.settings.get("sidebar_visible", True)
+            self.spread_sidebar.fold(animate=False)
             if self.floating_sidebar.active:
                 self.sidebar.hide()
                 self._dock_sidebar()
@@ -2031,6 +2040,7 @@ class MainWindow(QMainWindow):
             self.toast("macOS didn't accept the change")
 
     def toggle_sidebar(self):
+        self.spread_sidebar.fold(animate=False)
         if self.floating_sidebar.active:
             self._dock_sidebar()
             visible = True
@@ -2040,7 +2050,7 @@ class MainWindow(QMainWindow):
         animate = self.isVisible() and visible != self.sidebar.isVisible() and not self._fullscreen
         if animate:
             # The strip the sidebar takes up, as it looks now…
-            width = self.store.settings.get("sidebar_width", SIDEBAR_WIDTH)
+            width = COMPACT_WIDTH if self.sidebar.compact else self.store.settings.get("sidebar_width", SIDEBAR_WIDTH)
             left = self.splitter.width() - width if self.sidebar_on_right else 0
             rect = QRect(self.splitter.mapTo(root, QPoint(left, 0)), QSize(width, self.splitter.height()))
             first = root.grab(rect)
@@ -2087,6 +2097,8 @@ class MainWindow(QMainWindow):
 
     def eventFilter(self, obj, event):
         kind = event.type()
+        if kind == QEvent.Type.MouseButtonPress:
+            self.spread_sidebar.pressed()  # (a click on the collapsed strip: it's being used as it is)
         if kind == QEvent.Type.KeyPress and not event.isAutoRepeat():
             # A preview needs Shift tapped on its own, so typing a capital letter while
             # the mouse happens to rest on a link doesn't trigger one
@@ -2144,6 +2156,9 @@ class MainWindow(QMainWindow):
 
     def sidebar_mouse_left(self):
         pass  # (the floating sidebar watches the pointer itself)
+
+    def sidebar_mouse_entered(self):
+        self.spread_sidebar.entered()  # (collapsed to icons: resting there spreads it out)
 
     def _dock_sidebar(self):
         # Put it back in its normal place in the layout (hidden or shown by the caller)
@@ -2288,6 +2303,15 @@ class MainWindow(QMainWindow):
         self.store.settings["peek_enabled"] = enabled
         self.store.schedule_save()
         self.toast("Peek on: links from pinned tabs open in a preview" if enabled else "Peek off")
+
+    def toggle_spread_sidebar(self):
+        enabled = not self.store.settings.get(SPREAD_SETTING, True)
+        self.store.settings[SPREAD_SETTING] = enabled
+        self.store.schedule_save()
+        if not enabled:
+            self.spread_sidebar.fold()
+        self.toast("The collapsed sidebar spreads out when you rest on it" if enabled
+                   else "The collapsed sidebar stays as icons")
 
     # --- Import ------------------------------------------------------------------------------
 
@@ -2584,7 +2608,8 @@ class MainWindow(QMainWindow):
         cmds = [
             ("New Space", "ph.plus", self.new_space),
             ("Toggle Sidebar", "ph.arrows-out-simple", self.toggle_sidebar),
-            ("Expand Sidebar" if self.sidebar.compact else "Collapse Sidebar to Icons", "ph.caret-double-left",
+            ("Expand Sidebar" if self.store.settings.get(COMPACT_SETTING) else "Collapse Sidebar to Icons",
+             "ph.caret-double-left",  # (the setting: spread out on hover, the sidebar itself is full width for now)
              self.toggle_compact_sidebar),
             ("Move Sidebar to the Left" if self.sidebar_on_right else "Move Sidebar to the Right", "ph.arrows-left-right",
              lambda: self.set_sidebar_side("left" if self.sidebar_on_right else "right")),
@@ -2630,6 +2655,7 @@ class MainWindow(QMainWindow):
             ("Split View with a New Tab", "ph.columns", lambda: self.open_command_bar("split")),
             ("Separate Split View", "ph.square-half", self.separate_split),
             ("Turn Peek On / Off", "ph.eye", self.toggle_peek),
+            ("Turn Sidebar Expand on Hover On / Off", "ph.arrows-out-line-horizontal", self.toggle_spread_sidebar),
         ]
         cmds += [(f"Switch to Space: {s.name}", "ph.dots-three", lambda s=s: self.switch_space(s))
                  for s in self.store.spaces]

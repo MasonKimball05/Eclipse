@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QToolButton, QVBoxLayou
 
 import qtawesome as qta
 
+from . import motion
 from .theme import stylesheet
 
 DEFAULT_SIZE = QSize(400, 225)
@@ -93,11 +94,11 @@ class MiniPlayerWindow(QFrame):
         super().resizeEvent(event)
 
     def enterEvent(self, event):
-        self.controls.show()
         self.controls.raise_()
+        motion.fade(self.controls, True)  # (fading, as the other hover controls do)
 
     def leaveEvent(self, event):
-        self.controls.hide()
+        motion.fade(self.controls, False)
 
     # Drag anywhere on the control strip to move the player
     def mousePressEvent(self, event):

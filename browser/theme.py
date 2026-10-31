@@ -736,7 +736,9 @@ def stylesheet(t: Theme) -> str:
     /* Ask About This Page: a second sidebar on the window's own colours, made like the first */
     #PageChat {{ background: transparent; }}
     #WebPanel {{ background: transparent; }}
-    #WebPanel QLabel#WebPanelTitle {{ color: {text}; font-size: 13px; font-weight: 600; }}  /* (as Ask About This Page's) */
+    QToolButton#WebPanelSite {{ background: transparent; border: none; border-radius: 6px; padding: 3px; }}
+    QToolButton#WebPanelSite:hover {{ background: {hover}; }}
+    QToolButton#WebPanelSite[selected="true"] {{ background: {selected}; }}  /* (as the Space buttons) */
     #PageChat QLabel#PageChatTitle {{ color: {text}; font-size: 13px; font-weight: 600; }}
     #PageChat QLabel#PageChatSite {{ color: {dim}; font-size: 11px; }}
     #PageChat QTextBrowser#Answer {{

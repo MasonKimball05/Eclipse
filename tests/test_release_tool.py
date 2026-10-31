@@ -87,6 +87,25 @@ def test_published_versions_come_from_the_release_titles(monkeypatch):
     assert release.published_versions() == [(26, 1, 3, 0), (26, 1, 2, 0)]  # (the old dated ones aren't numbered)
 
 
+def test_numbering_stops_when_github_cant_be_read(monkeypatch):
+    import pytest
+    release = _release()
+    monkeypatch.setattr(release.subprocess, "run",
+                        lambda *a, **k: type("Done", (), {"returncode": 1, "stdout": "", "stderr": "not logged in"})())
+    with pytest.raises(SystemExit, match="not logged in"):  # (not a guess that numbers it as the year's first)
+        release.published_versions()
+
+
+def test_a_latest_release_tagged_by_hand_is_pointed_out(monkeypatch):
+    release = _release()
+    tag = {"now": "26.1.1.0"}
+    monkeypatch.setattr(release.subprocess, "run",
+                        lambda *a, **k: type("Done", (), {"returncode": 0, "stdout": tag["now"] + "\n"})())
+    assert "26.1.1.0" in release.latest_tag_warning() and "release-<build>" in release.latest_tag_warning()
+    tag["now"] = "release-202611051200"
+    assert release.latest_tag_warning() == ""
+
+
 SOURCE = '''EDITION = {edition}
 
 NOTES = """

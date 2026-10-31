@@ -12,7 +12,7 @@
 #                          Built with python.org's Python once tools/release_python.py has set it up (so it
 #                          runs on macOS 13 and up), else with this venv's
 #   ./run.sh --tests       run the unit tests
-#   ./run.sh --live-tests  run the live tests too (a browser window opens while they run, ~3 min)
+#   ./run.sh --live-tests  run the live tests too, in three groups at once (browser windows open behind yours, ~2 min)
 #   ./run.sh --core        run without the features (browser/features.py): the plain browser
 #   ./run.sh <url>     open a link (in the already-running browser, if there is one)
 
@@ -81,7 +81,8 @@ cd "$SCRIPT_DIR"
 if [[ -n "$TESTS" ]]; then
   "$VENV/bin/python" -m pip install --quiet --disable-pip-version-check -r requirements-dev.txt
   if [[ "$TESTS" == "live" ]]; then
-    exec "$VENV/bin/python" -m pytest tests --live -q
+    "$VENV/bin/python" -m pytest tests -q
+    exec "$VENV/bin/python" tools/live_tests.py
   fi
   exec "$VENV/bin/python" -m pytest tests -q
 fi

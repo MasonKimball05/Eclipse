@@ -343,6 +343,10 @@ def test_the_sidebar_collapses_to_its_tabs_icons_and_back(window, site):
     assert not window.sidebar.url_pill.isVisible() and window.sidebar.compact_search.isVisible()
     assert window.sidebar.compact_search.y() >= 26 + window.sidebar.layout().contentsMargins().top()  # (below the lights)
     assert not window.sidebar.space_title.text()
+    window.set_sidebar_side("right")  # to the other side, still collapsed: no wider than its icons
+    assert wait_until(lambda: window.splitter.sizes()[1] == COMPACT_WIDTH, 2), window.splitter.sizes()
+    window.set_sidebar_side("left")
+    assert wait_until(lambda: window.splitter.sizes()[0] == COMPACT_WIDTH, 2), window.splitter.sizes()
     window.toggle_compact_sidebar()
     assert wait_until(lambda: window.sidebar.width() == width, 2)  # back to the width it had
     assert "title" in row.parts and window.sidebar.url_pill.isVisible()
@@ -2025,3 +2029,51 @@ def test_the_traffic_lights_light_up_only_close_to_them(window, site, monkeypatc
                     (window.sidebar.url_pill.mapTo(window, QPoint(20, 4)), False)):  # (the search bar: not yet)
         pointer["at"] = at
         assert lights.near() is lit, (at, lit)
+
+
+def test_the_collapsed_sidebar_spreads_out_while_the_pointer_rests_on_it(window, site, monkeypatch):
+    from browser import floating_sidebar
+    from browser.sidebar import COMPACT_WIDTH
+    from browser.window import COMPACT_SETTING
+    open_page(window, f"{site}/index.html")
+    window.store.settings[floating_sidebar.SPREAD_SETTING] = True
+    root = window.centralWidget()
+    pointer = {"at": QPoint(30, 300)}  # (on the strip)
+    monkeypatch.setattr(floating_sidebar.QCursor, "pos", staticmethod(lambda: root.mapToGlobal(pointer["at"])))
+    monkeypatch.setattr(window, "isActiveWindow", lambda: True)  # (the tests' windows stay behind yours)
+    # (and your own clicks while it runs don't count: a button held stops it spreading)
+    monkeypatch.setattr(floating_sidebar, "held", lambda: False)
+    window.toggle_compact_sidebar()
+    assert wait_until(lambda: window.sidebar.width() == COMPACT_WIDTH, 2)
+    page = window.content.mapTo(root, QPoint(0, 0))
+    spread = window.spread_sidebar
+    window.sidebar_mouse_entered()
+    window.spread_sidebar.pressed()  # a click on the strip: it stays as it is…
+    pause(floating_sidebar.REST_MS / 1000 + 0.3)
+    assert not spread.active
+    window.sidebar_mouse_entered()  # …resting there spreads it out, over the page
+    assert wait_until(lambda: spread.active, 2)
+    width = window.store.settings.get("sidebar_width", 250)
+    assert window.sidebar.width() == width and window.sidebar.x() == floating_sidebar.MARGIN
+    assert window.sidebar.url_pill.isVisible() and window.sidebar.space_title.text()
+    assert window.content.mapTo(root, QPoint(0, 0)) == page  # (the page didn't move)
+    assert window.store.settings[COMPACT_SETTING] is True  # (still collapsed: it's only out for a look)
+    pointer["at"] = QPoint(width + 60, 300)  # still out a moment after the pointer goes…
+    pause(0.15)
+    assert spread.active
+    assert wait_until(lambda: not spread.active and window.sidebar.width() == COMPACT_WIDTH, 2)  # …then folds back
+    assert window.sidebar.parentWidget() is window.splitter and window.sidebar.compact
+    assert window.content.mapTo(root, QPoint(0, 0)) == page
+    pointer["at"] = QPoint(30, 300)
+    window.sidebar_mouse_entered()
+    assert wait_until(lambda: spread.active, 2)
+    window.toggle_compact_sidebar()  # ⌥⌘S while it's out: folded, then expanded for good
+    assert not spread.active and not window.sidebar.compact
+    assert wait_until(lambda: window.sidebar.width() == width and window.sidebar.parentWidget() is window.splitter, 2)
+    window.toggle_compact_sidebar()
+    assert wait_until(lambda: window.sidebar.width() == COMPACT_WIDTH, 2)
+    window.toggle_spread_sidebar()  # turned off: it stays as icons
+    window.sidebar_mouse_entered()
+    pause(floating_sidebar.REST_MS / 1000 + 0.3)
+    assert not spread.active
+    window.toggle_compact_sidebar()
