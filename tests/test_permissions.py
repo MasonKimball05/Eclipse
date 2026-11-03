@@ -85,6 +85,8 @@ def test_a_new_question_on_the_card_waits_and_only_what_was_shown_is_answered(qa
     manager.answer(prompt, True)
     assert notifications.answer == "granted" and camera.answer is None  # the camera waits for its own card
     assert "camera" not in str(browser.store.settings)
+    from PyQt6 import sip
+    sip.delete(host)  # (gone now, with its card and the card's timer: never left for a later test's event loop)
 
 
 def test_which_links_belong_to_other_apps_and_remembering_them():

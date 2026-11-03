@@ -259,7 +259,7 @@ class ResultDelegate(QStyledItemDelegate):
             painter.fillPath(path, highlight)
             under = 1.0
         if under > 0:
-            # (white, or dark on a pale Space colour) as the highlight comes under it: the text turned at once,
+            # (white, or dark on a pale Space color) as the highlight comes under it: the text turned at once,
             # before the highlight got there, and flickered against it on the way
             text = mix(text, QColor(theme.on_accent), under)
 
@@ -786,13 +786,13 @@ class CommandBar(QWidget):
                     results.append(self._url_result(entry, "Archived"))
 
         instant = answer(query) if self.mode != "split" else None
-        if instant is not None:  # a sum, a conversion, a time or a colour: the answer goes first
+        if instant is not None:  # a sum, a conversion, a time or a color: the answer goes first
             results.insert(0, Result(instant.text, instant.detail, "Copy", self._answer_icon(instant),
                                      lambda a=instant: self._copy_answer(a)))
         self._show(results[:limit])
 
     def _answer_icon(self, instant):
-        if instant.kind == "color":  # the colour, ringed so it shows on a selected row of the same colour
+        if instant.kind == "color":  # the color, ringed so it shows on a selected row of the same color
             pm = QPixmap(40, 40)
             pm.setDevicePixelRatio(2)
             pm.fill(Qt.GlobalColor.transparent)

@@ -145,7 +145,7 @@ class LittleWindow(QWidget):
     # --- Placement & chrome -------------------------------------------------------------------
 
     def _place(self):
-        # Centred on the main window's screen, like Arc; extra ones cascade so none hides another
+        # Centered on the main window's screen, like Arc; extra ones cascade so none hides another
         screen = (self.browser.screen() or QGuiApplication.primaryScreen()).availableGeometry()
         width, height = min(680, int(screen.width() * 0.5)), min(820, int(screen.height() * 0.82))
         others = sum(1 for w in self.browser._extra_windows if isinstance(w, LittleWindow))
@@ -166,9 +166,9 @@ class LittleWindow(QWidget):
         if MAC:
             macos.hide_title_text(self)
             lights = macos.traffic_lights(self)
-            if lights:  # centre the header on the traffic lights, just to their right
-                right, centre = lights
-                self.header.setFixedHeight(max(round(centre * 2), 32))
+            if lights:  # center the header on the traffic lights, just to their right
+                right, center = lights
+                self.header.setFixedHeight(max(round(center * 2), 32))
                 self.header.layout().setContentsMargins(round(right + 12), 0, 2, 0)
 
     def closeEvent(self, event):

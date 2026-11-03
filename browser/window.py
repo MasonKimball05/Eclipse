@@ -23,13 +23,13 @@ from PyQt6.QtWidgets import (QApplication, QColorDialog, QDialog, QFileDialog,
 
 import qtawesome as qta
 
-from . import (backup, brand, clean_links, dark_pages, macos, memory, motion, screenshots, shortcuts, space_share, spelling,
-               storage)
+from . import (backup, brand, clean_links, dark_pages, macos, memory, motion, prompts, screenshots, shortcuts,
+               sidebar_native, space_share, spelling, storage)
 from .adblock import AdBlocker
 from .command_bar import CUSTOM_SETTING, CommandBar, use_custom_sites
 from .content import ContentFrame
-from .downloads import (BrowserDownload, DownloadSettings, DownloadsWindow, mark_downloaded, reveal_in_finder,
-                        risky as downloads_risky, ytdlp_settings)
+from .downloads import (BrowserDownload, DownloadsWindow, edit_settings as edit_download_settings, mark_downloaded,
+                        reveal_in_finder, risky as downloads_risky, ytdlp_settings)
 from .library import LibraryWindow
 from .air_traffic import route
 from .little import LittleWindow
@@ -61,9 +61,9 @@ from .models import FAVORITES, PINNED, TODAY, Folder, Tab, display_host, node_pa
 from .settings import ARCHIVE_CHOICES, DEFAULT_SLEEP_MINUTES, SettingsWindow
 from .sidebar import COMPACT_WIDTH, FOLDER_COLORS, FOLDER_ICONS, Sidebar
 from .icons import space_icon
-from .space_editor import SpaceEditor
+from .space_editor import SpaceEditor, native_space_editor
 from .theme import PALETTE, PlainMenu, ThemedBackground, dot_icon, stylesheet, theme_for_space
-from .theme_editor import ThemeEditor
+from .theme_editor import edit_theme
 from .webview import DEFAULT_PROFILE, WebPage, WebView, build_profile
 from .timefmt import portable
 
@@ -73,7 +73,7 @@ CONTROL = "Meta" if MAC else "Ctrl"
 RECENT_PAGES = 12  # (at the bottom of the History menu)
 HISTORY_MENU = 15  # (pages in the back and forward buttons' menus)
 THUMBNAILS = memory.kept(40, 20)  # (small pictures of pages, for previews and ⌃Tab)
-DARK_PAGE_BLANK = "#1b1b1e"  # (theme.py's page-area colour on a dark Space)
+DARK_PAGE_BLANK = "#1b1b1e"  # (theme.py's page-area color on a dark Space)
 KEEP_RUNNING = "keep_running"  # (closing the window leaves Eclipse open, on a Mac)
 AUTOPLAY_SETTING = "media_waits_for_click"  # (Settings → Privacy: videos don't play until you click)
 SIDEBAR_WIDTH = 250  # default; drag the sidebar's edge to change it
@@ -115,7 +115,7 @@ class MainWindow(QMainWindow):
         self._shift_alone = False
 
         self.adblock = AdBlocker(store, self)
-        self._shield_timer = QTimer(self, singleShot=True, interval=300, timeout=lambda: self.sidebar.update_shield())
+        self._shield_timer = QTimer(self, singleShot=True, interval=300, timeout=self._update_shield)
         self.adblock.blocked.connect(lambda _site: self._shield_timer.start())  # coalesce bursts
         self.mini_player = MiniPlayer(self)  # floats a playing video when you switch away from its tab
         self.permissions = PermissionManager(self)  # camera, microphone, screen sharing, location…
@@ -131,6 +131,7 @@ class MainWindow(QMainWindow):
         self.page_index = PageIndex(self)  # the text of pages you've read, searchable from ⌘T
         use_custom_sites(store.settings.get(CUSTOM_SETTING, []))  # your own search shortcuts
         self._downloads: DownloadsWindow | None = None
+        self._native_downloads = None  # (the same list, drawn natively: downloads_native.py)
         self._settings: SettingsWindow | None = None
         self._library: LibraryWindow | None = None
         self._page_shot = None   # a whole-page screenshot being taken
@@ -161,6 +162,8 @@ class MainWindow(QMainWindow):
         root_layout.setContentsMargins(0, 0, 0, 0)
 
         self.sidebar = Sidebar(self)
+        if sidebar_native.wanted(store):  # (once the window's made: its rebuild needs the features)
+            QTimer.singleShot(0, lambda: self.sidebar.use_native(True))
         self.content = ContentFrame(self)
         self.content.setMinimumWidth(PAGE_MIN)  # (the page, however much opens beside it: see _fit_minimum)
         self.reader = ReaderView(self, self.content)  # ⌥⌘R, over the page
@@ -198,6 +201,13 @@ class MainWindow(QMainWindow):
 
         self.sidebar.setVisible(store.settings.get("sidebar_visible", True))
         self._update_content_margins()
+        # A page is drawn by the GPU, and the first one in a window has Qt remake the window's surface for it (from
+        # plain pixels to Metal): every widget in it hid and showed again, and the window jumped, on the first tab
+        # you opened after a launch (which opens on no tab). A tiny Qt Quick view, there from the start, has the
+        # window made that way before it's ever shown.
+        from PyQt6.QtQuickWidgets import QQuickWidget
+        self._gpu_surface = QQuickWidget(root)
+        self._gpu_surface.hide()  # (never seen: being in the window is enough)
         self.emit("ready")  # (the features: the window's there now)
 
         store.structure_changed.connect(self._schedule_rebuild)
@@ -208,7 +218,7 @@ class MainWindow(QMainWindow):
         store.structure_changed.connect(self._icons_wanted.start)
         self._icons_wanted.start()
         QApplication.instance().focusChanged.connect(self._on_focus_changed)
-        # macOS switching between light and dark: the window crossfades into its new colours
+        # macOS switching between light and dark: the window crossfades into its new colors
         QGuiApplication.styleHints().colorSchemeChanged.connect(
             lambda _: motion.crossfade(self.centralWidget(), self.centralWidget(), self.apply_theme, ms=280))
         self.apply_theme()
@@ -227,7 +237,7 @@ class MainWindow(QMainWindow):
         self.saving_minutes = None  # (Low Power Mode's shorter wait before idle tabs sleep: power_saver.py)
         self._sleep_timer = QTimer(self, interval=60 * 1000, timeout=self.sleep_idle_tabs)
         self._sleep_timer.start()
-        # Like Arc, a launch opens on your Space's colours, not on whatever you had open last: every tab's in
+        # Like Arc, a launch opens on your Space's colors, not on whatever you had open last: every tab's in
         # the sidebar, asleep, for when you want it. (Switching Spaces still brings back each one's tab.)
         last = self.store.find_tab(self.store.active_space.active_tab_id)
         # It (and any Split View it's in) isn't archived for being idle while nothing's open: it's still
@@ -277,13 +287,15 @@ class MainWindow(QMainWindow):
         self.sidebar.rebuild()
         if self._downloads is not None:
             self._downloads.apply_theme()
+        if self._native_downloads is not None:
+            self._native_downloads.apply_theme()
         for panel in (self._settings, self._library):
             if panel is not None:
                 panel.apply_theme()
         for corner in self.content.corners:
             corner.update()
         if self.content.blank:
-            self.content.empty.refresh()  # (the start view, in the new Space's colours and name)
+            self.content.empty.refresh()  # (the start view, in the new Space's colors and name)
 
     def _schedule_rebuild(self):
         # Many store changes can land in one event loop pass; rebuild the sidebar once
@@ -382,6 +394,9 @@ class MainWindow(QMainWindow):
         else:
             self.traffic_lights.place(True)
 
+    def _update_shield(self):
+        self.sidebar.update_shield()  # (a method, not a lambda holding the window: see permissions.PermissionPrompt)
+
     def _fit_minimum(self):
         """At least MIN_SIZE wide, or wider while panels are open beside the page (the web panel, Ask About This
         Page): room for each at its narrowest and the page at PAGE_MIN, so opening one in a small window widens
@@ -390,6 +405,8 @@ class MainWindow(QMainWindow):
             return
         QApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest)  # (laid out as it is now, not before)
         width = max(MIN_SIZE[0], self.centralWidget().minimumSizeHint().width())
+        if (screen := self.screen()) is not None:  # (never wider than the screen: past its edge is worse than tight)
+            width = min(width, screen.availableGeometry().width())
         if width != self.minimumWidth():
             self.setMinimumWidth(width)
 
@@ -508,10 +525,11 @@ class MainWindow(QMainWindow):
 
     def set_space_profile(self, space, name):
         if name is None:
-            name, ok = QInputDialog.getText(self, "New Profile", "Profile name (e.g. Work, School):")
-            name = re.sub(r"[^a-z0-9_-]+", "-", name.strip().lower()).strip("-") if ok else ""
-            if not name:
-                return
+            def named(typed):
+                if cleaned := re.sub(r"[^a-z0-9_-]+", "-", typed.strip().lower()).strip("-"):
+                    self.set_space_profile(space, cleaned)
+            prompts.ask_text(self, "New Profile", "Profile name (e.g. Work, School):", named, action="Create")
+            return
         if space.profile == name:
             return
         space.profile = name
@@ -546,8 +564,8 @@ class MainWindow(QMainWindow):
     def _dark_until_painted(self, view):
         """A new page is blank until its first frame (half a second or more: longer for a big site), and Qt
         paints that blank white: on a dark Space, a white flash each time a Space's tab (or a sleeping one) opens.
-        So until it's about to draw its first frame, the blank is the page area's own dark colour; from then it's
-        the web's white again (the colour of pages that leave their background to the browser)."""
+        So until it's about to draw its first frame, the blank is the page area's own dark color; from then it's
+        the web's white again (the color of pages that leave their background to the browser)."""
         if not self.theme.dark:
             return
         page = view.page()
@@ -961,19 +979,15 @@ class MainWindow(QMainWindow):
         name = download.downloadFileName()
         host = display_host(download.url().toString()) or "A page"
         if downloads_risky(name):
-            answer = QMessageBox.question(
-                self, "Download File", f"“{name}” can run programs on your Mac. Download it from {host} anyway?\n\n"
-                "Only download it if you trust where it came from.",
-                QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Save, QMessageBox.StandardButton.Cancel)
-            return answer == QMessageBox.StandardButton.Save
+            return prompts.confirm_now(self, "Download File", f"“{name}” can run programs on your Mac. Download it "
+                                       f"from {host} anyway?\n\nOnly download it if you trust where it came from.",
+                                       action="Download")
         now, key = time.monotonic(), id(page)
         recent = [t for t in self._recent_downloads.get(key, []) if now - t < 8]
         self._recent_downloads[key] = recent + [now]
         if recent:
-            answer = QMessageBox.question(self, "Download Files", f"{host} wants to download several files. Allow "
-                                          f"“{name}”?", QMessageBox.StandardButton.Cancel |
-                                          QMessageBox.StandardButton.Save, QMessageBox.StandardButton.Cancel)
-            return answer == QMessageBox.StandardButton.Save
+            return prompts.confirm_now(self, "Download Files", f"{host} wants to download several files. Allow "
+                                       f"“{name}”?", action="Allow")
         return True
 
     def _download_finished(self, item, download):
@@ -1150,14 +1164,17 @@ class MainWindow(QMainWindow):
         return claude.assistant_name(ai) if claude is not None else ""
 
     def show_downloads(self, url=""):
-        self.downloads_window.open(url)
+        if self._native_downloads is None:
+            from .downloads_native import chooser
+            self._native_downloads = chooser(self)
+        (self._native_downloads or self.downloads_window).open(url)
 
     def download_video(self, tab=None):
         tab = tab or self.current_tab
         self.show_downloads(tab.url if tab else "")
 
     def download_settings(self):
-        DownloadSettings(self.store, self.theme, self).exec()
+        edit_download_settings(self, self)
 
     # --- Ad blocking ----------------------------------------------------------------------------
 
@@ -1523,28 +1540,32 @@ class MainWindow(QMainWindow):
         self.sidebar.update_selection()
 
     def new_folder(self, tab=None):
-        name, ok = QInputDialog.getText(self, "New Folder", "Folder name:")
-        if not ok or not name.strip():
-            return
-        folder = self.store.add_folder(self.store.active_space, name.strip())
-        if tab is not None:
-            self.move_tab(tab, PINNED, None, folder)
+        def named(name):
+            if not name.strip():
+                return
+            folder = self.store.add_folder(self.store.active_space, name.strip())
+            if tab is not None and self.store.locate(tab):
+                self.move_tab(tab, PINNED, None, folder)
+        prompts.ask_text(self, "New Folder", "Folder name:", named, action="Create")
 
     def rename_folder(self, folder):
-        name, ok = QInputDialog.getText(self, "Rename Folder", "Folder name:", text=folder.name)
-        if ok and name.strip():
+        prompts.ask_text(self, "Rename Folder", "Folder name:", lambda name: self._renamed_folder(folder, name),
+                         text=folder.name, action="Rename")
+
+    def _renamed_folder(self, folder, name):
+        if name.strip():
             folder.name = name.strip()
             if folder.live:
                 folder.live["named"] = True  # (a feed's own title mustn't put the old name back)
             self.store._changed()
 
-    def delete_folder(self, folder):
+    def delete_folder(self, folder, asked=False):
         tabs = list(walk_tabs(folder.children))
-        if tabs:
-            answer = QMessageBox.question(self, "Delete Folder",
-                                          f"Delete “{folder.name}” and the {len(tabs)} tabs in it?")
-            if answer != QMessageBox.StandardButton.Yes:
-                return
+        if tabs and not asked:
+            prompts.confirm(self, "Delete Folder", f"Delete “{folder.name}” and the {len(tabs)} tabs in it?",
+                            lambda: self.delete_folder(folder, asked=True) if self.store.locate(folder) else None,
+                            action="Delete", destructive=True)
+            return
         self.emit("folder_deleted", folder)
         current_inside = self.current_tab in tabs
         for tab in tabs:
@@ -1566,15 +1587,15 @@ class MainWindow(QMainWindow):
         self._act(menu, "ph.list-bullets", "Copy Links", lambda: self.copy_links(walk_tabs(folder.children)))
         if not folder.live:
             self._act(menu, "ph.arrows-clockwise", "Reload Tabs", lambda: self.reload_tabs(walk_tabs(folder.children)))
-            # Its own colour and symbol, to tell it apart at a glance (Zen's tab groups)
-            colours = self._submenu(menu, "ph.palette", "Colour")
+            # Its own color and symbol, to tell it apart at a glance (Zen's tab groups)
+            colors = self._submenu(menu, "ph.palette", "Color")
             for name, hex_ in FOLDER_COLORS:
-                act = colours.addAction(qta.icon("ph.circle-fill", color=hex_), name,
+                act = colors.addAction(qta.icon("ph.circle-fill", color=hex_), name,
                                         lambda h=hex_: self.style_folder(folder, color=h))
                 act.setCheckable(True)
                 act.setChecked(folder.color == hex_)
-            colours.addSeparator()
-            colours.addAction("No Colour", lambda: self.style_folder(folder, color=None))
+            colors.addSeparator()
+            colors.addAction("No Color", lambda: self.style_folder(folder, color=None))
             icons = self._submenu(menu, "ph.smiley", "Icon")
             tint = QColor(folder.color) if folder.color else self.theme.panel_text
             for name, icon in FOLDER_ICONS:
@@ -1592,7 +1613,7 @@ class MainWindow(QMainWindow):
     _UNSET = object()
 
     def style_folder(self, folder, color=_UNSET, icon=_UNSET):
-        """A folder's own colour (its icon's) and symbol; None for the usual."""
+        """A folder's own color (its icon's) and symbol; None for the usual."""
         if color is not self._UNSET:
             folder.color = color
         if icon is not self._UNSET:
@@ -1642,12 +1663,12 @@ class MainWindow(QMainWindow):
             self._relayout_split()  # (the panes left behind)
 
     def rename_tab(self, tab):
-        name, ok = QInputDialog.getText(self, "Rename Tab", "Name (leave blank to use the page title):",
-                                        text=tab.custom_title or "")
-        if ok:
+        def named(name):
             tab.custom_title = name.strip() or None
             tab.changed.emit()
             self.store.schedule_save()
+        prompts.ask_text(self, "Rename Tab", "Name (leave blank to use the page title):", named,
+                         text=tab.custom_title or "", placeholder=tab.title, action="Rename")
 
     def visible_tab_step(self, step):
         tabs = self.store.visible_tabs()
@@ -1858,13 +1879,15 @@ class MainWindow(QMainWindow):
 
     def folder_from(self, tabs):
         self.sidebar.clear_marks()
-        name, ok = QInputDialog.getText(self, "New Folder", f"Name for a folder of {len(tabs)} tabs:")
-        if not ok or not name.strip():
-            return
-        folder = self.store.add_folder(self.store.active_space, name.strip())
-        for tab in tabs:
-            if self.store.locate(tab):
-                self.move_tab(tab, PINNED, None, folder)
+
+        def named(name):
+            if not name.strip():
+                return
+            folder = self.store.add_folder(self.store.active_space, name.strip())
+            for tab in tabs:
+                if self.store.locate(tab):
+                    self.move_tab(tab, PINNED, None, folder)
+        prompts.ask_text(self, "New Folder", f"Name for a folder of {len(tabs)} tabs:", named, action="Create")
 
     def go_home(self, tab):
         """Back to the page a pinned tab or favorite was pinned at."""
@@ -1958,8 +1981,8 @@ class MainWindow(QMainWindow):
             view.page().findText(text, flags)
 
     def show_whats_new(self):
-        from .whats_new import WhatsNew
-        self._whats_new = WhatsNew(self)
+        from .whats_new import window_for
+        self._whats_new = window_for(self)
         self._whats_new.show()
 
     def show_crash_logs(self):
@@ -2044,7 +2067,7 @@ class MainWindow(QMainWindow):
 
     def set_as_default_browser(self):
         if not macos.is_built_app():
-            QMessageBox.information(
+            prompts.tell(
                 self, "Set as Default Browser",
                 "macOS only lets an installed app be the default browser.\n\n"
                 "Build it once with:   ./run.sh --build-app\n\n"
@@ -2094,12 +2117,14 @@ class MainWindow(QMainWindow):
 
     def open_library(self, section="history"):
         if self._library is None:
-            self._library = LibraryWindow(self)
+            from .library_native import window_for
+            self._library = window_for(self)  # (drawn natively on a Mac where that's built: library_native.py)
         self._library.open(section)
 
     def open_settings(self, page="general"):
         if self._settings is None:
-            self._settings = SettingsWindow(self)
+            from .settings_native import window_for
+            self._settings = window_for(self)  # (drawn natively on a Mac where that's built: settings_native.py)
         self._settings.open(page)
 
     def _on_link_hovered(self, url):
@@ -2351,7 +2376,7 @@ class MainWindow(QMainWindow):
         try:
             count = backup.create(Path(path))
         except OSError as error:
-            QMessageBox.warning(self, "Backup Failed", str(error))
+            prompts.tell(self, "Backup Failed", str(error), warning=True)
             return
         self.toast(f"Backed up {count} file{'' if count == 1 else 's'} to {Path(path).name}")
 
@@ -2363,32 +2388,29 @@ class MainWindow(QMainWindow):
         try:
             info = backup.describe(Path(path))
         except ValueError as error:
-            QMessageBox.warning(self, "Can't Restore", str(error))
+            prompts.tell(self, "Can't Restore", str(error), warning=True)
             return
         made = time.strftime(portable("%-d %B %Y at %-I:%M %p"), time.localtime(info["created"]))
         code = [f"{n} {what}{'s' if n != 1 else ''}" for n, what in
                 ((info["extensions"], "extension"), (info["userscripts"], "userscript"),
                  (info["native"], "app extensions can talk to")) if n]
-        box = QMessageBox(QMessageBox.Icon.Question, "Restore from Backup",
-                          f"Replace your Spaces, tabs, settings and notes with this backup from {made}?", parent=self)
-        box.setTextFormat(Qt.TextFormat.PlainText)
-        box.setInformativeText(
+        detail = (
             f"It has {len(info['spaces'])} Space(s) ({', '.join(info['spaces'][:5])}) and {info['tabs']} tabs. "
             + (f"It also has {', '.join(code)}: code that can read and change the sites you visit. Only restore "
                "those from a backup you made yourself. " if code else "")
             + "What you have now is kept in a folder, not deleted. Sign-ins and cookies aren't affected.\n\n"
             f"{brand.NAME} will quit; open it again to finish.")
-        everything = box.addButton("Restore Everything" if code else "Restore", QMessageBox.ButtonRole.AcceptRole)
-        without = box.addButton("Restore Without Extensions", QMessageBox.ButtonRole.AcceptRole) if code else None
-        box.addButton(QMessageBox.StandardButton.Cancel)
-        box.setDefaultButton(without or everything)
-        box.exec()
-        if box.clickedButton() not in (everything, without):
-            return
+        answers = ["Restore Without Extensions", "Restore Everything"] if code else ["Restore"]  # (the first, the default)
+        prompts.choose(self, "Restore from Backup",
+                       f"Replace your Spaces, tabs, settings and notes with this backup from {made}?", answers,
+                       lambda index: self._restore_from(path, with_code=answers[index] != "Restore Without Extensions"),
+                       detail=detail)
+
+    def _restore_from(self, path, with_code):
         try:
-            backup.stage(Path(path), with_code=box.clickedButton() is everything)
+            backup.stage(Path(path), with_code=with_code)
         except (OSError, ValueError) as error:
-            QMessageBox.warning(self, "Can't Restore", str(error))
+            prompts.tell(self, "Can't Restore", str(error), warning=True)
             return
         QApplication.instance().quit()
 
@@ -2418,7 +2440,8 @@ class MainWindow(QMainWindow):
                 self.content.veil(picture, None)  # (the page left fades into the start view: no cut)
         self._left_picture = None
 
-    def switch_space(self, space, direction=None):
+    def switch_space(self, space, direction=None, swiped=False):
+        """`swiped`: the native sidebar's own scroll has already moved to it (sidebar_native.py)."""
         if space.id == self.store.active_space_id:
             return
         self.tab_preview.dismiss()
@@ -2430,6 +2453,19 @@ class MainWindow(QMainWindow):
         gestures = self.feature("gestures")
         if gestures is not None:
             gestures.space_swipe.abandon()  # (a swipe under way gives way to this switch)
+        native = self.sidebar.native
+        if native is not None and native.container.isVisible() and self.isVisible():
+            # The native sidebar scrolls over to it on its own (the system animates it); the window takes the
+            # Space's colors and page as it goes
+            if not swiped:
+                native.go(space)
+            self.store.active_space_id = space.id
+            # (a swipe's scroll has landed; a newer switch meanwhile has the last word)
+            # The rest of the window fades over to the Space's colors, once nothing's moving
+            land = lambda: motion.crossfade(self.centralWidget(), self.centralWidget(), change, ms=220)  # noqa: E731
+            QTimer.singleShot(0 if swiped else native.CHANGE_AFTER_MS,
+                              lambda: land() if self.store.active_space_id == space.id else None)
+            return
         if self.sidebar.isVisible() and self.isVisible() and self.store.active_space in spaces:
             # The sidebar slides over to the new Space, like Arc's
             direction = direction or (1 if spaces.index(space) > spaces.index(self.store.active_space) else -1)
@@ -2448,8 +2484,10 @@ class MainWindow(QMainWindow):
             self.switch_space(self.store.spaces[n - 1])
 
     def new_space(self):
-        name, ok = QInputDialog.getText(self, "New Space", "Space name:")
-        if not ok or not name.strip():
+        prompts.ask_text(self, "New Space", "Space name:", self._new_space_named, action="Create")
+
+    def _new_space_named(self, name):
+        if not name.strip():
             return
         used = {s.color for s in self.store.spaces}
         color = next((c for _, c in PALETTE if c not in used), PALETTE[len(self.store.spaces) % len(PALETTE)][1])
@@ -2468,9 +2506,13 @@ class MainWindow(QMainWindow):
         for old in folder.glob("*" + space_share.SUFFIX):
             old.unlink(missing_ok=True)  # (only the latest is kept: it's there to be sent)
         path = space_share.write(space, folder)
-        title = self.sidebar.space_title
-        anchor = QRect(title.mapTo(self, QPoint(0, 0)), title.size()) if title.isVisible() else \
-            QRect(self.content.mapTo(self, QPoint(self.content.width() // 2, 0)), QSize(1, 1))
+        title, native = self.sidebar.space_title, self.sidebar.native
+        if native is not None and native.container.isVisible():  # (the native sidebar's Space name)
+            anchor = QRect(native.container.mapTo(self, QPoint(4, 2)), QSize(max(40, native.container.width() // 2), 26))
+        elif title.isVisible():
+            anchor = QRect(title.mapTo(self, QPoint(0, 0)), title.size())
+        else:
+            anchor = QRect(self.content.mapTo(self, QPoint(self.content.width() // 2, 0)), QSize(1, 1))
         if macos.share(self, bytes(QUrl.fromLocalFile(str(path)).toEncoded()).decode(), anchor):
             return
         start = str(Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)) / path.name)
@@ -2491,18 +2533,13 @@ class MainWindow(QMainWindow):
         try:
             shared = space_share.read(Path(path))
         except ValueError as error:
-            QMessageBox.warning(self, "Can't Import Space", str(error))
+            prompts.tell(self, "Can't Import Space", str(error), warning=True)
             return
-        box = QMessageBox(QMessageBox.Icon.Question, "Import Space",
-                          f"Add the Space “{shared['name']}”, with {space_share.summary(shared)}?", parent=self)
-        box.setTextFormat(Qt.TextFormat.PlainText)  # (its name is whatever the file says)
-        box.setInformativeText("It brings only addresses and names: you sign in to its sites yourself.")
-        add = box.addButton("Add Space", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton(QMessageBox.StandardButton.Cancel)
-        box.setDefaultButton(add)
-        box.exec()
-        if box.clickedButton() is not add:
-            return
+        prompts.choose(self, "Import Space", f"Add the Space “{shared['name']}”, with {space_share.summary(shared)}?",
+                       ["Add Space"], lambda _: self._add_shared_space(shared),
+                       detail="It brings only addresses and names: you sign in to its sites yourself.")
+
+    def _add_shared_space(self, shared):
         used = {s.color for s in self.store.spaces}
         color = next((c for _, c in PALETTE if c not in used), PALETTE[len(self.store.spaces) % len(PALETTE)][1])
         space = space_share.build(shared, color)
@@ -2516,15 +2553,16 @@ class MainWindow(QMainWindow):
         self.toast(f"Added “{space.name}”")
 
     def rename_space(self, space):
-        name, ok = QInputDialog.getText(self, "Rename Space", "Space name:", text=space.name)
-        if ok and name.strip():
-            space.name = name.strip()
-            self.store.schedule_save()
-            self.sidebar.rebuild()
+        def named(name):
+            if name.strip():
+                space.name = name.strip()
+                self.store.schedule_save()
+                self.sidebar.rebuild()
+        prompts.ask_text(self, "Rename Space", "Space name:", named, text=space.name, action="Rename")
 
     def set_space_color(self, space, color=None):
         if color is None:
-            picked = QColorDialog.getColor(parent=self, title="Space Colour")
+            picked = QColorDialog.getColor(parent=self, title="Space Color")
             if not picked.isValid():
                 return
             color = picked.name()
@@ -2541,15 +2579,19 @@ class MainWindow(QMainWindow):
         space = space or self.store.active_space
         if space is not self.store.active_space:
             self.switch_space(space)  # so the editor previews on the real window
-        ThemeEditor(self, space).exec()
+        edit_theme(self, space)
 
     def delete_space(self, space):
         if len(self.store.spaces) == 1:
             self.toast("You need at least one Space")
             return
-        answer = QMessageBox.question(
-            self, "Delete Space", f"Delete “{space.name}” and its {len(list(walk_tabs(space.pinned + space.today)))} tabs?")
-        if answer != QMessageBox.StandardButton.Yes:
+        prompts.confirm(self, "Delete Space",
+                        f"Delete “{space.name}” and its {len(list(walk_tabs(space.pinned + space.today)))} tabs?",
+                        lambda: self._delete_space_now(space) if space in self.store.spaces else None,
+                        action="Delete", destructive=True)
+
+    def _delete_space_now(self, space):
+        if len(self.store.spaces) == 1:
             return
         was_active = space is self.store.active_space
         for tab in list(walk_tabs(space.pinned + space.today)):
@@ -2559,16 +2601,17 @@ class MainWindow(QMainWindow):
             self.apply_theme()
             self._restore_space_tab()
 
-    def show_space_menu(self, space, pos):
-        SpaceEditor(self, space).popup(pos)
+    def show_space_menu(self, space, pos, beside=None):
+        """`beside`: the Space name's place (global), for the native popover to open beside it, pointing at it."""
+        if native_space_editor(self, space, pos, beside) is None:
+            SpaceEditor(self, space).popup(pos)
 
     def edit_space(self, space=None):
         """Open the Space editor next to the Space's name in the sidebar."""
         space = space or self.store.active_space
         if space is not self.store.active_space:
             self.switch_space(space)
-        title = self.sidebar.space_title
-        self.show_space_menu(space, title.mapToGlobal(QPoint(0, title.height() + 4)))
+        self.show_space_menu(space, self.sidebar.space_title_anchor(), self.sidebar.space_title_rect())
 
     def space_edited(self, space, retheme=False):
         self.store.schedule_save()
@@ -2659,7 +2702,7 @@ class MainWindow(QMainWindow):
             ("Show Crash Logs", "ph.bug", self.show_crash_logs),
             ("Send Feedback…", "ph.chat-teardrop-text", self.send_feedback),
             ("Open Developer Tools", "ph.terminal-window", self.open_devtools),
-            ("Edit Space (Name, Icon, Colour, Profile)", "ph.pencil-simple", self.edit_space),
+            ("Edit Space (Name, Icon, Color, Profile)", "ph.pencil-simple", self.edit_space),
             ("Edit Space Theme", "ph.paint-brush", self.edit_space_theme),
             ("Settings", "ph.gear-six", self.open_settings),
             ("Library (History, Archive, Notes)", "ph.books", self.open_library),
@@ -2947,6 +2990,7 @@ class MainWindow(QMainWindow):
         for tab in self.store.all_tabs():
             if isinstance(tab.view, QWebEngineView):
                 tab.view.page().runJavaScript("document.querySelectorAll('video, audio').forEach(m => m.pause())")
+        self.mini_player.close()  # (nor floats over everything, paused, after its window's gone)
         if self._fullscreen:
             self._set_fullscreen(False)
         elif self.isFullScreen():
@@ -2967,11 +3011,16 @@ class MainWindow(QMainWindow):
         self.bring_to_front()
 
     def shutdown(self):
+        if self._native_downloads is not None:
+            self._native_downloads.close()
         if self._downloads is not None:
             self._downloads.shutdown()
             sip.delete(self._downloads)
         for panel in (self._settings, self._library):
             if panel is not None:
+                if isinstance(getattr(panel, "qt", None), QWidget):  # (native Settings: its window, and its Qt pages)
+                    panel.close()
+                    sip.delete(panel.qt)
                 sip.delete(panel)
         self.adblock.detach_all()
         self.mini_player.shutdown()

@@ -308,7 +308,7 @@ def _drag_event(kind, section, y, tab, together=()):
     return mime  # (kept alive while the event is used)
 
 
-def test_a_folder_can_have_its_own_colour_and_icon(window, site):
+def test_a_folder_can_have_its_own_color_and_icon(window, site):
     from browser.models import Folder, PINNED, Tab
     from browser.sidebar import FolderRow
     folder = Folder("Reading", [Tab(f"{site}/index.html", "a page")])
@@ -610,6 +610,32 @@ def test_a_favorite_squeezes_when_pressed_and_springs_back(window, site):
     assert len(middle) > 1  # the icon is still drawn in the middle of the tile (not just its background)
 
 
+def test_a_favorite_keeps_its_sites_icon_when_its_tab_goes_to_another_site(window, site):
+    # (YouTube's tile turned into Google's after going to google.com in it)
+    from PyQt6.QtGui import QColor, QIcon, QPixmap
+    from browser import storage
+    tab = open_page(window, f"{site}/index.html")
+    window.move_tab(tab, "favorites")
+    pause(0.3)
+    home = tab.home_url
+    red = QPixmap(32, 32)
+    red.fill(QColor("#ff0000"))
+    storage.save_favicon(home, QIcon(red))
+    tile = next(t for t in window.sidebar.favorites.tiles if t.tab is tab)
+    other = home.replace("127.0.0.1", "localhost").replace("index.html", "article.html")  # (another site)
+    tab.view.load(QUrl(other))
+    assert wait_until(lambda: tab.url.startswith("http://localhost"), 10)
+    tile.refresh()
+    picture = tile.icon().pixmap(32, 32).toImage()
+    assert picture.pixelColor(16, 16).name() == "#ff0000"
+    assert "127.0.0.1\nNow:" in tile.toolTip()
+    # Back on its own site: the page's own icon and title again
+    tab.view.load(QUrl(home))
+    assert wait_until(lambda: tab.url.startswith("http://127.0.0.1"), 10)
+    tile.refresh()
+    assert "Now:" not in tile.toolTip()
+
+
 def test_the_command_bars_shadow_is_drawn_once_not_every_frame(window, site):
     # (as a graphics effect, every change inside the panel drew it all again and blurred the shadow again,
     # about 17 ms a frame: the highlight juddered as it glided)
@@ -869,25 +895,25 @@ def test_a_restored_tab_opens_where_it_was_left(window, site):
 def test_dark_websites_turn_on_at_once_and_a_site_can_stay_light(window, site):
     from browser import dark_pages
 
-    def colour(tab):
+    def color(tab):
         image = tab.view.grab().toImage()
         return image.pixelColor(image.width() // 2, image.height() - 20).lightness()
     tab = open_page(window, f"{site}/index.html")
     pause(0.4)
-    assert colour(tab) > 200  # a light page
+    assert color(tab) > 200  # a light page
     window.open_settings("general")
     window._settings.dark_box.setChecked(True)
     window._settings.close()
-    assert wait_until(lambda: colour(tab) < 60, 2)  # darkened, no reload
+    assert wait_until(lambda: color(tab) < 60, 2)  # darkened, no reload
     window._set_dark_here(QUrl(tab.url).host(), False)  # this site: leave it light
-    assert wait_until(lambda: colour(tab) > 200, 2)
+    assert wait_until(lambda: color(tab) > 200, 2)
     window._set_dark_here(QUrl(tab.url).host(), True)
     fresh = open_page(window, f"{site}/links.html")  # a new page: dark from the start
     pause(0.4)
-    assert colour(fresh) < 60
+    assert color(fresh) < 60
     window.store.settings[dark_pages.SETTING] = False
     window.apply_dark_pages()
-    assert wait_until(lambda: colour(fresh) > 200, 2)
+    assert wait_until(lambda: color(fresh) > 200, 2)
 
 
 def test_whole_page_screenshot_is_stitched_without_repeating_the_header(window, site, tmp_path):
@@ -1277,7 +1303,7 @@ def _lights_state(window):
     button = _send(native, "standardWindowButton:", 0, argtypes=(ctypes.c_long,))
     frame = _send(button, "frame", restype=_CGRect)
     overlay = window.traffic_lights.overlay
-    return (not overlay.isVisible(), 1.0 if overlay.lit else traffic_lights.DIM, round(frame.x), round(frame.y))
+    return (not overlay.isVisible(), 1.0 if overlay.lit else traffic_lights.GRAY, round(frame.x), round(frame.y))
 
 
 def _lights_on_macos_buttons(window) -> bool:
@@ -1287,8 +1313,8 @@ def _lights_on_macos_buttons(window) -> bool:
     overlay = window.traffic_lights.overlay
     frames = macos.traffic_light_frames(window)
     return bool(frames) and all(
-        abs((overlay.mapTo(window, centre.toPoint()) - QPointF(x + w / 2, y + h / 2).toPoint()).manhattanLength()) <= 1
-        for centre, (x, y, w, h) in zip(overlay.centres, frames))
+        abs((overlay.mapTo(window, center.toPoint()) - QPointF(x + w / 2, y + h / 2).toPoint()).manhattanLength()) <= 1
+        for center, (x, y, w, h) in zip(overlay.centers, frames))
 
 
 def test_the_top_row_never_runs_into_the_traffic_lights(window, site):
@@ -1327,7 +1353,7 @@ def test_traffic_lights_light_up_in_place(window, site, monkeypatch):
     assert calls == [] and seen == {home} and _lights_on_macos_buttons(window)
     monkeypatch.setattr(window.traffic_lights, "near", lambda: False)
     window.traffic_lights._check()
-    assert wait_until(lambda: _lights_state(window)[1] == traffic_lights.DIM, 2)
+    assert wait_until(lambda: _lights_state(window)[1] == traffic_lights.GRAY, 2)
 
 
 def test_traffic_lights_go_with_the_sidebar(window, site, monkeypatch):
@@ -1337,7 +1363,7 @@ def test_traffic_lights_go_with_the_sidebar(window, site, monkeypatch):
     open_page(window, f"{site}/index.html")  # (a tab open: with none, the hidden sidebar would come out by itself)
     pause(0.3)
     hidden, alpha, x, y = _lights_state(window)
-    assert not hidden and alpha == traffic_lights.DIM  # docked: there, dim until pointed at
+    assert not hidden and alpha == traffic_lights.GRAY  # docked: there, dim until pointed at
     home = (x, y)
     # Pointing at them lights them up; moving away dims them again
     monkeypatch.setattr(window.traffic_lights, "near", lambda: True)
@@ -1345,7 +1371,7 @@ def test_traffic_lights_go_with_the_sidebar(window, site, monkeypatch):
     assert wait_until(lambda: _lights_state(window)[1] == 1.0, 2)
     monkeypatch.setattr(window.traffic_lights, "near", lambda: False)
     window.traffic_lights._check()
-    assert wait_until(lambda: _lights_state(window)[1] == traffic_lights.DIM, 2)
+    assert wait_until(lambda: _lights_state(window)[1] == traffic_lights.GRAY, 2)
     # Sidebar hidden: gone, and the page has the whole window
     window.toggle_sidebar()
     pause(0.5)
@@ -2030,7 +2056,7 @@ def test_the_traffic_lights_do_what_macos_buttons_do(window, site, monkeypatch):
     monkeypatch.setattr(macos, "window_button_action", lambda w, action: done.append(action) or True)
 
     def click(i, alt=False):
-        at = overlay.centres[i]
+        at = overlay.centers[i]
         mods = Qt.KeyboardModifier.AltModifier if alt else Qt.KeyboardModifier.NoModifier
         for kind in (QMouseEvent.Type.MouseButtonPress, QMouseEvent.Type.MouseButtonRelease):
             QApplication.sendEvent(overlay, QMouseEvent(kind, at, overlay.mapToGlobal(at), Qt.MouseButton.LeftButton,
@@ -2041,7 +2067,7 @@ def test_the_traffic_lights_do_what_macos_buttons_do(window, site, monkeypatch):
     click(2, alt=True)
     assert done == ["close", "minimize", "full_screen", "zoom"]
     # Between the circles: nothing
-    gap = (overlay.centres[0] + overlay.centres[1]) / 2 + QPointF(0, overlay.diameter)
+    gap = (overlay.centers[0] + overlay.centers[1]) / 2 + QPointF(0, overlay.diameter)
     assert overlay.which(gap) is None
     # macOS's own stay hidden while ours show; the window's close still goes through macOS (as from its red button)
     import ctypes

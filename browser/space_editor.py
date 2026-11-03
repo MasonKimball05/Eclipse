@@ -1,5 +1,5 @@
 # The Space editor: a small popover (right-click a Space) to rename it, pick its icon and
-# colour, choose its profile, and reach the theme editor. Changes apply as you make them.
+# color, choose its profile, and reach the theme editor. Changes apply as you make them.
 # It also has this Space's "just the background" switch for the start view (as right-clicking that has),
 # being where you'd look while picking a background.
 
@@ -18,6 +18,99 @@ from .webview import DEFAULT_PROFILE
 
 COLUMNS = 8
 NEW_PROFILE = "__new__"
+
+
+_PICTURES: dict = {}  # {ink: {key: PNG}}: the icon grid's pictures, made once per color
+
+
+def native_space_editor(browser, space, pos, beside=None):
+    """The Space editor as a native popover from the Space's name (forms.py), changes applying as they're made; None
+    where it can't be (Qt's popover then)."""
+    from . import forms
+    from .start_view import shown_in
+    ink = browser.theme.panel_text
+    symbols = _PICTURES.get(ink.name())
+    if symbols is None:
+        from .native import png
+        symbols = _PICTURES[ink.name()] = {f"s{i}": png(qta.icon(v, color=ink).pixmap(36, 36))
+                                           for i, v in enumerate(SYMBOLS)}
+    keys = {v: f"s{i}" for i, v in enumerate(SYMBOLS)}
+    profiles = browser.profile_names()
+    own_emoji = space.icon if space.icon and not is_symbol(space.icon) and space.icon not in EMOJI else ""
+    state = {"name": space.name, "icon": space.icon, "color": space.color, "profile": space.profile,
+             "plain": not shown_in(browser.store, space), "emoji": own_emoji}  # (as the field starts)
+
+    def changed(values):
+        name = str(values.get("name", "")).strip()
+        if name and name != space.name:
+            space.name = name
+            browser.space_edited(space)
+        icon = str(values.get("icon", ""))
+        custom = str(values.get("emoji", "")).strip()[:4]
+        if custom and custom != state.get("emoji"):
+            icon = custom
+        state["emoji"] = custom
+        if icon != state["icon"] and (icon in SYMBOLS or icon in EMOJI or icon == custom or icon == ""):
+            state["icon"] = space.icon = icon
+            browser.space_edited(space)
+        color = str(values.get("color", ""))
+        if color.startswith("#") and color.lower() != space.color.lower():
+            space.color = color
+            if space.theme.get("colors"):
+                space.theme["colors"][0] = color
+            browser.space_edited(space, retheme=True)
+        profile = values.get("profile")
+        if profile in profiles and profile != space.profile:
+            browser.set_space_profile(space, profile)
+        plain = bool(values.get("plain"))
+        if plain != state["plain"]:
+            state["plain"] = plain
+            browser.content.empty.set_shown(not plain, space)
+
+    form = None
+
+    def act(_form, field, values):
+        if field == "create":
+            made = re.sub(r"[^a-z0-9_-]+", "-", str(values.get("new_profile", "")).strip().lower()).strip("-")
+            if made:
+                browser.set_space_profile(space, made)
+            return
+        form.close()
+        extra = {f"x{i}": action for i, (_icon, _text, action) in enumerate(browser.gather("space_actions", space))}
+        {"theme": lambda: browser.edit_space_theme(space), "folder": browser.new_folder,
+         "share": lambda: browser.share_space(space), "delete": lambda: browser.delete_space(space),
+         **extra}.get(field, lambda: None)()
+
+    extras = [{"id": f"x{i}", "kind": "action", "label": "", "title": text}
+              for i, (_icon, text, _action) in enumerate(browser.gather("space_actions", space))]
+    choices = [{"value": v, "image": keys[v], "label": v.removeprefix("ph.").replace("-", " ")} for v in SYMBOLS] + \
+        [{"value": e, "text": e, "label": e} for e in EMOJI] + [{"value": "", "text": "●", "label": "No icon (color dot)"}]
+    form = forms.open_form(
+        browser, "Edit Space",
+        [forms.section({"id": "name", "kind": "text", "label": "Name", "value": space.name}),
+         forms.section({"id": "icon", "kind": "choice", "columns": COLUMNS, "value": space.icon, "options": choices},
+                       {"id": "emoji", "kind": "text", "label": "Other emoji", "placeholder": "⌃⌘Space",
+                        "value": own_emoji}, header="Icon"),
+         forms.section({"id": "color", "kind": "color", "label": "Color", "value": space.color},
+                       {"id": "palette", "kind": "swatches", "label": "", "target": "color",
+                        "options": [{"value": c, "label": n} for n, c in PALETTE]},
+                       {"id": "theme", "kind": "action", "label": "", "title": "Edit Theme…"}),
+         forms.section({"id": "profile", "kind": "menu", "label": "Profile", "value": space.profile,
+                        "options": [{"value": n, "label": "Default" if n == DEFAULT_PROFILE else n} for n in profiles]
+                        + [{"value": NEW_PROFILE, "label": "New Profile…"}]},
+                       {"id": "new_profile", "kind": "text", "label": "New profile",
+                        "shown_when": {"id": "profile", "is": [NEW_PROFILE]}},
+                       {"id": "create", "kind": "action", "label": "", "title": "Create Profile",
+                        "shown_when": {"id": "profile", "is": [NEW_PROFILE]}},
+                       footer="A profile has its own logins and cookies."),
+         forms.section({"id": "plain", "kind": "toggle", "label": "Just the background with no tab open",
+                        "value": state["plain"]}),
+         forms.section({"id": "folder", "kind": "action", "label": "", "title": "New Folder"},
+                       {"id": "share", "kind": "action", "label": "", "title": "Share Space…"}, *extras,
+                       {"id": "delete", "kind": "action", "label": "", "title": "Delete Space…"})],
+        [], lambda *_: None, heading="", width=340, height=640, on_change=changed, on_field=act, popover_at=pos,
+        popover_beside=beside, images=symbols)
+    return form
 
 
 class SpaceEditor(QWidget):
@@ -92,9 +185,9 @@ class SpaceEditor(QWidget):
         self.tab_group.button(start).setChecked(True)
         self._show_page(start)
 
-        # Colour
-        colour_row = QHBoxLayout()
-        colour_row.setSpacing(6)
+        # Color
+        color_row = QHBoxLayout()
+        color_row.setSpacing(6)
         self.color_buttons = {}
         for name, color in PALETTE:
             dot = QToolButton()
@@ -104,17 +197,17 @@ class SpaceEditor(QWidget):
             dot.setStyleSheet(f"QToolButton#ColorDot {{ background: {color}; }}")
             dot.clicked.connect(lambda _=False, c=color: self._set_color(c))
             self.color_buttons[color] = dot
-            colour_row.addWidget(dot)
-        colour_row.addStretch(1)
-        colour_header = QHBoxLayout()
-        colour_header.addWidget(self._section("Colour"), 1)
+            color_row.addWidget(dot)
+        color_row.addStretch(1)
+        color_header = QHBoxLayout()
+        color_header.addWidget(self._section("Color"), 1)
         theme_btn = QPushButton("Edit Theme…")
         theme_btn.setObjectName("LinkButton")
         theme_btn.setToolTip("Gradient, intensity, light/dark and grain")
         theme_btn.clicked.connect(self._edit_theme)
-        colour_header.addWidget(theme_btn)
-        layout.addLayout(colour_header)
-        layout.addLayout(colour_row)
+        color_header.addWidget(theme_btn)
+        layout.addLayout(color_header)
+        layout.addLayout(color_row)
 
         # Profile
         layout.addWidget(self._section("Profile  ·  separate logins and cookies"))
@@ -136,7 +229,7 @@ class SpaceEditor(QWidget):
         # The start view (with no tab open): the search and sites, or just the background
         from .start_view import shown_in
         self.plain = QCheckBox("Just the background with no tab open")
-        self.plain.setToolTip("No search, most visited or recently closed tabs in this Space: just its colours. "
+        self.plain.setToolTip("No search, most visited or recently closed tabs in this Space: just its colors. "
                               "Right-clicking the start view does the same.")
         self.plain.setChecked(not shown_in(browser.store, space))
         self.plain.toggled.connect(lambda on: browser.content.empty.set_shown(not on, space))
@@ -189,7 +282,7 @@ class SpaceEditor(QWidget):
             btn.setFixedSize(30, 30)
             btn.setIcon(make_icon(value))
             btn.setIconSize(QSize(20, 20) if value and not is_symbol(value) else QSize(18, 18))
-            btn.setToolTip(value.removeprefix("ph.").replace("-", " ") if value else "No icon (colour dot)")
+            btn.setToolTip(value.removeprefix("ph.").replace("-", " ") if value else "No icon (color dot)")
             btn.clicked.connect(lambda _=False, v=value: self._set_icon(v))
             self.icon_buttons[value] = btn
             grid.addWidget(btn, i // COLUMNS, i % COLUMNS)

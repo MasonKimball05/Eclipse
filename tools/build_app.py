@@ -383,6 +383,9 @@ def build(app: Path, identity="-", notary_profile=None):
     (contents / "Info.plist").write_bytes(plistlib.dumps(info_plist(dev=True)))
     print("Compiling the launcher…")
     compile_launcher(contents / "MacOS" / NAME)
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import build_native
+    build_native.build()  # (the native pages: this app loads them from the checkout, like its code)
     make_icon(contents / "Resources" / "AppIcon.icns", dev=True)
     write_scripting(contents / "Resources")
     sign(app, identity)

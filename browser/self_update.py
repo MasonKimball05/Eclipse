@@ -22,9 +22,9 @@ from pathlib import Path
 
 from PyQt6 import sip
 from PyQt6.QtCore import QObject, QProcess, QTimer, pyqtSignal
-from PyQt6.QtWidgets import QApplication, QMessageBox
+from PyQt6.QtWidgets import QApplication
 
-from . import brand, release_update, storage, verified
+from . import brand, prompts, release_update, storage, verified
 from .features import Feature
 
 REPO = Path(__file__).resolve().parents[1]
@@ -214,21 +214,21 @@ class SelfUpdater(QObject):
             if state == "current":
                 self.browser.toast(f"{brand.NAME} is up to date")
             elif state == "blocked" and "build" in result:  # (a release this account can't replace)
-                QMessageBox.information(self.browser, "Update Available",
-                                        f"{result.get('version', 'A new version')} is ready, but it can't be "
-                                        f"installed: {result['reason']}")
+                prompts.tell(self.browser, "Update Available",
+                             f"{result.get('version', 'A new version')} is ready, but it can't be "
+                             f"installed: {result['reason']}")
             elif state == "blocked":
-                QMessageBox.information(self.browser, "Update Available",
-                                        f"There {'is' if result['behind'] == 1 else 'are'} {result['behind']} new "
-                                        f"commit{'s' if result['behind'] != 1 else ''} on {result['upstream']}, "
-                                        f"but it can't update itself: {result['reason']}\n\nPull it yourself "
-                                        f"(git pull) when you're ready.")
+                prompts.tell(self.browser, "Update Available",
+                             f"There {'is' if result['behind'] == 1 else 'are'} {result['behind']} new "
+                             f"commit{'s' if result['behind'] != 1 else ''} on {result['upstream']}, "
+                             f"but it can't update itself: {result['reason']}\n\nPull it yourself "
+                             f"(git pull) when you're ready.")
             else:
                 self.browser.toast(result.get("reason") or "Couldn't check for updates")
 
     def _offer(self, result):
         """The update window (one at a time). A version you skipped isn't offered again by itself."""
-        from .update_window import SKIP_SETTING, UpdateWindow
+        from .update_window import SKIP_SETTING, window_for
         self._found = result
         if not self._manual and result.get("build") and result.get("build") == self.settings.get(SKIP_SETTING):
             return
@@ -236,7 +236,7 @@ class SelfUpdater(QObject):
             self.window.raise_()
             self.window.activateWindow()
             return
-        self.window = UpdateWindow(self, result, this_version())
+        self.window = window_for(self, result, this_version())
         self.window.show()
         self.window.raise_()
 
@@ -265,10 +265,14 @@ class SelfUpdater(QObject):
         if not ok:
             self._set_status({"state": "failed", "reason": message})
             if self.window is None or sip.isdeleted(self.window):  # (the update window says so itself)
-                QMessageBox.warning(self.browser, "Couldn't Update", message)
+                prompts.tell(self.browser, "Couldn't Update", message, warning=True)
             return
-        if message != "Updated":
-            QMessageBox.information(self.browser, "Updated", message)
+        if message != "Updated":  # (something to read first: Eclipse restarts once it's put away)
+            prompts.tell(self.browser, "Updated", message, on_done=self._restart)
+            return
+        self._restart()
+
+    def _restart(self):
         self.browser.store.save()
         if (bundle := release_bundle()) is not None and self._staged is not None:
             swap = release_update.swap_command(bundle, self._staged, os.getpid())

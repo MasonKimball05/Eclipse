@@ -1,4 +1,4 @@
-# Sync: your Spaces (name, icon, colours, look), their pinned tabs and folders, and your Favorites, the same on
+# Sync: your Spaces (name, icon, colors, look), their pinned tabs and folders, and your Favorites, the same on
 # each Mac (and PC) you turn it on on, through iCloud Drive: no account of Eclipse's, no server. Today's tabs
 # stay on each Mac, as in Arc. Settings → General → Sync.
 #
@@ -189,6 +189,21 @@ def clean_item(key: str, data):
     return None
 
 
+def clean_remote(data) -> dict | None:
+    """Another device's file, each part checked for what it should be (None if it isn't a sync file): one broken
+    part is left out, never stopping every device's sync. (EclipseKit's SyncFile.clean does the same in Swift.)"""
+    if not isinstance(data, dict) or data.get("format") != FORMAT:
+        return None
+    items = {}
+    for key, item in _dict(data.get("items")).items():
+        clean = clean_item(key, item.get("data")) if isinstance(item, dict) else None
+        if clean is not None and isinstance(item.get("modified"), (int, float)):
+            items[key] = {"modified": item["modified"], "data": clean}
+    deleted = {k: v for k, v in _dict(data.get("deleted")).items() if isinstance(v, (int, float))}
+    return {"device": data.get("device"), "name": _text(data.get("name"), 60), "items": items,
+            "deleted": deleted, "written": data.get("written", 0)}
+
+
 def read_remotes(folder: Path, mine: str) -> list[dict]:
     """The other devices' files in the sync folder (not yet downloaded ones are asked for, and read next time)."""
     found = []
@@ -199,17 +214,8 @@ def read_remotes(folder: Path, mine: str) -> list[dict]:
             data = json.loads(path.read_text(encoding="utf-8")) if path.stat().st_size < 20_000_000 else None
         except (OSError, ValueError, RecursionError):  # (RecursionError: nested thousands deep, which json can't read)
             continue
-        if not isinstance(data, dict) or data.get("format") != FORMAT:
-            continue
-        # Each part checked for what it should be: one broken file is skipped, never stopping every device's sync
-        items = {}
-        for key, item in _dict(data.get("items")).items():
-            clean = clean_item(key, item.get("data")) if isinstance(item, dict) else None
-            if clean is not None and isinstance(item.get("modified"), (int, float)):
-                items[key] = {"modified": item["modified"], "data": clean}
-        deleted = {k: v for k, v in _dict(data.get("deleted")).items() if isinstance(v, (int, float))}
-        found.append({"device": data.get("device"), "name": _text(data.get("name"), 60), "items": items,
-                      "deleted": deleted, "written": data.get("written", 0)})
+        if (remote := clean_remote(data)) is not None:
+            found.append(remote)
     if sys.platform == "darwin" and os.path.exists("/usr/bin/brctl"):
         for placeholder in folder.glob(".*.json.icloud") if folder.is_dir() else []:
             subprocess.Popen(["/usr/bin/brctl", "download", str(placeholder)], stdout=subprocess.DEVNULL,

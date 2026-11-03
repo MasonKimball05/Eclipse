@@ -632,7 +632,7 @@ class EaselView(QWidget):
 
     def set_color(self, color):
         self.color = color
-        for item in self.scene.selectedItems():  # recolour what's selected, too
+        for item in self.scene.selectedItems():  # recolor what's selected, too
             kind = item.data(KIND)
             if kind == "text":
                 item.setDefaultTextColor(QColor(color))

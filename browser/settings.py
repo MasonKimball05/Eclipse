@@ -14,7 +14,8 @@ from PyQt6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDialo
                              QPushButton, QScrollArea, QSizePolicy, QStackedWidget, QToolButton, QVBoxLayout,
                              QWidget)
 
-from . import brand, clean_links, dark_pages, macos, passwords, shortcuts, spelling, tab_titles, verified
+from . import (brand, clean_links, dark_pages, macos, passwords, prompts, shortcuts, sidebar_native, spelling,
+               tab_titles, verified)
 from .command_bar import CUSTOM_SETTING, SEARCH_ENGINES, use_custom_sites
 from .downloads import DownloadSettingsForm, find_tool, install_hint
 from .external_links import all_rules as external_rules, set_allowed as set_external
@@ -57,6 +58,9 @@ EXTRA_SHORTCUTS = [
     ("Little Window", "⇧⌘C", "Copy the link"),
     ("Notes", "⌘B  ⌘I  ⌘U", "Bold, italic, underline"),
 ]
+
+
+COMBO_WIDTH = 160
 
 
 def _combo(options, current):
@@ -238,13 +242,17 @@ class SettingsWindow(FadesIn, QWidget):
         label = QLabel(title)
         label.setObjectName("SettingTitle")
         text.addWidget(label)
+        desc = None
         if description:
             desc = QLabel(description)
             desc.setObjectName("Hint")
             desc.setWordWrap(True)
             text.addWidget(desc)
         h.addLayout(text, 1)
+        row.setting = (label, desc, control)  # (what native Settings reads it by: settings_native.py)
         if control is not None:
+            if isinstance(control, QComboBox):
+                control.setMinimumWidth(COMBO_WIDTH)  # (a page's menus line up, whatever their choice says)
             h.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
         return row
 
@@ -260,6 +268,16 @@ class SettingsWindow(FadesIn, QWidget):
     def _setting(self, key, value):
         self.store.settings[key] = value
         self.store.schedule_save()
+
+    def _native_sidebar_switch(self):
+        box = QCheckBox()
+        box.setChecked(bool(self.store.settings.get(sidebar_native.SETTING, True)))
+
+        def toggled(on):
+            self._setting(sidebar_native.SETTING, on)
+            self.browser.sidebar.use_native(on)
+        box.toggled.connect(toggled)
+        return box
 
     def _side_combo(self):
         box = _combo([("left", "On the left"), ("right", "On the right")],
@@ -444,7 +462,7 @@ class SettingsWindow(FadesIn, QWidget):
         space_btn = QPushButton("Edit Space…")
         space_btn.clicked.connect(lambda: (self.browser.bring_to_front(), self.browser.edit_space()))
         theme_btn = QPushButton("Edit Theme…")
-        theme_btn.clicked.connect(lambda: self.browser.edit_space_theme())
+        theme_btn.clicked.connect(lambda: (self.browser.bring_to_front(), self.browser.edit_space_theme()))
         appearance = QWidget()
         h = QHBoxLayout(appearance)
         h.setContentsMargins(0, 0, 0, 0)
@@ -535,9 +553,13 @@ class SettingsWindow(FadesIn, QWidget):
                                                       "Built-in ones: yt, gh, w, r, x, az, so, npm, pypi…",
                                   shortcut_buttons),
                         self.shortcut_list]),
-            self._card([self._row("Look", "Each Space has its own name, icon, colour and theme. "
+            self._card([self._row("Look", "Each Space has its own name, icon, color and theme. "
                                           "Right-click a Space to change it.", appearance),
                         self._row("Sidebar", "Which side of the window the sidebar is on.", self._side_combo()),
+                        *([self._row("Native sidebar", "Your Spaces' tabs drawn by macOS itself: smoother "
+                                     "switching (a swipe follows your fingers, at your display's own rate). Turn it "
+                                     "off for the classic sidebar.", self._native_sidebar_switch())]
+                          if sidebar_native.available() else []),
                         self._row("Dark websites", "Pages that only come in light are darkened (images stay as "
                                                    "they are). Leave a site light from the shield in the address "
                                                    "bar.", self._dark_switch()),
@@ -634,9 +656,9 @@ class SettingsWindow(FadesIn, QWidget):
         ir.setContentsMargins(0, 0, 0, 0)
         ir.addWidget(index_box)
         ir.addWidget(clear_index)
-        from .page_index import excluded_sites_dialog  # (banks, health and mail are on it from the start)
+        from .page_index import excluded_sites_form  # (banks, health and mail are on it from the start)
         excluded_sites = QPushButton("Excluded Sites…")
-        excluded_sites.clicked.connect(lambda: excluded_sites_dialog(self, self.browser))
+        excluded_sites.clicked.connect(lambda: excluded_sites_form(self, self.browser))
         ir.addWidget(excluded_sites)
         cookie_box = QCheckBox()
         cookie_box.setChecked(blocker.reject_cookies)
@@ -897,7 +919,7 @@ class SettingsWindow(FadesIn, QWidget):
             used = ", ".join(spaces) if spaces else "no Spaces"
             if name == DEFAULT_PROFILE:
                 used += " · also Favorites and Little windows"
-            item = QListWidgetItem(f"{label}  ·  used by {used}")
+            item = QListWidgetItem(f"{label} · used by {used}")
             item.setData(Qt.ItemDataRole.UserRole, name)
             self.profile_list.addItem(item)
         self.profile_list.setCurrentRow(0)
@@ -923,7 +945,7 @@ class SettingsWindow(FadesIn, QWidget):
             item.setSizeHint(QSize(width, text.height() + 12))  # (and the item's padding above and below)
             if i < 4:
                 total += text.height() + 12
-        box.setFixedHeight(total + 2 * box.frameWidth() + 8)
+        box.setFixedHeight(total + 2 * box.frameWidth() + 2)
 
     def eventFilter(self, obj, event):
         if obj is getattr(self, "profile_list", None) and event.type() == event.Type.Resize:
@@ -982,6 +1004,26 @@ class SettingsWindow(FadesIn, QWidget):
         self.remove_shortcut.setVisible(bool(entries))
 
     def _add_search_shortcut(self):
+        from . import forms
+
+        def saved(_, values):
+            entry = {"name": str(values.get("name", "")).strip(),
+                     "keyword": str(values.get("keyword", "")).strip().lower().split(" ")[0],
+                     "url": str(values.get("url", "")).strip()}
+            if not entry["keyword"] or "%s" not in entry["url"] or not entry["url"].startswith(("http://", "https://")):
+                return "It needs a keyword and a web address with %s in it."
+            self._keep_search_shortcut(entry)
+            return None
+        form = forms.open_form(
+            self.browser, "Add Search Shortcut",
+            [forms.section({"id": "name", "kind": "text", "label": "Name", "placeholder": "Wikipedia"},
+                           {"id": "keyword", "kind": "text", "label": "Keyword", "placeholder": "wiki"},
+                           {"id": "url", "kind": "text", "label": "Address",
+                            "placeholder": "https://example.com/search?q=%s"},
+                           footer="Search the site once, copy the address, and put %s where your search words were.")],
+            forms.save_buttons(), saved, width=480, height=330, on_page=forms.native_page_of(self))
+        if form is not None:
+            return
         dialog = QDialog(self)
         dialog.setWindowTitle("Add Search Shortcut")
         dialog.setStyleSheet(stylesheet(self.browser.theme))
@@ -1008,8 +1050,11 @@ class SettingsWindow(FadesIn, QWidget):
         entry = {"name": name.text().strip(), "keyword": keyword.text().strip().lower().split(" ")[0],
                  "url": url.text().strip()}
         if not entry["keyword"] or "%s" not in entry["url"] or not entry["url"].startswith(("http://", "https://")):
-            QMessageBox.information(self, "Search Shortcut", "It needs a keyword and a web address with %s in it.")
+            prompts.tell(self, "Search Shortcut", "It needs a keyword and a web address with %s in it.")
             return
+        self._keep_search_shortcut(entry)
+
+    def _keep_search_shortcut(self, entry):
         entries = [e for e in self.store.settings.get(CUSTOM_SETTING, []) if e["keyword"] != entry["keyword"]]
         self.store.settings[CUSTOM_SETTING] = entries + [entry]
         self.store.schedule_save()
@@ -1026,28 +1071,27 @@ class SettingsWindow(FadesIn, QWidget):
             self._fill_search_shortcuts()
 
     def _clear_history(self):
-        answer = QMessageBox.question(self, "Clear History", f"Delete all {len(self.store.history):,} history "
-                                                             "entries? Tabs, Spaces and the archive are kept.")
-        if answer == QMessageBox.StandardButton.Yes:
+        def clear():
             self.store.history = []
             self.store.schedule_save()
             self.browser.page_index.clear()  # what you read goes with where you went
             self.browser.emit("history_cleared")
+        prompts.confirm(self, "Clear History", f"Delete all {len(self.store.history):,} history entries? Tabs, "
+                        "Spaces and the archive are kept.", clear, action="Clear History", destructive=True)
 
     def _clear_profile(self):
         item = self.profile_list.currentItem()
         if item is None:
             return
         name = item.data(Qt.ItemDataRole.UserRole)
-        answer = QMessageBox.question(self, "Clear Cookies & Site Data",
-                                      f"Sign out of every site in the “{name}” profile and delete its cookies, "
-                                      "cache and site data?")
-        if answer == QMessageBox.StandardButton.Yes:
+        def clear():
             profile = self.browser.profile_named(name)
             profile.cookieStore().deleteAllCookies()
             profile.clearHttpCache()
             profile.clearAllVisitedLinks()
             self.browser.toast(f"Cleared the “{name}” profile")
+        prompts.confirm(self, "Clear Cookies & Site Data", f"Sign out of every site in the “{name}” profile and "
+                        "delete its cookies, cache and site data?", clear, action="Clear", destructive=True)
 
     def _fill_shortcuts(self, *_):
         while self.shortcut_layout.count():
@@ -1113,17 +1157,21 @@ class SettingsWindow(FadesIn, QWidget):
         name = action.text().replace("&", "")
         why = shortcuts.problem(keys)
         if why:
-            QMessageBox.information(self, "Keyboard Shortcut", f"{why} Pick another one for {name}.")
+            prompts.tell(self, "Keyboard Shortcut", f"{why} Pick another one for {name}.")
             return
-        mine = self.store.settings.get(shortcuts.SETTING, {})
         taken = shortcuts.user_of(self.browser.menuBar(), keys, skip=key)
-        if taken is not None:
-            other_key, other = taken
-            answer = QMessageBox.question(
-                self, "Keyboard Shortcut", f"{shortcuts.native(keys)} is the shortcut for {other}. Use it for "
-                f"{name} instead? ({other} will have none.)")
-            if answer != QMessageBox.StandardButton.Yes:
-                return
+        if taken is None:
+            self._use_shortcut(key, action, keys)
+            return
+        other_key, other = taken
+        prompts.confirm(self, "Keyboard Shortcut", f"{shortcuts.native(keys)} is the shortcut for {other}. Use it "
+                        f"for {name} instead? ({other} will have none.)",
+                        lambda: self._use_shortcut(key, action, keys, other_key), action="Use It")
+
+    def _use_shortcut(self, key, action, keys, other_key=None):
+        name = action.text().replace("&", "")
+        mine = self.store.settings.get(shortcuts.SETTING, {})
+        if other_key is not None:
             other_action = next(a for k, _g, _n, a in shortcuts.menu_items(self.browser.menuBar()) if k == other_key)
             mine = shortcuts.changed(mine, other_key, "", shortcuts.default_of(other_action))
         mine = shortcuts.changed(mine, key, keys, shortcuts.default_of(action))
@@ -1133,10 +1181,9 @@ class SettingsWindow(FadesIn, QWidget):
     def _reset_shortcuts(self, keys=None):
         mine = self.store.settings.get(shortcuts.SETTING, {})
         if keys is None:
-            if QMessageBox.question(self, "Restore Defaults", f"Put back {brand.NAME}'s own shortcuts for "
-                                    f"the {len(mine)} you've changed?") != QMessageBox.StandardButton.Yes:
-                return
-            mine = {}
+            prompts.confirm(self, "Restore Defaults", f"Put back {brand.NAME}'s own shortcuts for the {len(mine)} "
+                            "you've changed?", lambda: self._save_shortcuts({}), action="Restore Defaults")
+            return
         else:
             mine = {k: v for k, v in mine.items() if k not in keys}
         self._save_shortcuts(mine)
@@ -1162,28 +1209,31 @@ class SettingsWindow(FadesIn, QWidget):
             return
         from . import sync as module
         if on and module.sync_folder() is None:
-            QMessageBox.information(self, "Sync", "Sync goes through iCloud Drive, which isn't on. Turn it on in "
-                                    "System Settings → your name → iCloud → iCloud Drive, then try again.")
+            prompts.tell(self, "Sync", "Sync goes through iCloud Drive, which isn't on. Turn it on in "
+                         "System Settings → your name → iCloud → iCloud Drive, then try again.")
             self.sync_box.setChecked(False)
             return
         if on:
             first = feature.sync.first_look()
             if first is not None:
-                box = QMessageBox(QMessageBox.Icon.Question, "Sync",
-                                  f"{first['name']} already syncs its Spaces: {', '.join(first['spaces'][:6])}.",
-                                  parent=self)
-                box.setTextFormat(Qt.TextFormat.PlainText)
-                box.setInformativeText("Use its Spaces here (yours are kept in a backup), or keep both sets?")
-                theirs = box.addButton(f"Use {first['name']}'s", QMessageBox.ButtonRole.AcceptRole)
-                both = box.addButton("Keep Both", QMessageBox.ButtonRole.AcceptRole)
-                box.addButton(QMessageBox.StandardButton.Cancel)
-                box.setDefaultButton(both)
-                box.exec()
-                if box.clickedButton() not in (theirs, both):
-                    self.sync_box.setChecked(False)
-                    return
-                if box.clickedButton() is theirs:
-                    feature.sync.adopt()
+                self.sync_box.blockSignals(True)
+                self.sync_box.setChecked(False)  # (until it's answered)
+                self.sync_box.blockSignals(False)
+
+                def chosen(index):
+                    if index == 1:
+                        feature.sync.adopt()
+                    self.sync_box.blockSignals(True)
+                    self.sync_box.setChecked(True)
+                    self.sync_box.blockSignals(False)
+                    self._sync_on(feature, True)
+                prompts.choose(self, "Sync", f"{first['name']} already syncs its Spaces: "
+                               f"{', '.join(first['spaces'][:6])}.", ["Keep Both", f"Use {first['name']}'s"], chosen,
+                               detail="Use its Spaces here (yours are kept in a backup), or keep both sets?")
+                return
+        self._sync_on(feature, on)
+
+    def _sync_on(self, feature, on):
         self._setting("sync", on)
         feature.sync.refresh_setting()
         if on:

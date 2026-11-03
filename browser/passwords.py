@@ -26,7 +26,7 @@ from PyQt6.QtCore import QObject, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtWebEngineCore import QWebEngineScript
 from PyQt6.QtWidgets import QPushButton
 
-from . import macos, net, password_store, passkey_store, recovery
+from . import macos, net, password_store, passkey_store, prompts, recovery
 from .passkeys import PageCard, _Answer, _escape, _gone
 from .theme import MONO_CSS
 from .webview import PASSWORD_CALL
@@ -589,14 +589,86 @@ def _make_pin_dialog(parent, title, text, note, twice):
     return dialog, fields[0]
 
 
-def _pin_dialog(parent, title, text, twice, note=""):
-    """Asks for the recovery PIN (twice, for a new one). The PIN, or None if cancelled."""
+def _pin_dialog(parent, browser, title, text, twice, on_pin, note=""):
+    """Asks for the recovery PIN (twice, for a new one): on_pin(pin) once it's given (not if cancelled). A native
+    sheet where it can be (forms.py), else Qt's dialog."""
+    from . import forms
+
+    def given(_, values):
+        pin = values.get("pin", "")
+        wrong = recovery.pin_problem(pin) if twice else ("" if pin else "Enter your recovery PIN.")
+        if not wrong and twice and values.get("again", "") != pin:
+            wrong = "The two PINs don't match."
+        if wrong:
+            return wrong
+        on_pin(pin)
+        return None
+    sections = [forms.section({"kind": "hint", "text": text},
+                              {"id": "pin", "kind": "secret", "label": "Recovery PIN"},
+                              {"id": "again", "kind": "secret", "label": "The same PIN again"} if twice else None,
+                              footer=note)]
+    form = forms.open_form(browser, title, sections, [{"id": "cancel", "label": "Cancel", "role": "cancel"},
+                                                      {"id": "ok", "label": "OK", "role": "default"}],
+                           given, width=460, height=320 if twice else 260, on_page=forms.native_page_of(parent))
+    if form is not None:
+        return form
     dialog, field = _make_pin_dialog(parent, title, text, note, twice)
-    return field.text() if dialog.exec() else None
+    if dialog.exec():
+        on_pin(field.text())
+    return None
 
 
-def _login_dialog(parent, login=None):
-    """Add a login by hand, or change one: {url, username, password}, or None if cancelled."""
+def login_from(values: dict) -> tuple[dict | None, str]:
+    """A login from the native form's values: ({url, username, password, otp}, "") or (None, what's wrong)."""
+    address = str(values.get("url", "")).strip()
+    if address and "://" not in address:
+        address = "https://" + address
+    password, code = str(values.get("password", "")), str(values.get("otp", "")).strip()
+    wrong = ("Enter the website's address." if not QUrl(address).host() else
+             "Enter the password." if not password else
+             "That isn't a setup key (it's letters A–Z and digits 2–7, or an otpauth:// link)."
+             if code and not password_store.otp_link(code) else "")
+    if wrong:
+        return None, wrong
+    return {"url": address, "username": str(values.get("username", "")).strip(), "password": password,
+            "otp": password_store.otp_link(code) or ""}, ""
+
+
+def _login_dialog(parent, browser, on_done, login=None):
+    """Add a login by hand, or change one: on_done({url, username, password, otp}) once it's saved. A native sheet
+    where it can be (forms.py), else Qt's dialog."""
+    from . import forms
+
+    def saved(_, values):
+        made, wrong = login_from(values)
+        if made is None:
+            return wrong
+        on_done(made)
+        return None
+    sections = [forms.section(
+        {"id": "url", "kind": "text", "label": "Website", "value": login["origin"] if login else "",
+         "placeholder": "https://example.com"},
+        {"id": "username", "kind": "text", "label": "Username", "value": login["username"] if login else ""},
+        {"id": "password", "kind": "secret", "label": "Password", "value": login["password"] if login else "",
+         "shown_by": "show"},
+        {"id": "show", "kind": "toggle", "label": "Show password", "value": False},
+        {"id": "suggest", "kind": "action", "label": "", "title": "Suggest a Strong One"}),
+        forms.section({"id": "otp", "kind": "text", "label": "Verification codes",
+                       "value": login.get("otp", "") if login else "",
+                       "placeholder": "Optional: the setup key under the site's QR code"})]
+    form = forms.open_form(browser, "Edit Password" if login else "Add Password", sections, forms.save_buttons(), saved,
+                           width=500, height=420, on_page=forms.native_page_of(parent),
+                           on_field=lambda f, _id, _v: f.set({"password": strong_password(), "show": True}))
+    if form is not None:
+        return form
+    made = _qt_login_dialog(parent, login)
+    if made is not None:
+        on_done(made)
+    return None
+
+
+def _qt_login_dialog(parent, login=None):
+    """Add a login by hand, or change one (Qt's dialog): {url, username, password}, or None if cancelled."""
     from PyQt6.QtWidgets import QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QLayout, QLineEdit, QVBoxLayout
     dialog = QDialog(parent)
     dialog.setWindowTitle("Edit Password" if login else "Add Password")
@@ -656,7 +728,7 @@ def _login_dialog(parent, login=None):
 def settings_page(settings):
     """Passwords & Passkeys: the recovery PIN, importing, your passwords (after Touch ID), and your passkeys."""
     from PyQt6.QtCore import QFile
-    from PyQt6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QHBoxLayout, QLineEdit, QMenu, QMessageBox,
+    from PyQt6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QHBoxLayout, QLineEdit, QMenu,
                                  QVBoxLayout, QWidget)
     from .settings import _combo
     browser = settings.browser
@@ -673,61 +745,61 @@ def settings_page(settings):
             QApplication.restoreOverrideCursor()
 
     def set_pin():
-        pin = _pin_dialog(settings, "Change Recovery PIN" if recovery.is_set() else "Set a Recovery PIN",
-                          "With a recovery PIN, a locked copy of your passwords and passkeys goes into your backups, "
-                          "so you can get them back on another Mac or after reinstalling.", twice=True,
-                          note=f"At least {recovery.MIN_PIN} characters. Keep it somewhere safe: nobody, not even "
-                               f"Eclipse's maker, can open that copy without it.")
-        if pin is not None:
+        def chosen(pin):
             browser.toast("Recovery PIN set" if busy(lambda: recovery.set_pin(pin))
                           else "Couldn't keep the recovery PIN in the Keychain")
             fill()
+        _pin_dialog(settings, browser, "Change Recovery PIN" if recovery.is_set() else "Set a Recovery PIN",
+                    "With a recovery PIN, a locked copy of your passwords and passkeys goes into your backups, "
+                    "so you can get them back on another Mac or after reinstalling.", True, chosen,
+                    note=f"At least {recovery.MIN_PIN} characters. Keep it somewhere safe: nobody, not even "
+                         f"Eclipse's maker, can open that copy without it.")
 
     def recover():
-        pin = _pin_dialog(settings, "Recover Passwords and Passkeys",
-                          "Enter the recovery PIN you set on your other Mac.", twice=False)
-        if pin is None:
-            return
-        brought = busy(lambda: recovery.unlock(pin))
-        if brought is None:
-            QMessageBox.warning(settings, "Recover", "That isn't the recovery PIN these were saved with.")
-        else:
-            browser.toast(f"Brought back {brought} password{'' if brought == 1 else 's'} and passkey"
-                          f"{'' if brought == 1 else 's'}" if brought else "Everything's already here")
-        fill()
+        def given(pin):
+            brought = busy(lambda: recovery.unlock(pin))
+            if brought is None:
+                prompts.tell(settings, "Recover", "That isn't the recovery PIN these were saved with.", warning=True)
+            else:
+                browser.toast(f"Brought back {brought} password{'' if brought == 1 else 's'} and passkey"
+                              f"{'' if brought == 1 else 's'}" if brought else "Everything's already here")
+            fill()
+        _pin_dialog(settings, browser, "Recover Passwords and Passkeys",
+                    "Enter the recovery PIN you set on your other Mac.", False, given)
 
     def imported(rows, source):
         try:
             added, changed, same = password_store.import_rows(rows, source)
         except password_store.Locked:
-            QMessageBox.warning(settings, "Import", "Your saved passwords need your recovery PIN first.")
+            prompts.tell(settings, "Import", "Your saved passwords need your recovery PIN first.", warning=True)
             return False
-        QMessageBox.information(settings, "Import", f"From {source}: {added} new, {changed} updated"
-                                                   f"{f', {same} you had already' if same else ''}.")
+        prompts.tell(settings, "Import", f"From {source}: {added} new, {changed} updated"
+                                         f"{f', {same} you had already' if same else ''}.")
         fill()
         return True
 
     def from_browser(name):
         title = f"Import from {name}"
-        if QMessageBox.question(settings, title,
-                                f"macOS will ask whether Eclipse may use {name}'s key for its saved passwords. Click "
-                                f"Allow (not Always Allow) to bring them over.") != QMessageBox.StandardButton.Yes:
-            return
-        finished = _Done(page)
 
-        def got(secret):
-            if secret is None:
-                QMessageBox.warning(settings, title, f"{name}'s passwords couldn't be opened (macOS wasn't allowed "
-                                                     f"to share {name}'s key).")
-                return
-            try:
-                rows = busy(lambda: password_store.read_browser(name, secret))
-            except (OSError, sqlite3.Error) as error:
-                QMessageBox.warning(settings, title, f"Couldn't read {name}'s passwords: {error}")
-                return
-            imported(rows, name)
-        finished.done.connect(got)
-        threading.Thread(target=lambda: finished.done.emit(password_store.browser_secret(name)), daemon=True).start()
+        def go():
+            finished = _Done(page)
+
+            def got(secret):
+                if secret is None:
+                    prompts.tell(settings, title, f"{name}'s passwords couldn't be opened (macOS wasn't allowed "
+                                                  f"to share {name}'s key).", warning=True)
+                    return
+                try:
+                    rows = busy(lambda: password_store.read_browser(name, secret))
+                except (OSError, sqlite3.Error) as error:
+                    prompts.tell(settings, title, f"Couldn't read {name}'s passwords: {error}", warning=True)
+                    return
+                imported(rows, name)
+            finished.done.connect(got)
+            threading.Thread(target=lambda: finished.done.emit(password_store.browser_secret(name)),
+                             daemon=True).start()
+        prompts.confirm(settings, title, f"macOS will ask whether Eclipse may use {name}'s key for its saved "
+                        f"passwords. Click Allow (not Always Allow) to bring them over.", go, action="Continue")
 
     def from_file():
         path, _ = QFileDialog.getOpenFileName(settings, "Import Passwords", "", "Passwords export (*.csv)")
@@ -737,21 +809,19 @@ def settings_page(settings):
             with open(path, encoding="utf-8-sig") as f:
                 rows = password_store.parse_csv(f.read())
         except (OSError, ValueError, UnicodeDecodeError) as error:
-            QMessageBox.warning(settings, "Import Passwords", str(error))
+            prompts.tell(settings, "Import Passwords", str(error), warning=True)
             return
-        if imported(rows, "a file") and QMessageBox.question(
-                settings, "Import Passwords", "That file holds every password in it as plain text. Move it to the "
-                                              "Trash?") == QMessageBox.StandardButton.Yes:
-            QFile.moveToTrash(path)
+        if imported(rows, "a file"):
+            prompts.confirm(settings, "Import Passwords", "That file holds every password in it as plain text. Move "
+                            "it to the Trash?", lambda: QFile.moveToTrash(path), action="Move to Trash")
 
     def export():
         def chosen():
-            if QMessageBox.warning(
-                    settings, "Export Passwords", "The file will hold every saved password as plain text: anyone who "
-                    "gets it can read them. Delete it once you've imported it where you're taking them.",
-                    QMessageBox.StandardButton.Cancel | QMessageBox.StandardButton.Save,
-                    QMessageBox.StandardButton.Cancel) != QMessageBox.StandardButton.Save:
-                return
+            prompts.confirm(settings, "Export Passwords", "The file will hold every saved password as plain text: "
+                            "anyone who gets it can read them. Delete it once you've imported it where you're taking "
+                            "them.", save, action="Export…")
+
+        def save():
             path, _ = QFileDialog.getSaveFileName(settings, "Export Passwords",
                                                   # (not Documents: often synced to iCloud, in plain text)
                                                   str(Path.home() / "Downloads" / "Eclipse Passwords.csv"),
@@ -762,7 +832,8 @@ def settings_page(settings):
                 entries = password_store.logins()
                 password_store.write_export(path, entries)
             except (password_store.Locked, OSError) as error:
-                QMessageBox.warning(settings, "Export Passwords", str(error) or "Your saved passwords are locked.")
+                prompts.tell(settings, "Export Passwords", str(error) or "Your saved passwords are locked.",
+                             warning=True)
                 return
             browser.toast(f"Exported {len(entries)} password{'' if len(entries) == 1 else 's'}")
         answer = page._checking = _Answer(page)
@@ -775,8 +846,8 @@ def settings_page(settings):
     def check_breaches():
         def checked(found):
             if isinstance(found, Exception):
-                QMessageBox.warning(settings, "Breached Passwords",
-                                    f"Couldn't reach Have I Been Pwned: {net.describe(found)}.")
+                prompts.tell(settings, "Breached Passwords", f"Couldn't reach Have I Been Pwned: "
+                             f"{net.describe(found)}.", warning=True)
                 return
             entries = password_store.logins()
             state["breaches"] = {password_store.breach_key(p): n for p, n in found.items()}
@@ -836,37 +907,40 @@ def settings_page(settings):
         QTimer.singleShot(60_000, lambda: clipboard.text() == code and clipboard.clear())
 
     def add_login():
-        made = _login_dialog(settings)
-        if made is not None:
+        def made(login):
             try:
-                saved = password_store.add(made["url"], made["username"], made["password"], source="Eclipse")
-                if made["otp"]:
-                    password_store.update(saved["id"], otp=made["otp"])
+                saved = password_store.add(login["url"], login["username"], login["password"], source="Eclipse")
+                if login["otp"]:
+                    password_store.update(saved["id"], otp=login["otp"])
             except (password_store.Locked, OSError) as error:
-                QMessageBox.warning(settings, "Add Password", "Your saved passwords need your recovery PIN first."
-                                    if isinstance(error, password_store.Locked) else str(error))
+                prompts.tell(settings, "Add Password", "Your saved passwords need your recovery PIN first."
+                             if isinstance(error, password_store.Locked) else str(error), warning=True)
             fill()
+        _login_dialog(settings, browser, made)
 
     def edit_login(login):
-        changed = _login_dialog(settings, login)
-        if changed is not None:
-            password_store.update(login["id"], **changed)
+        def changed(new):
+            password_store.update(login["id"], **new)
             fill()
+        _login_dialog(settings, browser, changed, login)
 
     def remove_login(login):
-        if QMessageBox.question(settings, "Remove Password",
-                                f"Remove your saved password for {password_store.site_of(login['origin'])} "
-                                f"({login['username'] or 'no username'})?") == QMessageBox.StandardButton.Yes:
+        def gone():
             password_store.delete(login["id"])
             fill()
+        prompts.confirm(settings, "Remove Password", f"Remove your saved password for "
+                        f"{password_store.site_of(login['origin'])} ({login['username'] or 'no username'})?", gone,
+                        action="Remove", destructive=True)
 
     def remove_passkey(passkey):
         site = passkey["rp_id"]
-        if QMessageBox.question(settings, "Remove Passkey",
-                                f"Remove your passkey for {site} ({passkey.get('user_name') or 'your account'})? "
-                                f"You'll need another way to sign in to {site}.") == QMessageBox.StandardButton.Yes:
+
+        def gone():
             passkey_store.delete(passkey["id"])
             fill()
+        prompts.confirm(settings, "Remove Passkey", f"Remove your passkey for {site} "
+                        f"({passkey.get('user_name') or 'your account'})? You'll need another way to sign in to "
+                        f"{site}.", gone, action="Remove", destructive=True)
 
     def setting(key, value):
         browser.store.settings[key] = value

@@ -81,7 +81,7 @@ class ChatEdge(QWidget):
 
 
 class ChatWindow(QWidget):
-    """The panel popped out: a small window of its own, on the Space's colours."""
+    """The panel popped out: a small window of its own, on the Space's colors."""
 
     def __init__(self, chat):
         super().__init__(chat.browser, Qt.WindowType.Window)  # (it closes with its browser window)
@@ -134,7 +134,7 @@ class PageChat(QFrame):
         self._asking_tab = None
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(2, 4, 2, 0)  # (it's on the window's colours: the gap round the page is its margin)
+        layout.setContentsMargins(2, 4, 2, 0)  # (it's on the window's colors: the gap round the page is its margin)
         layout.setSpacing(8)
         top = QHBoxLayout()
         top.setSpacing(4)
@@ -188,7 +188,7 @@ class PageChat(QFrame):
         self.restyle()
 
     def restyle(self):
-        """The Space's colours changed (or it moved): the buttons' icons and its edge follow."""
+        """The Space's colors changed (or it moved): the buttons' icons and its edge follow."""
         on_top = self.browser.store.settings.get(ON_TOP_SETTING, True)
         icons = ((self.new_btn, "ph.arrow-counter-clockwise"), (self.close_btn, "ph.x"),
                  (self.pop_btn, "ph.arrow-square-in" if self.popped else "ph.arrow-square-out"),
@@ -431,7 +431,7 @@ class PageChat(QFrame):
 
 
 class PageChatFeature(Feature):
-    """Ask About This Page (⇧⌘A): beside the page on the window's own colours, like a second sidebar (on the
+    """Ask About This Page (⇧⌘A): beside the page on the window's own colors, like a second sidebar (on the
     far side from the first), or popped out into a window of its own."""
     name = "page_chat"
     chat = None

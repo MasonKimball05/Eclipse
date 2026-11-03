@@ -1,6 +1,7 @@
 # Up Next: your next event today, from Daybook, in a small card at the bottom of the sidebar, the
 # way Arc showed your next meeting. A meeting link in the event (Zoom, Meet, Teams, Webex, or any
-# address) gets a Join button that opens it here; click the card for Daybook itself.
+# address) gets a Join button that opens it here; click the card for Daybook itself. Right-click it to join, copy
+# the link, open Daybook, say an event's done (the next one shows) or hide the card for the rest of the day.
 #
 # Daybook writes ~/Library/Application Support/Daybook/hop.json on every refresh (for Hop, the
 # launcher); this only reads it.
@@ -22,6 +23,8 @@ import qtawesome as qta
 
 FEED = Path.home() / "Library" / "Application Support" / "Daybook" / "hop.json"
 SETTING = "up_next"
+HIDDEN = "up_next_hidden"  # [event keys] said to be done: skipped (today's only are kept)
+QUIET = "up_next_quiet"    # a date (ISO): hidden for the rest of that day
 POLL_MS = 30_000
 SOON_MINUTES = 15
 MEETING = re.compile(r"https?://[^\s<>\"]*(?:zoom\.us|meet\.google\.com|teams\.microsoft\.com|teams\.live\.com|"
@@ -36,19 +39,26 @@ def _time(value: str) -> datetime.datetime | None:
         return None
 
 
-def next_event(feed: dict, now: datetime.datetime) -> dict | None:
-    """The timed event on now, or the next one today: {title, start, end, place, link, live}."""
+def event_key(title: str, start: datetime.datetime) -> str:
+    return f"{start.isoformat()}|{title}"
+
+
+def next_event(feed: dict, now: datetime.datetime, hidden=frozenset()) -> dict | None:
+    """The timed event on now, or the next one today, leaving out ones said to be done (`hidden`, by event_key):
+    {title, start, end, place, link, live, key}."""
     for event in feed.get("today") or []:
         if event.get("allDay"):
             continue
         start, end = _time(event.get("start", "")), _time(event.get("end", ""))
         if start is None or end is None or end <= now:
             continue
+        if event_key(event.get("title") or "Event", start) in hidden:
+            continue
         place = event.get("place") or ""
         found = MEETING.search(place) or MEETING.search(event.get("title", "")) or ANY_LINK.search(place)
         return {"title": event.get("title") or "Event", "start": start, "end": end, "place": place,
                 "calendar": event.get("calendar", ""), "link": found.group(0).rstrip(".,)") if found else "",
-                "live": start <= now}
+                "live": start <= now, "key": event_key(event.get("title") or "Event", start)}
     return None
 
 
@@ -104,14 +114,14 @@ class UpNextCard(QFrame):
         self.hide()
 
     def set_event(self, event, when, soon, theme):
-        # On now, or starting soon: in the Space's colour, so it catches your eye
+        # On now, or starting soon: in the Space's color, so it catches your eye
         color = theme.accent if event["live"] or soon else theme.text
         self.icon.setPixmap(qta.icon("ph.broadcast" if event["live"] else "ph.calendar-blank",
                                      color=color).pixmap(18, 18))
         self._full = (event["title"], when)
         self.join.setVisible(bool(event["link"]))
         self.setToolTip("\n".join(x for x in (event["title"], when, event["calendar"], event["place"]) if x)
-                        + "\nClick for Daybook")
+                        + "\nClick for Daybook; right-click for more")
         self._elide()
         self.show()
 
@@ -128,6 +138,9 @@ class UpNextCard(QFrame):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.controller.open_daybook()
+
+    def contextMenuEvent(self, event):
+        self.controller.show_menu(event.globalPos())
 
 
 class UpNext(QObject):
@@ -148,9 +161,11 @@ class UpNext(QObject):
     def refresh(self):
         if self.card is None:
             return
-        feed = read_feed(self.path) if self.enabled else None
         now = datetime.datetime.now().astimezone()
-        self.event = next_event(feed, now) if feed else None
+        settings = self.browser.store.settings
+        quiet = settings.get(QUIET) == now.date().isoformat()
+        feed = read_feed(self.path) if self.enabled and not quiet else None
+        self.event = next_event(feed, now, frozenset(settings.get(HIDDEN, []))) if feed else None
         if self.event is None:
             self._in_or_out(False, self.card.hide)
             return
@@ -173,6 +188,53 @@ class UpNext(QObject):
     def open_daybook(self):
         from PyQt6.QtGui import QDesktopServices
         QDesktopServices.openUrl(QUrl("daybook://show"))
+
+    # --- Its right-click menu --------------------------------------------------------------------------
+
+    def menu_actions(self) -> list:
+        """[(icon, text, slot)] for the card's menu (None: a separator)."""
+        if self.event is None:
+            return []
+        link = self.event["link"]
+        return [*([("ph.video-camera", "Join Meeting", self.join),
+                   ("ph.link", "Copy Meeting Link", self.copy_link)] if link else []),
+                ("ph.calendar-blank", "Open in Daybook", self.open_daybook),
+                None,
+                ("ph.check-circle", "Done, Show the Next One", self.done),
+                ("ph.eye-slash", "Hide for the Rest of Today", self.quiet_today)]
+
+    def show_menu(self, pos):
+        b = self.browser
+        menu = b._menu()
+        for item in self.menu_actions():
+            if item is None:
+                menu.addSeparator()
+            else:
+                b._act(menu, *item)
+        if not menu.isEmpty():
+            menu.exec(pos)
+
+    def copy_link(self):
+        if self.event and self.event["link"]:
+            from PyQt6.QtWidgets import QApplication
+            QApplication.clipboard().setText(self.event["link"])
+            self.browser.toast("Meeting link copied")
+
+    def done(self):
+        """This event's over (or you're not going): the next one shows. Only today's are remembered."""
+        if self.event is None:
+            return
+        settings, today = self.browser.store.settings, datetime.date.today().isoformat()
+        kept = [k for k in settings.get(HIDDEN, []) if k[:10] >= today]
+        settings[HIDDEN] = [*kept, self.event["key"]]
+        self.browser.store.schedule_save()
+        self.refresh()
+
+    def quiet_today(self):
+        self.browser.store.settings[QUIET] = datetime.date.today().isoformat()
+        self.browser.store.schedule_save()
+        self.browser.toast("Up Next is hidden until tomorrow")
+        self.refresh()
 
 
 class UpNextFeature(Feature):

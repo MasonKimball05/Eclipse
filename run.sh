@@ -14,6 +14,8 @@
 #   ./run.sh --tests       run the unit tests
 #   ./run.sh --live-tests  run the live tests too, in three groups at once (browser windows open behind yours, ~2 min)
 #   ./run.sh --core        run without the features (browser/features.py): the plain browser
+#   ./run.sh --ios         build Eclipse for iPhone (native/EclipseApp) and open it in the Simulator, reading
+#                          this Mac's Eclipse Sync folder (or ECLIPSE_SYNC_DIR; ECLIPSE_SIMULATOR picks the device)
 #   ./run.sh <url>     open a link (in the already-running browser, if there is one)
 
 set -e
@@ -31,6 +33,7 @@ fi
 PYTHON="${PYTHON:-python3}"
 BUILD_APP=0
 RELEASE=0
+IOS=0
 TESTS=""
 PASS=()
 
@@ -58,11 +61,32 @@ for arg in "$@"; do
     --core)
       export ECLIPSE_CORE_ONLY=1
       ;;
+    --ios)
+      IOS=1
+      ;;
     *)
       PASS+=("$arg")
       ;;
   esac
 done
+
+if (( IOS )); then
+  # The iPhone app needs only Xcode (and XcodeGen, for its project): no Python
+  command -v xcodegen >/dev/null || { echo "Needs XcodeGen: brew install xcodegen" >&2; exit 1; }
+  APP_DIR="$SCRIPT_DIR/native/EclipseApp"
+  (cd "$APP_DIR" && xcodegen -q)
+  DEVICE="${ECLIPSE_SIMULATOR:-$(xcrun simctl list devices available | grep -m1 -oE 'iPhone[^(]*' | sed 's/ *$//')}"
+  echo "Building Eclipse for iPhone ($DEVICE) …"
+  xcodebuild -project "$APP_DIR/EclipseApp.xcodeproj" -scheme Eclipse -destination "platform=iOS Simulator,name=$DEVICE" \
+    -derivedDataPath "$APP_DIR/build" -quiet build
+  xcrun simctl boot "$DEVICE" 2>/dev/null || true
+  pgrep -xq Simulator || open -b com.apple.iphonesimulator 2>/dev/null || true  # (its window, where Xcode has one)
+  xcrun simctl install "$DEVICE" "$APP_DIR/build/Build/Products/Debug-iphonesimulator/Eclipse.app"
+  # (the Simulator's apps can read this Mac's files: it opens with your own Spaces, read-only)
+  SYNC="${ECLIPSE_SYNC_DIR:-$HOME/Library/Mobile Documents/com~apple~CloudDocs/Eclipse Sync}"
+  [[ -d "$SYNC" ]] && export SIMCTL_CHILD_ECLIPSE_SYNC_DIR="$SYNC"
+  exec xcrun simctl launch --terminate-running-process "$DEVICE" com.masonkimball.eclipse.mobile
+fi
 
 if [[ ! -x "$VENV/bin/python" ]]; then
   echo "Setting up virtualenv in $VENV …"
@@ -78,8 +102,14 @@ if [[ "$(cat "$VENV/.requirements-hash" 2>/dev/null)" != "$REQ_HASH" ]]; then
 fi
 
 cd "$SCRIPT_DIR"
+# The native pages (Swift), when a source changed: quiet otherwise, and Qt's pages if they can't be built
+"$VENV/bin/python" tools/build_native.py >&2 || true
 if [[ -n "$TESTS" ]]; then
   "$VENV/bin/python" -m pip install --quiet --disable-pip-version-check -r requirements-dev.txt
+  # EclipseKit (Swift: Sync's format, as sync.py has it) where Xcode's tools are: its own tests, then the Python ones
+  if command -v swift >/dev/null; then
+    (cd native/EclipseKit && set -o pipefail && swift test -q 2>&1 | tail -3) || exit 1
+  fi
   if [[ "$TESTS" == "live" ]]; then
     "$VENV/bin/python" -m pytest tests -q
     exec "$VENV/bin/python" tools/live_tests.py

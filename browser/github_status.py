@@ -68,7 +68,7 @@ def checks(data: dict) -> list[tuple[str, str, str]]:
 
 
 def summarize(data: dict) -> tuple[str, str, str]:
-    """(chip text, its colour: pass/fail/running/merged/closed/draft/none, a tooltip) for a PR."""
+    """(chip text, its color: pass/fail/running/merged/closed/draft/none, a tooltip) for a PR."""
     state = (data.get("state") or "").upper()
     if state == "MERGED":
         return "Merged", "merged", "This pull request has been merged"

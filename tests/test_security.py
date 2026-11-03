@@ -54,21 +54,22 @@ def test_an_extensions_own_files_are_never_exposed_to_websites():
     assert old.web_accessible("a.png", "https://anywhere.example") and not old.web_accessible("a.js")
 
 
-def test_googles_sign_in_alone_is_told_its_firefox():
-    from browser import site_quirks
-    assert "Firefox" in site_quirks.user_agent_for("accounts.google.com")
-    assert site_quirks.user_agent_for("ACCOUNTS.youtube.com") == site_quirks.FIREFOX_UA
-    for host in ("docs.google.com", "mail.google.com", "evil.com", "accounts.google.com.evil.com", ""):
-        assert site_quirks.user_agent_for(host) is None
-    assert '"accounts.google.com"' in site_quirks.script_source()
-
-
-def test_the_request_filter_sends_googles_sign_in_the_firefox_header(qapp, data_dir):
-    from PyQt6.QtCore import QUrl
-    from browser import site_quirks
+def test_googles_sign_in_alone_sees_the_engine_as_it_is(qapp, data_dir):
+    # (it refuses an engine inside an app when what the browser says about itself doesn't hang together:
+    # "This browser or app may not be secure"; Chromium's client hints always say Chromium)
+    from PyQt6.QtCore import QObject, QUrl
+    from browser import site_quirks, storage
     from browser.adblock import AdBlocker
     from browser.models import Store
-    from browser import storage
+    from browser.webview import build_profile
+    profile = build_profile(qapp)
+    assert "QtWebEngine" not in profile.httpUserAgent()  # (everywhere else: Chrome, cleaned)
+    engine = site_quirks.user_agent_for("accounts.google.com")
+    assert engine and "QtWebEngine/" in engine and "Chrome/" in engine
+    assert site_quirks.user_agent_for("ACCOUNTS.youtube.com") == engine
+    for host in ("docs.google.com", "mail.google.com", "evil.com", "accounts.google.com.evil.com", ""):
+        assert site_quirks.user_agent_for(host) is None
+    assert '"accounts.google.com"' in site_quirks.script_source() and engine in site_quirks.script_source()
 
     class Request:
         def __init__(self, url):
@@ -79,13 +80,12 @@ def test_the_request_filter_sends_googles_sign_in_the_firefox_header(qapp, data_
         requestMethod = lambda self: b"GET"
         setHttpHeader = lambda self, name, value: self.headers.__setitem__(name, value)
         block = redirect = lambda self, *_: None
-    from PyQt6.QtCore import QObject
     owner = QObject()
     blocker = AdBlocker(Store(storage.session_path()), owner)
     google, docs = Request("https://accounts.google.com/v3/signin"), Request("https://docs.google.com/document/")
     blocker.interceptRequest(google)
     blocker.interceptRequest(docs)
-    assert google.headers == {b"User-Agent": site_quirks.FIREFOX_UA.encode()} and docs.headers == {}
+    assert google.headers == {b"User-Agent": engine.encode()} and docs.headers == {}
 
 
 # --- Files from elsewhere: another device's sync file, a download's new name ---------------------------------

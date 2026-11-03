@@ -58,7 +58,7 @@ NOISE = [re.compile(p, re.IGNORECASE) for p in (
 )]
 
 
-def normalise(text: str) -> str:
+def normalize(text: str) -> str:
     """The text with what changes by itself taken out: dates, times, "3 minutes ago", view counts, whitespace."""
     text = text or ""
     for pattern in NOISE:
@@ -67,7 +67,7 @@ def normalise(text: str) -> str:
 
 
 def changed(before: str, after: str) -> bool:
-    return normalise(before) != normalise(after)
+    return normalize(before) != normalize(after)
 
 
 def _quote(text: str, limit=60) -> str:
@@ -79,7 +79,7 @@ def diff_summary(before: str, after: str) -> str:
     """What changed, in a line: "“$299” → “$249”", "Added: “…”", or how many lines came and went."""
     old = [line for line in (before or "").splitlines() if line.strip()]
     new = [line for line in (after or "").splitlines() if line.strip()]
-    matcher = difflib.SequenceMatcher(None, [normalise(x) for x in old], [normalise(x) for x in new], autojunk=False)
+    matcher = difflib.SequenceMatcher(None, [normalize(x) for x in old], [normalize(x) for x in new], autojunk=False)
     removed, added = [], []
     for op, i1, i2, j1, j2 in matcher.get_opcodes():
         if op != "equal":
@@ -410,14 +410,28 @@ class PageWatchFeature(Feature):
             window.toast("Only web pages can be watched")
             return
         names = [every(m) for m in INTERVALS]
-        chosen, ok = QInputDialog.getItem(window, "Watch for Changes", f"Check {display_host(tab.url)} for changes:",
+
+        def chosen(minutes):
+            watch = self.watcher.add(tab.url, tab.label, interval=minutes)
+            window.toast(f"Watching {display_host(tab.url)} · you'll hear when it changes" if watch is not None
+                         else "You're already watching this page")
+            self._refresh_settings()
+        from . import forms
+        form = forms.open_form(
+            window, "Watch for Changes",
+            [forms.section({"id": "every", "kind": "menu", "label": "Check", "value": str(DEFAULT_INTERVAL),
+                            "options": [{"value": str(m), "label": n} for m, n in zip(INTERVALS, names)]},
+                           footer=f"You'll hear when {display_host(tab.url)} changes.")],
+            [{"id": "cancel", "label": "Cancel", "role": "cancel"}, {"id": "watch", "label": "Watch", "role": "default"}],
+            lambda _, values: chosen(next((m for m in INTERVALS if str(m) == values.get("every")), DEFAULT_INTERVAL)),
+            width=420, height=220)
+        if form is not None:
+            return form
+        picked, ok = QInputDialog.getItem(window, "Watch for Changes", f"Check {display_host(tab.url)} for changes:",
                                           names, INTERVALS.index(DEFAULT_INTERVAL), False)
-        if not ok:
-            return
-        watch = self.watcher.add(tab.url, tab.label, interval=INTERVALS[names.index(chosen)])
-        window.toast(f"Watching {display_host(tab.url)} · you'll hear when it changes" if watch is not None
-                     else "You're already watching this page")
-        self._refresh_settings()
+        if ok:
+            chosen(INTERVALS[names.index(picked)])
+        return None
 
     def watch_selection(self, view, tab):
         """"Watch This": the element around the selection, found again by its selector (or the text it had)."""
@@ -510,7 +524,7 @@ class PageWatchFeature(Feature):
                     a.addWidget(widget)
                 if w["before"] or w["after"]:
                     changes = QPushButton("Changes…")
-                    changes.clicked.connect(lambda _=False, x=w: show_changes(settings, x))
+                    changes.clicked.connect(lambda _=False, x=w: show_changes(settings, x, settings.browser))
                     a.addWidget(changes)
                 a.addWidget(remove)
                 title = w["title"] + (" (a part of it)" if w["selector"] else "")
@@ -534,18 +548,28 @@ class PageWatchFeature(Feature):
         return page
 
 
-def show_changes(parent, watch):
-    """The last change: what was there and what is now, line by line (- before, + after)."""
+def show_changes(parent, watch, browser=None):
+    """The last change: what was there and what is now, line by line (- before, + after). A native sheet where it can
+    be (forms.py), else Qt's dialog."""
     from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QPlainTextEdit, QVBoxLayout
+    from . import forms
+    lines = difflib.unified_diff((watch["before"] or "").splitlines(), (watch["after"] or "").splitlines(),
+                                 "Before", "After", lineterm="", n=2)
+    diff = "\n".join(list(lines)[2:][:2000]) or "(Only spacing changed.)"
+    if browser is not None and forms.open_form(
+            browser, f"Changes · {watch['title']}",
+            [forms.section({"kind": "hint", "text": watch["summary"] or "What changed"},
+                           {"kind": "block", "text": diff, "height": 340})],
+            [{"id": "done", "label": "Done", "role": "default"}], lambda *_: None, width=620, height=520,
+            on_page=forms.native_page_of(parent)) is not None:
+        return
     dialog = QDialog(parent)
     dialog.setWindowTitle(f"Changes · {watch['title']}")
     v = QVBoxLayout(dialog)
     heading = QLabel(watch["summary"] or "What changed")
     heading.setWordWrap(True)
     v.addWidget(heading)
-    lines = difflib.unified_diff((watch["before"] or "").splitlines(), (watch["after"] or "").splitlines(),
-                                 "Before", "After", lineterm="", n=2)
-    text = QPlainTextEdit("\n".join(list(lines)[2:][:2000]) or "(Only spacing changed.)")
+    text = QPlainTextEdit(diff)
     text.setReadOnly(True)
     text.setMinimumSize(560, 360)
     v.addWidget(text)

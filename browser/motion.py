@@ -82,6 +82,13 @@ def animate(owner, start, end, on_value, ms=NORMAL, done=None, easing=QEasingCur
     return animation
 
 
+def stop(owner):
+    """Stop what animate() is running on `owner`, where it's got to (a drag taking over from a glide, say)."""
+    previous = getattr(owner, "_pb_animation", None)
+    if previous is not None:
+        previous.stop()
+
+
 def fade(widget, show, ms=FAST, done=None):
     """Fade a widget in (showing it first) or out (hiding it at the end). Reversing half-way picks up
     from the current opacity."""

@@ -17,6 +17,7 @@ from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
                              QPlainTextEdit, QTimeEdit, QToolButton, QVBoxLayout)
 
+from . import forms
 from .features import Feature
 from .theme import stylesheet
 from .webview import WebPage
@@ -175,10 +176,53 @@ class SpaceRulesFeature(Feature):
         return [("ph.clock", "Space Rules…", lambda: self.edit(space))]
 
     def edit(self, space):
-        dialog = SpaceRulesDialog(self.window, space, self.rule(space), self.displays())
+        rule = self.rule(space)
+        form = forms.open_form(self.window, f"Space Rules · {space.name}", rule_sections(space, rule, self.displays()),
+                               forms.save_buttons(), lambda _, values: self.set_rule(space, rule_from(values)),
+                               width=500, height=600)
+        if form is not None:
+            return form
+        dialog = SpaceRulesDialog(self.window, space, rule, self.displays())
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.set_rule(space, dialog.result_rule())
         return dialog
+
+
+def rule_sections(space, rule: dict, displays: list[str]) -> list[dict]:
+    """The Space Rules form (forms.py): as SpaceRulesDialog has it, natively."""
+    names = list(dict.fromkeys(displays + ([rule["display"]] if rule.get("display") else [])))
+    return [
+        forms.section(
+            {"id": "scheduled", "kind": "toggle", "label": f"Switch to {space.name} on a schedule",
+             "value": bool(rule.get("days"))},
+            {"id": "days", "kind": "days", "label": "On", "labels": forms.DAYS, "names": forms.DAY_NAMES,
+             "value": rule.get("days", WEEKDAYS), "enabled_by": "scheduled"},
+            {"id": "start", "kind": "time", "label": "From", "value": rule.get("start", "09:00"),
+             "enabled_by": "scheduled"},
+            {"id": "end", "kind": "time", "label": "To", "value": rule.get("end", "17:00"), "enabled_by": "scheduled"}),
+        forms.section(
+            {"id": "on_display", "kind": "toggle", "label": "Switch to it when this display is connected",
+             "value": bool(rule.get("display"))},
+            {"id": "display", "kind": "menu", "label": "Display", "enabled_by": "on_display",
+             "options": [{"value": n, "label": n} for n in names], "value": rule.get("display") or (names[:1] or [""])[0]}
+            if names else None),
+        forms.section(
+            {"id": "blocked", "kind": "lines", "label": f"Sites blocked while you're in {space.name} (one per line)",
+             "placeholder": "news.example.com\nreddit.com", "value": "\n".join(rule.get("blocked", []))},
+            footer="Switching by hand always works: a rule only acts as its time comes or its display connects. "
+                   "Rules stay on this Mac."),
+    ]
+
+
+def rule_from(values: dict) -> dict:
+    """A rule from the form's values (as SpaceRulesDialog.result_rule makes one)."""
+    rule = {"blocked": clean_sites(values.get("blocked", ""))}
+    days = sorted(d for d in values.get("days", []) if isinstance(d, int) and 0 <= d < 7)
+    if values.get("scheduled") and days:
+        rule.update(days=days, start=values.get("start", "09:00"), end=values.get("end", "17:00"))
+    if values.get("on_display") and values.get("display"):
+        rule["display"] = values["display"]
+    return rule
 
 
 class SpaceRulesDialog(QDialog):

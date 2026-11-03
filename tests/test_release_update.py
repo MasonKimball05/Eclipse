@@ -118,3 +118,18 @@ def test_the_update_window_says_what_you_have_briefly():
     assert you_have("From source, commit abc1234 (Oct 27)") == "You're running it from source."
     assert notes_markdown({"notes": "- A\n- B"}) == "- A\n- B"
     assert notes_markdown({"subjects": ["Fix", "Feature"], "behind": 5}) == "- Fix\n- Feature\n- …and 3 more"
+
+
+def test_the_update_window_wording_is_shared_by_its_qt_and_native_pages():
+    from browser.update_window import about_text, notes_markdown, status_view
+    found = {"build": 1, "version": "Eclipse 26.1.3.0", "size": 168_000_000}
+    assert about_text(found, "From source, commit abc (Oct 27)") == (
+        "Eclipse 26.1.3.0 · 168 MB. You're running it from source. Your tabs come back after the restart.")
+    assert about_text({"behind": 1}, "From source, commit abc (Oct 27)").startswith("1 new change on GitHub.")
+    # (a release's headings as bold lines in Qt's page: full-size ones would outsize "What's new")
+    assert notes_markdown({"notes": "### This week\n- A"}) == "**This week**\n- A"
+    assert status_view({"state": "downloading", "percent": 40}) == {
+        "progress": 40, "busy": True, "status": "Downloading… 40%. Eclipse restarts when it's checked and ready."}
+    failed = status_view({"state": "failed", "reason": "No room."})
+    assert not failed["busy"] and failed["go_label"] == "Try Again" and failed["progress"] is None
+    assert status_view({"state": "checking"}) == {}

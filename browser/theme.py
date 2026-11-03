@@ -1,6 +1,6 @@
-# Colours, per-Space theming and the app-wide stylesheet.
+# Colors, per-Space theming and the app-wide stylesheet.
 #
-# Like Arc, every Space has an accent colour; the whole window chrome is tinted
+# Like Arc, every Space has an accent color; the whole window chrome is tinted
 # with a soft gradient of it. Light/dark follows the macOS appearance setting.
 
 import html
@@ -45,7 +45,7 @@ DEFAULT_SPACE_THEME = {"colors": [], "intensity": 0.5, "mode": "auto", "grain": 
 @dataclass(frozen=True)
 class Theme:
     accent: QColor
-    stops: tuple  # gradient colours, top-left to bottom-right
+    stops: tuple  # gradient colors, top-left to bottom-right
     text: QColor
     dark: bool
     grain: bool = False
@@ -69,13 +69,13 @@ class Theme:
 
     @property
     def on_accent(self) -> QColor:
-        """Text on an accent-coloured background: white, unless the accent is too pale for white to read
+        """Text on an accent-colored background: white, unless the accent is too pale for white to read
         (a peach or butter Space), then near-black."""
         return QColor("white") if contrast(QColor("white"), self.accent) >= 2.6 else QColor("#1d1d22")
 
     @property
     def accent_text(self) -> QColor:
-        """The accent as text on a panel: a pale Space colour (peach on white) is deepened, and a deep
+        """The accent as text on a panel: a pale Space color (peach on white) is deepened, and a deep
         one lightened on dark, until it reads (4.5:1, as for body text)."""
         color = QColor(self.accent)
         for _ in range(16):
@@ -98,7 +98,7 @@ class Theme:
 
 def make_theme(color: str, dark: bool | None = None, colors=None, intensity=0.5, mode="auto",
                grain=False) -> Theme:
-    """Arc-style Space theme: 1-3 colours, how strongly they tint the window, and light/dark."""
+    """Arc-style Space theme: 1-3 colors, how strongly they tint the window, and light/dark."""
     if dark is None:
         dark = system_is_dark() if mode == "auto" else mode == "dark"
     colors = [QColor(c) for c in (colors or [color])]
@@ -109,7 +109,7 @@ def make_theme(color: str, dark: bool | None = None, colors=None, intensity=0.5,
         amount = 0.9 - 0.65 * intensity  # how much white shows through
         bases = (QColor("#ffffff"), QColor("#ffffff"))
     if len(colors) == 1:
-        # One colour: a gentle two-tone of it, lighter at the top
+        # One color: a gentle two-tone of it, lighter at the top
         lift = 0.12
         stops = (mix(colors[0], bases[0], min(amount + lift, 1)), mix(colors[0], bases[1], max(amount - lift, 0)))
     else:
@@ -376,21 +376,21 @@ def legible(icon: QIcon, theme: "Theme") -> QIcon:
     if key in _legible:
         return _legible[key]
     image = icon.pixmap(32, 32).toImage().convertToFormat(QImage.Format.Format_ARGB32)
-    total = weight = colour = 0.0
+    total = weight = color = 0.0
     for y in range(0, image.height(), 2):
         for x in range(0, image.width(), 2):
             c = image.pixelColor(x, y)
             if c.alpha() > 40:
                 a = c.alphaF()
                 total += a * (0.2126 * c.redF() + 0.7152 * c.greenF() + 0.0722 * c.blueF())
-                colour += a * (max(c.redF(), c.greenF(), c.blueF()) - min(c.redF(), c.greenF(), c.blueF()))
+                color += a * (max(c.redF(), c.greenF(), c.blueF()) - min(c.redF(), c.greenF(), c.blueF()))
                 weight += a
     result = icon
     if weight > 4:
-        lum, grey = total / weight, colour / weight < 0.15
-        # (a colourful icon, YouTube's red say, shows up on either; a grey one only if it's light or dark
+        lum, gray = total / weight, color / weight < 0.15
+        # (a colorful icon, YouTube's red say, shows up on either; a gray one only if it's light or dark
         # enough: GitHub's #24292e octocat is nearly lost on a dark sidebar)
-        if grey and ((not theme.dark and lum > 0.82) or (theme.dark and lum < 0.25)):
+        if gray and ((not theme.dark and lum > 0.82) or (theme.dark and lum < 0.25)):
             size = 64
             out = QPixmap(size, size)
             out.fill(Qt.GlobalColor.transparent)
@@ -408,7 +408,7 @@ def legible(icon: QIcon, theme: "Theme") -> QIcon:
 
 
 def contrast(a: QColor, b: QColor) -> float:
-    """WCAG contrast ratio between two colours: 1 (the same) to 21 (black on white)."""
+    """WCAG contrast ratio between two colors: 1 (the same) to 21 (black on white)."""
     la, lb = sorted((_luminance(a), _luminance(b)), reverse=True)
     return (la + 0.05) / (lb + 0.05)
 
@@ -421,15 +421,27 @@ def _luminance(color: QColor) -> float:
     return 0.2126 * channel(color.red()) + 0.7152 * channel(color.green()) + 0.0722 * channel(color.blue())
 
 
+_SECOND_LEVEL = {"co", "com", "org", "net", "ac", "gov", "edu", "ne", "or"}  # (bbc.co.uk, abc.net.au…)
+
+
+def site_letter(text: str) -> str:
+    """The letter for a site: its name's, not a subdomain's (en.wikipedia.org is W, mail.google.com G)."""
+    labels = text.strip().lower().split(".")
+    if len(labels) >= 2 and " " not in text and not text.replace(".", "").isdigit():
+        name = labels[-3] if len(labels) >= 3 and labels[-2] in _SECOND_LEVEL and len(labels[-1]) == 2 else labels[-2]
+        text = name or text
+    return (text[:1] or "?").upper()
+
+
 def letter_icon(text: str, color: QColor, size: int = 32) -> QIcon:
     # Fallback favicon: the first letter of the site on a rounded square
-    return _letter_icon((text[:1] or "?").upper(), QColor(color).rgba(), size)
+    return _letter_icon(site_letter(text), QColor(color).rgba(), size)
 
 
 @lru_cache(maxsize=512)
 def _letter_icon(letter: str, rgba: int, size: int) -> QIcon:
     color = QColor.fromRgba(rgba)
-    for _ in range(12):  # a pale Space colour (peach, mint…) would leave the white letter unreadable:
+    for _ in range(12):  # a pale Space color (peach, mint…) would leave the white letter unreadable:
         if _luminance(color) <= 0.32:  # deepen it, same hue, until white stands out (about 3:1)
             break
         color = color.darker(112)
@@ -466,7 +478,7 @@ def dot_icon(color: str, size: int = 14) -> QIcon:
 
 
 def switch_images(accent: QColor, dark: bool) -> tuple[str, str]:
-    """macOS-style switch pictures (off, on) for every checkbox, written once per colour into the temp
+    """macOS-style switch pictures (off, on) for every checkbox, written once per color into the temp
     folder with @2x copies for Retina. Paths use forward slashes, as stylesheets want."""
     import tempfile
     from pathlib import Path
@@ -543,14 +555,14 @@ def knob_image() -> str:
 
 def hover_color(t: Theme) -> QColor:
     """The sidebar's hover highlight (rows and buttons paint it themselves, so it can fade): a lift of
-    white with a hint of the Space's own colour in it, so it reads as part of the Space, not a grey film."""
+    white with a hint of the Space's own color in it, so it reads as part of the Space, not a gray film."""
     color = mix(QColor("white"), t.accent, 0.28 if t.dark else 0.14)
     color.setAlphaF(0.12 if t.dark else 0.5)
     return color
 
 
 def stylesheet(t: Theme) -> str:
-    # A grey Space would make "on" look like "off": those switches (and sliders) use the system blue
+    # A gray Space would make "on" look like "off": those switches (and sliders) use the system blue
     control = t.accent if t.accent.hsvSaturationF() > 0.25 else QColor("#0a84ff")
     switch_off, switch_on = switch_images(control, t.dark)
     on_control = t.on_accent if control == t.accent else QColor("white")
@@ -648,7 +660,7 @@ def stylesheet(t: Theme) -> str:
     /* (the sidebar's edge is wider: a slim bar down the middle of it) */
     QSplitter#SidebarSplitter::handle:hover, QSplitter#SidebarSplitter::handle:pressed {{ margin: 12px 4px; }}
     #ContentFrame {{ background: {content_bg}; border-radius: 10px; }}
-    /* Nothing open: no page, just the Space's colours (like Arc), a shade off so the sidebar stands apart */
+    /* Nothing open: no page, just the Space's colors (like Arc), a shade off so the sidebar stands apart */
     #ContentFrame[blank="true"] {{ background: {"rgba(0, 0, 0, 0.18)" if t.dark else "rgba(255, 255, 255, 0.42)"}; }}
     QLabel#PanelEmptyTitle {{ color: {panel_text}; font-size: 15px; font-weight: 600; }}
     #ProgressBar {{ background: {rgba(t.accent)}; border-radius: 1px; }}
@@ -692,7 +704,7 @@ def stylesheet(t: Theme) -> str:
         color: {panel_text};
     }}
     #PermissionPrompt QPushButton:hover {{ background: {rgba(t.accent, 0.12)}; }}
-    /* (a pale Space colour would look like a disabled button: those get the system blue, as switches do) */
+    /* (a pale Space color would look like a disabled button: those get the system blue, as switches do) */
     QPushButton#PermissionAllow {{ background: {rgba(control)}; color: {rgba(on_control)}; border: none; border-radius: 7px; }}
     QPushButton#PermissionAllow:disabled {{ background: {rgba(control, 0.45)}; }}
 
@@ -733,7 +745,7 @@ def stylesheet(t: Theme) -> str:
     #CommandPanel QTextBrowser#Answer {{ font-size: 14px; }}
 
     #PreviewCard {{ background: {panel}; border: 1px solid {panel_line}; border-radius: 12px; }}
-    /* Ask About This Page: a second sidebar on the window's own colours, made like the first */
+    /* Ask About This Page: a second sidebar on the window's own colors, made like the first */
     #PageChat {{ background: transparent; }}
     #WebPanel {{ background: transparent; }}
     QToolButton#WebPanelSite {{ background: transparent; border: none; border-radius: 6px; padding: 3px; }}
@@ -855,6 +867,12 @@ def stylesheet(t: Theme) -> str:
         border-radius: 7px; padding: 6px 9px; font-size: 13px; selection-background-color: {rgba(t.accent, 0.45)}; selection-color: {panel_text};
     }}
     *[panel="true"] QLineEdit:focus {{ border: 1px solid {rgba(t.accent)}; }}
+    /* Typing boxes of more than a line (Send Feedback), like the one-line ones, not the system's black well */
+    *[panel="true"] QPlainTextEdit {{
+        background: {rgba(t.panel_text, 0.06)}; color: {panel_text}; border: 1px solid {panel_line};
+        border-radius: 8px; padding: 6px; font-size: 13px; selection-background-color: {rgba(t.accent, 0.45)}; selection-color: {panel_text};
+    }}
+    *[panel="true"] QPlainTextEdit:focus {{ border: 1px solid {rgba(t.accent)}; }}
     /* The arrow part, drawn as part of the box (natively it was a lighter square cutting the corners) */
     *[panel="true"] QComboBox, #SpaceEditor QComboBox#SpaceCombo {{ padding-right: 26px; }}
     *[panel="true"] QComboBox::drop-down, #SpaceEditor QComboBox#SpaceCombo::drop-down {{
@@ -935,7 +953,7 @@ def stylesheet(t: Theme) -> str:
     #EaselTitle {{ background: transparent; border: none; color: #1f2937; font-weight: 600; font-size: 13px; }}
     QToolButton#EaselTool {{ background: transparent; border: none; border-radius: 7px; padding: 5px; }}
     QToolButton#EaselTool:hover {{ background: #f5f5f4; }}
-    QToolButton#EaselTool:checked {{ background: #1f2937; }}  /* (white icon: reads whatever the Space colour) */
+    QToolButton#EaselTool:checked {{ background: #1f2937; }}  /* (white icon: reads whatever the Space color) */
     QToolButton#EaselSwatch {{ border-radius: 9px; border: 2px solid white; }}
     QToolButton#EaselSwatch:checked {{ border: 2px solid {rgba(t.accent)}; }}
     QTextEdit#NoteEditor {{

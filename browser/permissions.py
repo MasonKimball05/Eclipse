@@ -109,8 +109,13 @@ class PermissionPrompt(QFrame):
         row.addWidget(allow)
         row.addWidget(close)
         # One timer, started again by every new question, so an earlier one can't arm a later one
-        self._arm = QTimer(self, singleShot=True, interval=ARM_MS, timeout=lambda: self.allow.setEnabled(True))
+        # (a method, not a lambda holding self: that made a cycle the garbage collector could take apart while the
+        # timer still ran, and its next tick then called into freed memory)
+        self._arm = QTimer(self, singleShot=True, interval=ARM_MS, timeout=self._armed)
         host.installEventFilter(self)
+
+    def _armed(self):
+        self.allow.setEnabled(True)
 
     def update_text(self, types):
         if set(types) != self.shown:
@@ -147,6 +152,15 @@ class PermissionPrompt(QFrame):
         if obj is self.host_widget and event.type() == QEvent.Type.Resize:
             self.place()
         return False
+
+
+def screen_choices(request) -> list[tuple[str, str]]:
+    """What a site can be shown: ("screen:0", "Screen: Built-in Display"), … then the windows."""
+    found = []
+    for kind, label, model in (("screen", "Screen", request.screensModel()), ("window", "Window", request.windowsModel())):
+        for row in range(model.rowCount()):
+            found.append((f"{kind}:{row}", f"{label}: {model.data(model.index(row, 0)) or f'{label} {row + 1}'}"))
+    return found
 
 
 class ScreenPicker(QDialog):
@@ -328,6 +342,34 @@ class PermissionManager(QObject):
 
     def _pick_screen(self, view, request):
         origin = origin_key(view.page().url())
+        from . import forms
+        choices = screen_choices(request)
+        if choices:
+            self._picking = request  # (kept till it's answered: Qt cancels a request nothing holds)
+
+            def share(_, values):
+                kind, _sep, row = str(values.get("what", "")).partition(":")
+                model = request.screensModel() if kind == "screen" else request.windowsModel()
+                if row.isdigit() and int(row) < model.rowCount():
+                    (request.selectScreen if kind == "screen" else request.selectWindow)(model.index(int(row), 0))
+                    self._capturing.add(id(view))
+                    self._answered = True
+
+            def closed():
+                if not getattr(self, "_answered", False):
+                    request.cancel()
+                self._picking, self._answered = None, False
+            self._answered = False
+            form = forms.open_form(
+                self.browser, "Share Your Screen",
+                [forms.section({"id": "what", "kind": "menu", "label": "Share", "value": choices[0][0],
+                                "options": [{"value": v, "label": label} for v, label in choices]},
+                               footer=f"{QUrl(origin).host()} will see it until you stop sharing.")],
+                [{"id": "cancel", "label": "Cancel", "role": "cancel"}, {"id": "share", "label": "Share", "role": "default"}],
+                share, width=440, height=230, on_closed=closed)
+            if form is not None:
+                return
+            self._picking = None
         picker = ScreenPicker(request, origin, self.browser.theme, self.browser)
         if picker.exec() == QDialog.DialogCode.Accepted and picker.choice() is not None:
             which, index = picker.choice()

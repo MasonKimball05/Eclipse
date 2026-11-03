@@ -135,3 +135,6 @@ def test_release_notes_are_this_weeks_whats_new_then_the_commits(monkeypatch):
     # The edition hasn't gone up since the last release: "This week" is last week's, so just the commits
     answers["show"] = SOURCE.format(edition=24)
     assert release.release_notes() == "- A commit\n- Another"
+    # Commits about the maker's own pieces stay out
+    answers["log"] = "- A commit\n- Hop integration: Send To through hop:// links\n- Homebase card\n- Hopping fix"
+    assert release.release_notes() == "- A commit\n- Hopping fix"

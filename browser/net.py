@@ -12,7 +12,7 @@ import subprocess
 import threading
 
 KEYCHAINS = ["/System/Library/Keychains/SystemRootCertificates.keychain",  # (Apple's list)
-             "/Library/Keychains/System.keychain"]  # (ones added for the whole Mac, by you or your organisation)
+             "/Library/Keychains/System.keychain"]  # (ones added for the whole Mac, by you or your organization)
 _context = None
 _lock = threading.Lock()
 

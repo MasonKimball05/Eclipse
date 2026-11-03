@@ -119,7 +119,7 @@ def test_an_eclipse_card_gets_its_own_look(qapp, tmp_path, monkeypatch, data_dir
     monkeypatch.setattr(mc, "_maker", False)
     card = card_for({})
     assert (card["palette"], card["shape"]) == (mc.ECLIPSE_LOOK["palette"], mc.ECLIPSE_LOOK["shape"])
-    # One an early version made in your Arc card's colours and shape gets Eclipse's own, once
+    # One an early version made in your Arc card's colors and shape gets Eclipse's own, once
     arc = {"title": "STATUESQUE TECHNICIAN", "palette": 3, "shape": "Shape2", "origin": "arc"}
     settings = {ARC_SETTING: arc, SETTING: {"name": "Arkan", "title": "QUIET PILOT", "palette": 3, "shape": "Shape2"}}
     assert card_for(settings)["palette"] == mc.ECLIPSE_LOOK["palette"]

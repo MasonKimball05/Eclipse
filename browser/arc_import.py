@@ -26,9 +26,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from PyQt6.QtCore import QTimer, QUrl
-from PyQt6.QtWidgets import QMessageBox
 
-from . import brand, storage
+from . import brand, prompts, storage
 from .features import Feature
 from .models import ARCHIVE_LIMIT, DEFAULT_FAVORITES, Folder, Space, Tab, walk_tabs
 from .webview import DEFAULT_PROFILE
@@ -388,7 +387,7 @@ class ArcImportFeature(Feature):
         try:
             arc = read_arc()
         except (OSError, ValueError, KeyError) as error:
-            QMessageBox.warning(window, "Import from Arc", f"Couldn't read Arc's data:\n{error}")
+            prompts.tell(window, "Import from Arc", f"Couldn't read Arc's data:\n{error}", warning=True)
             return
 
         lines = [
@@ -410,19 +409,9 @@ class ArcImportFeature(Feature):
         if arc.extensions and window.feature("extensions") is not None:  # (somewhere for them to go)
             note += ("\n\nYour extensions (" + ", ".join(arc.extensions) + ") come separately: Settings → "
                      "Extensions → Add Extension → Import from Arc. Some may not fully work here.")
-        box = QMessageBox(window)
-        box.setWindowTitle("Import from Arc")
-        box.setText(f"Bring your Arc setup into {brand.NAME}?")
-        box.setInformativeText("\n".join(lines) + "\n\n" + note +
-                               "\n\nImporting again later replaces these Spaces with Arc's current state.")
-        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel)
-        import_btn = box.button(QMessageBox.StandardButton.Yes)
-        import_btn.setText("Import")
-        box.setDefaultButton(import_btn)
-        box.exec()
-        if box.clickedButton() is not import_btn:
-            return
-        self.bring_in(arc)
+        prompts.choose(window, "Import from Arc", f"Bring your Arc setup into {brand.NAME}?", ["Import"],
+                       lambda _: self.bring_in(arc), detail="\n".join(lines) + "\n\n" + note +
+                       "\n\nImporting again later replaces these Spaces with Arc's current state.")
 
     def bring_in(self, arc: ArcImport):
         """Put a read import in place: the tabs it replaces lose their pages, and the window catches up."""

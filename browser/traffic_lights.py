@@ -1,6 +1,6 @@
 # The traffic lights, Arc's way: they belong to the sidebar. They're there while it is (on the right
 # too: they move over into it), gone while it's hidden, and come out with it when it slides out over
-# the page. They stay dim until the pointer comes near them, then light up.
+# the page. They stay gray until the pointer comes near them, then light up in their colors.
 #
 # They're drawn by Eclipse, as Arc draws its own: macOS's buttons stay where they are (moved with the sidebar,
 # so everything that lines up with them still can) but hidden, and three circles of ours sit exactly on top.
@@ -17,10 +17,10 @@ from PyQt6.QtWidgets import QWidget
 
 from . import macos
 
-DIM = 0.35   # how they look until you point at them
+GRAY = (0.30, 0.22)  # how strong their gray is until you point at them: in the window you're using, in one behind
 REACH = 6    # points round the circles that already count as pointing at them
 CHECK_MS = 80
-# macOS's own colours: (fill, edge, the symbol drawn on it as you point at them)
+# macOS's own colors: (fill, edge, the symbol drawn on it as you point at them)
 COLORS = [("#ff5f57", "#e14640", "#4d0000"), ("#febc2e", "#dfa023", "#995700"), ("#28c840", "#1dad2b", "#006500")]
 ACTIONS = ["close", "minimize", "full_screen"]
 NAMES = ["Close", "Minimize", "Full Screen"]
@@ -35,7 +35,7 @@ class LightsOverlay(QWidget):
         self.lit = False       # (the pointer's near)
         self.hover = False     # (the pointer's on them: their symbols show)
         self.pressed = None    # (the one held down)
-        self.centres: list[QPointF] = []
+        self.centers: list[QPointF] = []
         self.diameter = 14.0
         self.setMouseTracking(True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
@@ -51,13 +51,13 @@ class LightsOverlay(QWidget):
             area = area.united(QRectF(x, y, w, h))
         self.setGeometry(area.toAlignedRect())
         origin = QPointF(self.x(), self.y())
-        self.centres = [QPointF(x + w / 2, y + h / 2) - origin for x, y, w, h in frames]
+        self.centers = [QPointF(x + w / 2, y + h / 2) - origin for x, y, w, h in frames]
         self.diameter = min(frames[0][2], frames[0][3])
         self.update()
 
     def which(self, pos) -> int | None:
-        for i, centre in enumerate(self.centres):
-            if (QPointF(pos) - centre).manhattanLength() <= self.diameter * 0.75:
+        for i, center in enumerate(self.centers):
+            if (QPointF(pos) - center).manhattanLength() <= self.diameter * 0.75:
                 return i
         return None
 
@@ -65,41 +65,40 @@ class LightsOverlay(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         active = self.window_.isActiveWindow()
-        coloured = self.hover or (active and self.lit)
+        colored = self.hover or (active and self.lit)
         radius = self.diameter / 2 - 0.5
-        if not coloured and not active:  # (a window in the background: grey, like macOS's)
-            grey = QColor(self.window_.theme.text if hasattr(self.window_, "theme") else QColor("#888"))
-            grey.setAlphaF(0.22)
+        if not colored:  # (gray till the pointer's near, as in a window in the background on macOS)
+            gray = QColor(self.window_.theme.text if hasattr(self.window_, "theme") else QColor("#888"))
+            gray.setAlphaF(GRAY[0] if active else GRAY[1])
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(grey)
-            for centre in self.centres:
-                painter.drawEllipse(centre, radius, radius)
+            painter.setBrush(gray)
+            for center in self.centers:
+                painter.drawEllipse(center, radius, radius)
             return
-        painter.setOpacity(1.0 if coloured else DIM)
-        for i, centre in enumerate(self.centres):
+        for i, center in enumerate(self.centers):
             fill, edge, mark = COLORS[i]
-            colour = QColor(fill).darker(115) if self.pressed == i else QColor(fill)
+            color = QColor(fill).darker(115) if self.pressed == i else QColor(fill)
             painter.setPen(QPen(QColor(edge), 0.6))
-            painter.setBrush(colour)
-            painter.drawEllipse(centre, radius, radius)
+            painter.setBrush(color)
+            painter.drawEllipse(center, radius, radius)
             if self.hover:
-                self._symbol(painter, i, centre, radius, QColor(mark))
+                self._symbol(painter, i, center, radius, QColor(mark))
 
     @staticmethod
-    def _symbol(painter, i, centre, radius, colour):
+    def _symbol(painter, i, center, radius, color):
         size = radius * 0.4
-        painter.setPen(QPen(colour, 1.0, cap=Qt.PenCapStyle.RoundCap))
+        painter.setPen(QPen(color, 1.0, cap=Qt.PenCapStyle.RoundCap))
         if i == 0:  # ×
-            painter.drawLine(centre + QPointF(-size, -size), centre + QPointF(size, size))
-            painter.drawLine(centre + QPointF(-size, size), centre + QPointF(size, -size))
+            painter.drawLine(center + QPointF(-size, -size), center + QPointF(size, size))
+            painter.drawLine(center + QPointF(-size, size), center + QPointF(size, -size))
         elif i == 1:  # −
-            painter.drawLine(centre + QPointF(-size * 1.4, 0), centre + QPointF(size * 1.4, 0))
+            painter.drawLine(center + QPointF(-size * 1.4, 0), center + QPointF(size * 1.4, 0))
         else:  # full screen: two little triangles pointing apart
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(colour)
+            painter.setBrush(color)
             s = size * 1.15
             for sign in (1, -1):
-                tip = centre + QPointF(-s * sign, -s * sign)
+                tip = center + QPointF(-s * sign, -s * sign)
                 painter.drawPolygon(tip, tip + QPointF(s * 1.2 * sign, 0), tip + QPointF(0, s * 1.2 * sign))
 
     def enterEvent(self, _event):
@@ -178,7 +177,7 @@ class TrafficLights(QObject):
             if self.showing and self._lit:  # (dim again, the pointer having gone elsewhere)
                 self._lit = False
         self.overlay.lit = bool(self._lit)
-        self.overlay.update()  # (grey in a window in the background, like macOS's)
+        self.overlay.update()  # (gray in a window in the background, like macOS's)
 
     def keep(self):
         """Put them back where they belong if macOS has laid them out again (it does when the window's

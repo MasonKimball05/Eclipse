@@ -43,6 +43,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_app  # noqa: E402
+import build_native  # noqa: E402
 from build_app import NAME, ROOT  # noqa: E402
 
 APP = Path("/Applications") / f"{NAME}.app"  # (--install: the signed Eclipse; Eclipse Dev, build_app.APP, stays)
@@ -200,6 +201,12 @@ def copy_app(contents: Path):
     dest.mkdir(parents=True)
     shutil.copy2(ROOT / "main.py", dest / "main.py")
     shutil.copytree(ROOT / "browser", dest / "browser", ignore=_ignore(set()))
+    # The native pages, built fresh from this commit's sources (browser/native.py finds them in Frameworks)
+    with tempfile.TemporaryDirectory() as tmp:
+        built = build_native.build(Path(tmp) / build_native.LIBRARY.name, force=True)
+        if built is None:
+            raise SystemExit("The native pages didn't build (python tools/build_native.py says why)")
+        shutil.copy2(built, contents / "Frameworks" / built.name)
 
 
 # --- Libraries: copied in, and pointed at -------------------------------------------------------------------
@@ -546,6 +553,10 @@ def this_week(source: str) -> tuple[int, list[str]]:
     return int(edition.group(1)) if edition else 0, [line for line in lines if not line.startswith("- [mine]")]
 
 
+# Commits about the maker's own pieces (integrations only they use) stay out of the public notes
+PRIVATE = re.compile(r"\b(hop|homebase)\b", re.IGNORECASE)
+
+
 def release_notes() -> str:
     """What's changed since the last release: What's New's "This week" (once its edition has gone up since the last
     release, so last week's are never offered again), then the commit subjects. The update window shows the first
@@ -553,6 +564,7 @@ def release_notes() -> str:
     git("fetch", "--quiet", "--tags")  # (releases are tagged on GitHub: the latest isn't here otherwise)
     last = git("describe", "--tags", "--abbrev=0", "--match", "release-*")
     log = git("log", "--format=- %s", "-n", "30", f"{last}..HEAD" if last else "HEAD")
+    log = "\n".join(line for line in log.splitlines() if not PRIVATE.search(line))
     edition, week = this_week(WHATS_NEW.read_text())
     before, _ = this_week(git("show", f"{last}:browser/whats_new.py") or "") if last else (0, [])
     if week and edition > before:

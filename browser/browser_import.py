@@ -28,7 +28,7 @@ from .theme import PALETTE
 
 SAFARI = Path.home() / "Library" / "Safari"
 MAC_EPOCH_OFFSET = 978_307_200  # seconds between 1970-01-01 and 2001-01-01 (Safari's dates)
-BAR_NAMES = {"bookmarks bar", "bookmarks toolbar", "favorites", "favourites", "favorites bar", "bookmarksbar"}
+BAR_NAMES = {"bookmarks bar", "bookmarks toolbar", "favorites", "favourites", "favorites bar", "bookmarksbar"}  # (Safari in British English says Favourites)
 
 
 def _pruned(nodes) -> list:
@@ -259,7 +259,7 @@ def read_bookmarks_file(path: Path, name="Safari") -> BrowserImport:
 
 def apply(store, imported: BrowserImport):
     """Add an import's Spaces and history. Importing again refreshes a Space's bookmarks (its pinned tabs) and
-    keeps the rest: its Today tabs, name and colour. On a first launch's first import, the empty starter Spaces
+    keeps the rest: its Today tabs, name and color. On a first launch's first import, the empty starter Spaces
     make way."""
     for page_url, image in imported.favicons.items():
         storage.save_favicon_png(page_url, image)

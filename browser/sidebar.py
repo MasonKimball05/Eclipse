@@ -36,12 +36,26 @@ from .theme import legible, letter_icon, noise_pixmap, overlay_scrollbar, plain_
 TAB_MIME = "application/x-eclipse-tab"
 TABS_MIME = "application/x-eclipse-tabs"  # several picked tabs dragged together: their ids, in order
 PILL_ICON = 13
-PILL_ICON_DROP = 1.5  # the URL pill's icon sits this much lower than centre, level with the lowercase text
+PILL_PADDING = 10       # the URL pill's padding (theme.py: QPushButton#UrlPill)
+PILL_FONT_PX = 13       # its text's size there, and the smallest a long address is made before it's cut
+PILL_MIN_FONT_PX = 11
+PILL_ICON_DROP = 1.5  # the URL pill's icon sits this much lower than center, level with the lowercase text
+
+
+def site_labels(host: str) -> int:
+    """How many of a host's last labels name the site itself: cloudflare.com's 2, bbc.co.uk's 3 (a country's
+    second level), an IP address's all."""
+    labels = host.split(".")
+    if all(part.isdigit() for part in labels) or ":" in host:
+        return len(labels)
+    if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in ("co", "com", "org", "net", "ac", "gov", "edu", "ne", "or"):
+        return 3
+    return min(2, len(labels))
 
 
 def pill_icon(name, color) -> QIcon:
-    """An icon for the URL pill, drawn PILL_ICON_DROP lower than centred: text's box has room above for
-    capitals, so lowercase sits low in it, and a centred icon looked as if it floated above the address."""
+    """An icon for the URL pill, drawn PILL_ICON_DROP lower than centered: text's box has room above for
+    capitals, so lowercase sits low in it, and a centered icon looked as if it floated above the address."""
     ratio = 3  # (sharp on any screen)
     pm = QPixmap(round(PILL_ICON * ratio), round((PILL_ICON + 2 * PILL_ICON_DROP) * ratio))
     pm.setDevicePixelRatio(ratio)
@@ -89,6 +103,21 @@ def tab_icon(tab, theme):
     if not host or host[0].isdigit() or host.startswith("localhost") or host.startswith("["):
         host = tab.label
     return letter_icon(host, theme.accent)
+
+
+def left_its_site(tab) -> bool:
+    """A favorite (or pinned tab) whose page is on another site now, not just another page of its own."""
+    return is_away(tab) and display_host(tab.url).lower() != display_host(tab.home_url).lower()
+
+
+def home_icon(tab, theme):
+    """The icon of the site a favorite was made for: its tile keeps it while its tab's elsewhere (YouTube's tile
+    stays YouTube's after you've gone on to google.com in it), and is the page's own while it's on that site."""
+    if not left_its_site(tab):
+        return tab_icon(tab, theme)
+    from . import storage
+    icon = storage.favicon(tab.home_url)
+    return legible(icon, theme) if icon is not None else letter_icon(display_host(tab.home_url), theme.accent)
 
 
 def faded(icon, opacity, size=32):
@@ -228,7 +257,7 @@ class IconButton(HoverFade, QToolButton):
 
     def set_color(self, color):
         key = (self.icon_name, QColor(color).rgba())
-        if getattr(self, "_icon_key", None) != key:  # unchanged colour: keep the icon we have
+        if getattr(self, "_icon_key", None) != key:  # unchanged color: keep the icon we have
             self._icon_key = key
             self.setIcon(qta.icon(self.icon_name, color=color, color_disabled=_with_alpha(color, 0.3)))
 
@@ -401,7 +430,7 @@ _row_icons = {}
 
 
 def _row_icon(name, color) -> QIcon:
-    """A row button's icon, made once per name and colour (every row shares them)."""
+    """A row button's icon, made once per name and color (every row shares them)."""
     key = (name, QColor(color).rgba())
     if key not in _row_icons:
         _row_icons[key] = qta.icon(name, color=color)
@@ -709,7 +738,7 @@ class FolderRow(HoverFade, QFrame):
             icon = _row_icon("ph.github-logo" if live.get("kind") == "github" else "ph.rss", theme.accent_text)
         elif self._github_section():  # a section of the GitHub folder, or one of your repos
             icon = _row_icon(GITHUB_SECTION_ICONS.get(self.folder.name, "ph.book-bookmark"), color)
-        else:  # (its own colour and symbol, if you've picked them in its menu)
+        else:  # (its own color and symbol, if you've picked them in its menu)
             tint = QColor(self.folder.color) if self.folder.color else color
             name = self.folder.icon or ("ph.folder-open" if self.folder.expanded else "ph.folder")
             icon = _row_icon(name, tint)
@@ -805,8 +834,10 @@ class FavoriteTile(HoverFade, DraggableTab, QToolButton):
         self.refresh()
 
     def refresh(self):
-        self.setIcon(tab_icon(self.tab, self.browser.theme))
-        self.setToolTip(plain_tip(self.tab.label))
+        self.setIcon(home_icon(self.tab, self.browser.theme))
+        tip = (f"{display_host(self.tab.home_url)}\nNow: {self.tab.label}" if left_its_site(self.tab)
+               else self.tab.label)
+        self.setToolTip(plain_tip(tip))
         self.setAccessibleName(self.tab.label)
         self.update()  # the unread badge
 
@@ -1492,8 +1523,8 @@ class FavoritesGrid(DropZone):
         self.hint.setFixedHeight(32)
 
     def set_tabs(self, tabs):
-        # The same Favorites: kept, just refreshed, in the new Space's colours too (making them again is most of a
-        # rebuild's time, and switching to a Space of another colour made them all again)
+        # The same Favorites: kept, just refreshed, in the new Space's colors too (making them again is most of a
+        # rebuild's time, and switching to a Space of another color made them all again)
         self._tabs = tabs
         same = (tuple(map(id, tabs)), self._columns_that_fit())
         if self.tiles and same == getattr(self, "_built", None) and all(not sip.isdeleted(t) for t in self.tiles):
@@ -1656,6 +1687,8 @@ class ListFade(QWidget):
 
 
 class Sidebar(QWidget):
+    native = None  # (the Space part drawn by SwiftUI instead: sidebar_native.py, use_native)
+
     def __init__(self, browser, parent=None):
         super().__init__(parent)
         self.browser = browser
@@ -1680,8 +1713,9 @@ class Sidebar(QWidget):
         # traffic lights)
         top.addItem(QSpacerItem(0, 26, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed))
         self.toggle_btn = IconButton("msc.layout-sidebar-left", "Toggle Sidebar (⌘S)")
-        self.back_btn = IconButton("ph.arrow-left", "Back (⌘[)")
-        self.forward_btn = IconButton("ph.arrow-right", "Forward (⌘])")
+        # (Phosphor's arrows fill less of their square than the toggle and reload do: drawn a little bigger to match)
+        self.back_btn = IconButton("ph.arrow-left", "Back (⌘[)", icon_size=19)
+        self.forward_btn = IconButton("ph.arrow-right", "Forward (⌘])", icon_size=19)
         self.reload_btn = IconButton("ph.arrow-clockwise", "Reload (⌘R)")
         self.toggle_btn.clicked.connect(browser.toggle_sidebar)
         self.back_btn.clicked.connect(browser.go_back)
@@ -1776,7 +1810,7 @@ class Sidebar(QWidget):
         self.space_title.setObjectName("SpaceTitle")
         self.space_title.setIconSize(QSize(16, 16))
         self.space_title.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.space_title.setToolTip("Edit Space: name, icon, colour, profile")
+        self.space_title.setToolTip("Edit Space: name, icon, color, profile")
         self.space_title.clicked.connect(lambda: browser.edit_space())
         self.space_title.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.space_title.customContextMenuRequested.connect(lambda _pos: browser.edit_space())
@@ -1882,17 +1916,17 @@ class Sidebar(QWidget):
     # --- Rebuilding ----------------------------------------------------------
 
     def align_with_traffic_lights(self, at: QPoint | None = None):
-        """Centre the top-row buttons on the traffic lights, just to their right (like Arc). `at`: where
+        """Center the top-row buttons on the traffic lights, just to their right (like Arc). `at`: where
         the sidebar will be in the window, if that isn't where it is yet (the hidden one, about to slide out)."""
         lights = macos.traffic_lights(self)
         if lights is None:
             return
-        right, centre = lights
+        right, center = lights
         offset = at if at is not None else self.mapTo(self.window(), QPoint(0, 0))  # (it floats 6pt in when hidden)
         size = self.toggle_btn.height()
         layout = self.layout()
         margins = layout.contentsMargins()
-        layout.setContentsMargins(margins.left(), max(round(centre - offset.y() - size / 2), 0),
+        layout.setContentsMargins(margins.left(), max(round(center - offset.y() - size / 2), 0),
                                   margins.right(), margins.bottom())
         # A little more room after the lights than between them (~9pt), minus the button's padding (on the
         # right too: they move over into the sidebar), so the row doesn't feel crammed
@@ -1930,6 +1964,7 @@ class Sidebar(QWidget):
                 row._lay_out()
             row.refresh() if isinstance(row, FolderRow) else None
             row.update()
+        self._show_native()
 
     def rebuild(self):
         if getattr(self, "drag_active", False):
@@ -1965,6 +2000,51 @@ class Sidebar(QWidget):
         self._rebuild_switcher()
         self.update_selection()
         self.update_nav()
+        if self.native is not None:
+            self.native.schedule()
+
+    def use_native(self, on: bool):
+        """The Space part (its name, pinned tabs, New Tab, Today) drawn by SwiftUI (sidebar_native.py), or by
+        Qt again. The Qt one is still made, hidden, for everything that reads it."""
+        from . import sidebar_native
+        if on and self.native is None:
+            body = sidebar_native.NativeSidebarBody(self.browser, self)
+            if not body.ok:
+                body.close()
+                body.deleteLater()
+                return
+            self.native = body
+            layout = self.layout()
+            layout.insertWidget(layout.indexOf(self.scroll), body.container, 1)
+        elif not on and self.native is not None:
+            body, self.native = self.native, None
+            body.close()
+            body.container.deleteLater()
+            body.deleteLater()
+        self._show_native()
+        self.rebuild()
+
+    def grab(self, rect=QRect(QPoint(0, 0), QSize(-1, -1))):
+        """As Qt's, with the native view's picture where it is (Qt's own pictures can't see a native view: the
+        floating sidebar's slide out, say, would show it empty)."""
+        picture = super().grab(rect)
+        body = self.native
+        if body is not None and body.container.isVisible():
+            shot = body.page.snapshot()
+            if not shot.isNull():
+                shot.setDevicePixelRatio(shot.width() / max(1, body.container.width()))
+                area = rect if rect.isValid() else QRect(QPoint(0, 0), self.size())
+                p = QPainter(picture)
+                p.drawPixmap(body.container.geometry().topLeft() - area.topLeft(), shot)
+                p.end()
+        return picture
+
+    def _show_native(self):
+        native_shown = self.native is not None
+        if self.native is not None:
+            self.native.container.setVisible(native_shown)
+        self.scroll.setVisible(not native_shown)
+        self.list_fade.setVisible(not native_shown)
 
     # --- Tidy Tabs button: ✦ Tidy → ✦ Tidying… → ↶ Undo Tidy (for a few seconds) → ✦ Tidy -------
 
@@ -1983,6 +2063,8 @@ class Sidebar(QWidget):
         loose = sum(1 for n in self.browser.store.active_space.today if isinstance(n, Tab))
         self.tidy_btn.setVisible(claude is not None and not self.compact
                                  and (self._tidy_state != "idle" or claude.can_tidy(loose)))
+        if self.native is not None:
+            self.native.schedule()
 
     def _tidy_clicked(self):
         claude = self.browser.feature("claude")
@@ -2090,6 +2172,8 @@ class Sidebar(QWidget):
             if (row.property("insplit") is True) != in_split:
                 repolish(row, insplit=in_split)
             row.refresh()
+        if self.native is not None:
+            self.native.schedule()
         # A tab you switch to that's scrolled out of sight comes into view (only on switching: a refresh
         # doesn't pull the list back from where you've scrolled it)
         if current is not None and current is not getattr(self, "_scrolled_to", None):
@@ -2183,9 +2267,14 @@ class Sidebar(QWidget):
         text = getattr(self, "_pill_text", "")
 
         def room():
-            buttons = sum(b.sizeHint().width() + 4 for b in (*self.feature_chips, self.dev_btn, self.zoom_btn, self.shield_btn)
-                          if b.isVisibleTo(self))
-            return self.url_pill.width() - self.url_pill.iconSize().width() - 34 - buttons
+            # From where the text starts (the pill's padding, its icon and the gap after) to the first button
+            # inside it, where the layout has put them (estimates cut addresses that fitted)
+            pill = self.url_pill
+            pill.layout().activate()
+            buttons = [b for b in (*self.feature_chips, self.dev_btn, self.zoom_btn, self.shield_btn)
+                       if b.isVisibleTo(self) and b.parentWidget() is pill]
+            end = min((b.x() for b in buttons), default=pill.width() - PILL_PADDING)  # (a button's own padding's the gap)
+            return end - (PILL_PADDING + pill.iconSize().width() + 6)
         if self.dev_btn.isVisibleTo(self):
             # A narrow sidebar: the address you're building says more than the chip's word, which shrinks to
             # a dot (or just the error count)
@@ -2212,8 +2301,31 @@ class Sidebar(QWidget):
         # A site's address is cut from the left, so what's kept is the end, the part that says whose site it is:
         # "…login.evil.example", never "accounts.google.com.lo…"
         host = getattr(self, "_pill_host", False) and "/" not in text
+        if host:
+            # Too long: whole parts go from the front first ("dash.cloudflare.com" → "cloudflare.com", as Arc shows
+            # it), never the site's own name and ending; only that, still too long, is cut (rather than mid-word)
+            labels, keep = text.split("."), site_labels(text)
+            metrics = self.url_pill.fontMetrics()
+            while len(labels) > keep and metrics.horizontalAdvance(".".join(labels)) > room:
+                labels.pop(0)
+            text = ".".join(labels)
         elide = Qt.TextElideMode.ElideLeft if host else Qt.TextElideMode.ElideRight
-        self.url_pill.setText(self.url_pill.fontMetrics().elidedText(text, elide, max(room, 20)))
+        # Still too long: a little smaller (to 11px) before anything's cut; then cut from the left
+        size = PILL_FONT_PX
+        font = QFont(self.url_pill.font())
+        font.setPixelSize(size)
+        if host:
+            while size > PILL_MIN_FONT_PX:
+                font.setPixelSize(size)
+                if QFontMetrics(font).horizontalAdvance(text) <= room:
+                    break
+                size -= 1
+        if size != getattr(self, "_pill_font_px", PILL_FONT_PX):
+            self._pill_font_px = size
+            self.url_pill.setStyleSheet("" if size == PILL_FONT_PX else f"QPushButton#UrlPill {{ font-size: {size}px; }}")
+        font.setPixelSize(size)
+        metrics = QFontMetrics(font)
+        self.url_pill.setText(metrics.elidedText(text, elide, max(room, 20)))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -2273,6 +2385,21 @@ class Sidebar(QWidget):
         for row in self.findChildren(FolderRow):
             if row.folder is folder:
                 row.refresh()
+        if self.native is not None:
+            self.native.schedule()
+
+    def space_title_rect(self) -> QRect:
+        """The Space's name row, global (the native view's top, while it's shown)."""
+        native = self.native
+        if native is not None and native.container.isVisible():
+            return QRect(native.container.mapToGlobal(QPoint(0, 2)), QSize(native.container.width(), 30))
+        return QRect(self.space_title.mapToGlobal(QPoint(0, 0)), self.space_title.size())
+
+    def space_title_anchor(self) -> QPoint:
+        """Where the Space editor opens: under the Space's name (in the native view, while it's shown)."""
+        if self.native is not None and self.native.container.isVisible():
+            return self.native.anchor()
+        return self.space_title.mapToGlobal(QPoint(0, self.space_title.height() + 4))
 
     def update_shield(self):
         tab = self.browser.current_tab

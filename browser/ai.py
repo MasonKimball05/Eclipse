@@ -36,12 +36,12 @@ def find_claude() -> str | None:
 
 
 _QUESTION_WORDS = {"what", "why", "how", "who", "when", "where", "which", "is", "are", "can", "could", "does",
-                   "do", "did", "should", "would", "will", "explain", "summarize", "summarise", "tell", "list"}
+                   "do", "did", "should", "would", "will", "explain", "summarize", "summarize", "tell", "list"}
 
 
 def looks_like_question(text: str) -> bool:
     t = text.strip().lower()
-    if t in ("summarize", "summarise", "summary", "tldr", "tl;dr"):
+    if t in ("summarize", "summarize", "summary", "tldr", "tl;dr"):
         return True
     words = t.split()
     return (t.endswith("?") and len(t) > 3) or (len(words) >= 3 and words[0] in _QUESTION_WORDS)

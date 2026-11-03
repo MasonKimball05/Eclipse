@@ -367,9 +367,55 @@ class PageIndex(QObject):
 
 # --- Settings → Privacy → Excluded Sites… -------------------------------------------------------------------
 
+def excluded_sites_form(parent, browser):
+    """Excluded Sites as a native sheet (forms.py): the list, each removable, and a site to add; done on Done. Qt's
+    dialog where it can't be."""
+    from . import forms
+    index, settings = browser.page_index, browser.store.settings
+
+    def labeled():
+        return {("Any site's " + site[:-2] + "." if site.endswith(".*") else site)
+                + ("  (built in)" if built_in else ""): site for site, built_in in excluded(settings)}
+    shown = labeled()
+
+    def sections():
+        return [forms.section({"kind": "hint", "text": "Pages on these sites are never kept for searching or asking "
+                               "about. Banks, health records and mail are on the list from the start; remove one to "
+                               "let its pages in."},
+                              {"id": "sites", "kind": "list", "label": "", "value": list(shown),
+                               "placeholder": "None", "remove_help": "Let its pages in"}),
+                forms.section({"id": "new", "kind": "text", "label": "Exclude", "placeholder": "example.com"},
+                              {"id": "add", "kind": "action", "label": "", "title": "Add Site"})]
+
+    def added(form, _id, values):
+        host = QUrl.fromUserInput(str(values.get("new", "")).strip()).host().lower().removeprefix("www.")
+        if host:
+            back = settings.get(UNSKIP_SETTING, [])
+            if host in back:
+                back.remove(host)  # (a default you'd let back in, kept out again)
+            index.skip_site(host)
+            kept = set(values.get("sites", []))  # (any taken out meanwhile stay out, till Done)
+            shown.clear()
+            shown.update(labeled())
+            form.set({"new": "", "sites": [label for label, site in shown.items() if label in kept or site == host]})
+
+    def done(_, values):
+        kept = set(values.get("sites", []))
+        for label, site in shown.items():
+            if label not in kept:
+                unskip(settings, site)
+        browser.store.schedule_save()
+    form = forms.open_form(browser, "Excluded Sites", sections(), [{"id": "cancel", "label": "Cancel", "role": "cancel"},
+                                                                   {"id": "done", "label": "Done", "role": "default"}],
+                           done, width=480, height=560, on_page=forms.native_page_of(parent), on_field=added)
+    if form is None:
+        excluded_sites_dialog(parent, browser)
+    return form
+
+
 def excluded_sites_dialog(parent, browser):
     """The sites whose pages are never kept: yours (from the shield menu, or added here) and the built-in banks,
-    health and mail, each removable."""
+    health and mail, each removable (Qt's dialog)."""
     from PyQt6.QtCore import Qt
     from PyQt6.QtWidgets import (QDialog, QDialogButtonBox, QHBoxLayout, QInputDialog, QLabel, QListWidget,
                                  QListWidgetItem, QPushButton, QVBoxLayout)

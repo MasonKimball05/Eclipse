@@ -3,10 +3,10 @@
 # A bullet starting "[mine]", or a section whose heading does, is about the maker's own apps: only the maker's
 # copy shows it (see integrations.py).
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QObject, Qt
 from PyQt6.QtWidgets import QDialogButtonBox, QTextBrowser, QVBoxLayout, QWidget
 
-from . import brand
+from . import brand, native
 from .shortcuts import for_here
 from .motion import FadesIn
 from .theme import quiet_scrollbars, stylesheet
@@ -25,6 +25,32 @@ NOTES = """
   unread channels and mentions, or on YouTube's Watch Later list for what's next, as with Gmail and Calendar.
 - **Small windows**: opening the web panel or Ask About This Page in a small window widens it rather than
   squeezing the page, and ⌘T fits a short window, scrolling its results.
+- **Native windows**: on a Mac, Settings, the Library and Downloads are drawn by macOS itself. Settings is like
+  System Settings: a sidebar with search, real switches and menus, every page there (Classic Settings… at the
+  bottom of the sidebar opens the old window). The Library lists your history by day, with search and a right-click
+  menu; in Downloads a finished file drags out into any app, opens with a double-click, and shows in Quick Look
+  with the space bar. What's New and the update window are native too. The Space editor opens as a native popover
+  from the Space's name, and the theme editor, Space Rules, recipes, Boosts, New Live Folder, Download Settings,
+  Watch for Changes, Excluded Sites, addresses, passwords and screen sharing open as sheets on the window. Naming or
+  deleting things (a new Space, Rename Folder, Delete Space…) asks with macOS's own alerts.
+- **Pick a Space's colors on a field of color**: in the theme editor (click the Space's name, then Edit Theme…), each
+  color is a dot you drag across hues, from soft to vivid to deep, and the window follows as you go. Double-click
+  the field to add a second or third color for a gradient, and double-click a dot to take it out.
+- **Native sidebar**: your Spaces' tabs are drawn by macOS itself (on macOS 14 or later). Switching Spaces follows
+  your fingers on a swipe and runs at your display's full rate (120 frames a second on a ProMotion Mac, twice what
+  it was). Settings → General → Native sidebar turns it off for the classic one.
+- **Right-click Now Playing**: the card at the bottom of the sidebar for music in a tab you've left has a menu: go to
+  the tab, play or pause, next track, mute, close the tab, or Dismiss to put the card away while it keeps playing.
+- **Google sign-in works again**: signing in to Google no longer says "This browser or app may not be secure".
+- **Favorites stay themselves**: a favorite whose tab you've taken to another site keeps its own icon (YouTube's stays
+  YouTube's after you go to google.com in it), and its tooltip says where it is now.
+- **No jump on the first tab**: the first tab you open after starting Eclipse (after an update, say) no longer makes the
+  whole window flicker and jump.
+- **Readable addresses**: a long address in the sidebar drops whole parts from the front (dash.cloudflare.com shows as
+  cloudflare.com) and shrinks a little before anything's cut, and the traffic lights stay gray until you point at them.
+- **Polish**: the mini player comes back in its corner on the screen you're on, and leaves with the window when you
+  close it; the web panel makes room for Ask About This Page and takes it back after; a site with no icon gets its
+  name's letter (W for en.wikipedia.org); tidier Settings menus, Send Feedback box and update notes.
 
 ## Lately
 
@@ -39,7 +65,7 @@ NOTES = """
   as it was.
 - **Mail and calendar at a glance**: rest on a Gmail tab to see your newest unread mail, or on Google Calendar for
   what's coming up, instead of a picture of the page.
-- **Folders in colour**: right-click a folder → Colour or Icon to tell it apart at a glance.
+- **Folders in color**: right-click a folder → Color or Icon to tell it apart at a glance.
 - **Web panels**: right-click a tab → Open in Web Panel keeps its site (a chat, music, a to-do list) open beside
   whatever tab you're on. Add a few and flip between them with the icons down the panel's side, as in Zen; each
   stays loaded. ⌥⌘B shows or hides it.
@@ -51,7 +77,7 @@ NOTES = """
 - **⌘T glides**: the highlight moves smoothly from row to row with the arrow keys, without a flicker.
 - **Tab previews show memory**: rest on a tab to see how much memory its page is using. Resting on a sleeping tab
   starts waking it, so it's ready by the time you click.
-- **More card shapes and colours**: eight new colours and twelve new shapes for your Eclipse card, from a crescent
+- **More card shapes and colors**: eight new colors and twelve new shapes for your Eclipse card, from a crescent
   to a sunburst.
 - **Watch a page for changes**: right-click a tab → *Watch for Changes…*, or select part of a page, right-click
   and choose *Watch This*. Eclipse checks it in the background and tells you when it really changes ("Price
@@ -77,7 +103,7 @@ NOTES = """
   Homebase folder (⌘T → Add Live Folders for My Apps) for your apps and how each is doing; ⌘T → Homebase Apps
   still restarts, stops and shows logs, and a toast still says when one goes down.
 - **Smoother Space swipes**: the Spaces either side are made ready ahead, so a swipe moves the moment your
-  fingers do, and the colours turn over once you're past halfway. Three Spaces show at a time, a little bigger.
+  fingers do, and the colors turn over once you're past halfway. Three Spaces show at a time, a little bigger.
 - **Faster with lots of tabs**: switching Spaces no longer slows down as tabs pile up (about three times faster
   with 80 tabs).
 - **Memory Saver**: when your Mac runs short of memory, the tabs you've gone longest without using go to sleep,
@@ -137,7 +163,7 @@ NOTES = """
 - **A Window menu**: Minimize (⌘M), Zoom, Full Screen, and a list of your windows. Right-click Eclipse in the
   Dock for a new tab or window, or to switch Space.
 - **A start view**: with no tab open, the sites you visit most and the tabs you closed last, on your Space's
-  colours (Settings → Tabs → Start view turns it off).
+  colors (Settings → Tabs → Start view turns it off).
 - **Videos wait for a click** (Settings → Privacy): nothing plays by itself.
 - **Pause downloads**: a button beside Cancel in Downloads pauses and resumes.
 - **Tidier Settings**: Downloads, Profiles, Air Traffic Control, Extensions and My Apps are laid out like the
@@ -180,25 +206,25 @@ NOTES = """
   password, no password to type. Set a recovery PIN in Settings → Passkeys and they go into your backups, locked
   with it, so you can get them back on another Mac. Security keys (a YubiKey, say) work too.
 - **Dropdowns match the menus**: in Settings, the Space editor and everywhere else, a dropdown's list opens
-  just under its box, as wide as it, rounded and in your Space's colours.
+  just under its box, as wide as it, rounded and in your Space's colors.
 - **Verified builds**: Settings → General says whether this copy of Eclipse is a signed release, unchanged
   since, or built from source. macOS does the checking.
-- **Your cards** fit Settings at its usual size, and a new Eclipse card starts in its own colours. Your Arc card
+- **Your cards** fit Settings at its usual size, and a new Eclipse card starts in its own colors. Your Arc card
   is copied out of Arc as soon as Eclipse starts, so it's safe when Arc's data goes.
 - **Your cards** (Settings, the first page): a fresh Eclipse membership card, and your Arc card kept as it was.
 - **Ask About This Page** (⇧⌘A): a conversation about the page in a panel beside it, with follow-ups. Drag its
   edge to resize it, or pop it out into a small window that can stay on top.
-- **Livelier hover**: buttons and tiles everywhere light up under the pointer, tinted with your Space's colour.
+- **Livelier hover**: buttons and tiles everywhere light up under the pointer, tinted with your Space's color.
 - **Arc's type**: the sidebar and ⌘T are set in SF Pro Medium, as in Arc.
 - **Notes** have checklists (type "[] ", click a box to tick it, or ⇧⌘L) and headings ("# ").
-- **A fresh start**: Eclipse opens on your Space's colours, like Arc, not on the last page you had open.
+- **A fresh start**: Eclipse opens on your Space's colors, like Arc, not on the last page you had open.
 - **In your Applications folder**: Eclipse.app now installs where Finder shows it (it was in your home folder's).
 - **Sidebar polish**: tabs line up with the address bar, the list fades out at the bottom instead of cutting a
   row in half, the scrollbar floats over it like macOS's, and a tab you switch to scrolls into view. In a narrow
   sidebar the DEV chip shrinks to a dot so the address (or just its port) still shows.
 - **Easels**: text has corner handles too (drag one to change its size), ⌘B / ⌘I / ⌘U style it, and a knob above
   whatever's selected turns it (hold ⇧ for steps of 15°). Right-click for Duplicate, Bring to Front and Send to Back.
-- **Nothing open** is just your Space's colours now, like Arc, rather than an empty page.
+- **Nothing open** is just your Space's colors now, like Arc, rather than an empty page.
 - **Links that open apps** (Zoom, VS Code, Mail…) ask first, like Chrome's "Open zoom.us?".
 - **Security**: downloads get macOS's quarantine check, a downloaded page can't read your files, permission
   cards can't be swapped under your click, Zap only hears itself, and extensions can tell a page from its iframes.
@@ -238,7 +264,7 @@ they were. Rebuild the app (`./run.sh --build-app`) for the new icon in the Dock
 
 - Swipe on a page or the sidebar and it moves with you, as far as you like and back. Let go past
   the middle (or flick) to go, anywhere short of it to spring back. Pages slide over a picture of
-  where you're going; Spaces slide their tabs while the colours blend.
+  where you're going; Spaces slide their tabs while the colors blend.
 
 ## Safer links
 
@@ -269,7 +295,7 @@ they were. Rebuild the app (`./run.sh --build-app`) for the new icon in the Dock
 - **Reader view** (⌥⌘R) and **Translate Page** (⌘T), **Developer Mode** for localhost (⌥⌘J),
   **Now Playing** in the sidebar, two-finger **swipes** for back and forward.
 - **Cookie banners** are answered "Reject" for you. **Copied links** are the first thing ⌘T offers.
-- ⌘T now **finds pages by what they said**, does **sums, conversions, time zones and colours**, and
+- ⌘T now **finds pages by what they said**, does **sums, conversions, time zones and colors**, and
   remembers **search shortcuts** you add (Settings → General).
 - **Recently Closed** in the History menu; pinned tabs that wander show "/" and click home.
 
@@ -320,6 +346,39 @@ class WhatsNew(FadesIn, QWidget):
         layout.addWidget(buttons)
 
 
+class NativeWhatsNew(QObject):
+    """The same page drawn natively (SwiftUI, native/Sources/Pages.swift), where it's available."""
+
+    def __init__(self, browser):
+        super().__init__(browser)
+        self.browser = browser
+        self.page = None
+
+    def show(self):
+        from .member_card import is_maker
+        self.page = native.NativePage({
+            "page": "whats_new", "title": f"What's New in {brand.NAME}", "heading": f"What's New in {brand.NAME}",
+            "sections": native.note_sections(for_here(notes(is_maker()))), "width": 620, "height": 640,
+            **native.theme_state(self.browser.theme)}, self)
+        self.page.action.connect(lambda name, _: self.close() if name == "close" else None)
+
+    def raise_(self):
+        if self.page is not None:
+            self.page.front()
+
+    def close(self):
+        if self.page is not None:
+            self.page.close()
+
+    def isVisible(self) -> bool:
+        return self.page is not None and self.page.is_open()
+
+
+def window_for(browser):
+    """What's New, natively where that's built, else Qt's window."""
+    return NativeWhatsNew(browser) if native.available() else WhatsNew(browser)
+
+
 def show_if_new(browser):
     """After an update with something new: once."""
     settings = browser.store.settings
@@ -329,6 +388,6 @@ def show_if_new(browser):
     browser.store.schedule_save()
     if browser.store.is_new:
         return None  # a first launch has the Arc import to deal with; this can wait for ⌘T
-    window = WhatsNew(browser)
+    window = window_for(browser)
     window.show()
     return window

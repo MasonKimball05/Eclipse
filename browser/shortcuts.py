@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import QPushButton, QToolTip, QWidget
 SETTING = "shortcuts"
 DEFAULT = "eclipse_default_shortcut"
 DYNAMIC = "eclipse_menu_list"  # (an item of a list a menu fills itself, like the Window menu's windows: no shortcut)
-# macOS's own (quit, hide, minimise, switching apps and windows, Spotlight): Eclipse never sees some of them,
+# macOS's own (quit, hide, minimize, switching apps and windows, Spotlight): Eclipse never sees some of them,
 # and taking the rest would surprise you. ("Ctrl" is ⌘ on a Mac.)
 RESERVED = {"Ctrl+Q", "Ctrl+H", "Ctrl+Alt+H", "Ctrl+M", "Ctrl+Tab", "Ctrl+Shift+Tab", "Ctrl+Space", "Ctrl+`",
             "Ctrl+Shift+3", "Ctrl+Shift+4", "Ctrl+Shift+5"} if sys.platform == "darwin" else {"Alt+F4", "Alt+Tab"}

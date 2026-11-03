@@ -55,9 +55,10 @@ RESTORE = """(() => {
 TOGGLE_PLAY = """(() => {
   const v = document.querySelector('video[data-pb-mini]');
   if (!v) return null;
-  v.paused ? v.play() : v.pause();
-  return v.paused;
+  if (!v.paused) { v.pause(); return true; }
+  return v.play().then(() => false, () => true);  // (refused, say by "videos wait for a click": still paused)
 })()"""
+IS_PAUSED = "document.querySelector('video[data-pb-mini]')?.paused ?? null"
 PAUSE = "document.querySelector('video[data-pb-mini]')?.pause()"
 # The site's own next button (YouTube, Spotify, SoundCloud, YouTube Music…), shown: Now Playing's next track too
 NEXT_BUTTON = """['.ytp-next-button', '[data-testid="control-button-skip-forward"]', '.skipControl__next',
@@ -91,6 +92,7 @@ class Grip(QWidget):
         self._from = None
 
     def mousePressEvent(self, event):
+        motion.stop(self.window_)  # (still gliding to its corner: the resize starts from where it is)
         self._from = (event.globalPosition().toPoint(), self.window_.geometry())
 
     def mouseMoveEvent(self, event):
@@ -203,6 +205,7 @@ class MiniPlayerWindow(QFrame):
 
     # Drag anywhere on the control strip to move the player
     def mousePressEvent(self, event):
+        motion.stop(self)  # (grabbed again mid-glide: the drag has it, not the glide)
         self._drag_from = event.globalPosition().toPoint() - self.pos()
 
     def mouseMoveEvent(self, event):
@@ -246,8 +249,10 @@ class MiniPlayer:
             self._restore(return_view=False)
 
     def audible_changed(self, tab):
+        # Asked of the video: a quiet stretch isn't a pause, and sound starting or stopping may be the site's own controls
         if tab is self.tab and self.window is not None:
-            self.window.set_playing(self.browser.tab_audio(tab)[0])
+            tab.view.page().runJavaScript(IS_PAUSED, WORLD, lambda paused: paused is not None and tab is self.tab
+                                          and self.window is not None and self.window.set_playing(not paused))
 
     # The player itself ----------------------------------------------------------------------------
 
@@ -255,17 +260,25 @@ class MiniPlayer:
         # Still away from it? (The user may have come straight back, or put it in Split View.)
         if self._on_screen(tab) or tab.view is None or self.tab is not None:
             return
+        view = tab.view
+        # Only with a video to show (the page may have swapped its player since): never the whole page in it
+        view.page().runJavaScript(VIDEO_ONLY, WORLD, lambda found: found and self._show_player(tab))
+
+    def _show_player(self, tab):
+        if self._on_screen(tab) or tab.view is None or self.tab is not None:
+            tab.view is not None and tab.view.page().runJavaScript(RESTORE, WORLD)
+            return
         if self.window is None:
             self.window = MiniPlayerWindow(self)
-            self.window.setStyleSheet(stylesheet(self.browser.theme) + MINI_STYLE)
-            settings = self.browser.store.settings
-            w = (settings.get(SIZE_SETTING) or [DEFAULT_SIZE.width()])[0]
-            w = max(MIN_SIZE.width(), min(MAX_SIZE.width(), w))
-            self.window.resize(w, round(w / ASPECT))
-            self.window.move(self._corner_spot(settings.get(CORNER_SETTING, "br"), self._screen_area()))
+        # Each time, on the screen the browser is on now, in its corner, in the Space's look
+        self.window.setStyleSheet(stylesheet(self.browser.theme) + MINI_STYLE)
+        settings = self.browser.store.settings
+        w = (settings.get(SIZE_SETTING) or [DEFAULT_SIZE.width()])[0]
+        w = max(MIN_SIZE.width(), min(MAX_SIZE.width(), w))
+        self.window.resize(w, round(w / ASPECT))
+        self.window.move(self._corner_spot(settings.get(CORNER_SETTING, "br"), self._screen_area()))
         self.tab = tab
         view = tab.view
-        view.page().runJavaScript(VIDEO_ONLY, WORLD)
         self.window.view_layout.addWidget(view)  # takes it out of the main window's page stack
         view.show()
         self.window.title.setText(tab.label)
@@ -311,8 +324,8 @@ class MiniPlayer:
         window = self.window
         if window is None:
             return
-        area, centre = self._screen_area(), window.geometry().center()
-        corner = ("t" if centre.y() < area.center().y() else "b") + ("l" if centre.x() < area.center().x() else "r")
+        area, center = self._screen_area(), window.geometry().center()
+        corner = ("t" if center.y() < area.center().y() else "b") + ("l" if center.x() < area.center().x() else "r")
         settings = self.browser.store.settings
         settings[CORNER_SETTING] = corner
         settings[SIZE_SETTING] = [window.width(), window.height()]
@@ -341,6 +354,9 @@ class MiniPlayer:
 
     def back_to_tab(self):
         if self.tab is not None:
+            if self.browser.store.locate(self.tab) is None:
+                self.close()  # (archived or moved away meanwhile: nothing to go back to)
+                return
             self.browser.activate_tab(self.tab)  # which calls release()
             self.browser.raise_()
             self.browser.activateWindow()

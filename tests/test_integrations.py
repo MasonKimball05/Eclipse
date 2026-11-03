@@ -139,9 +139,11 @@ def test_up_next():
     assert live["live"] and when_text(live, datetime.datetime(2026, 10, 23, 14, 30, tzinfo=datetime.timezone.utc)) \
         == "Now · 30 min left"
     assert next_event(feed, datetime.datetime(2026, 10, 23, 16, 0, tzinfo=datetime.timezone.utc)) is None
+    # Said to be done: the next one shows instead (none here)
+    assert next_event(feed, now, frozenset({event["key"]})) is None
 
 
-def test_job_postings_are_recognised():
+def test_job_postings_are_recognized():
     from browser.integrations import is_job_posting
     assert is_job_posting("https://www.linkedin.com/jobs/view/4012345678/")
     assert is_job_posting("https://boards.greenhouse.io/acme/jobs/1234567")

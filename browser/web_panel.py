@@ -8,7 +8,7 @@
 # header's arrow moves the one showing into a tab.
 
 from PyQt6 import sip
-from PyQt6.QtCore import QEvent, QSize, Qt, QUrl
+from PyQt6.QtCore import QEvent, QSize, Qt, QTimer, QUrl
 from PyQt6.QtWidgets import QBoxLayout, QFrame, QHBoxLayout, QMenu, QStackedLayout, QToolButton, QVBoxLayout
 
 from . import motion
@@ -71,7 +71,7 @@ class WebPanel(QFrame):
         strip.addWidget(self.close_btn, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addLayout(strip)
         self.strip = strip
-        # Rounded like the page beside it (a page can't be clipped: the window's colours over its corners)
+        # Rounded like the page beside it (a page can't be clipped: the window's colors over its corners)
         self.corners = [Corner(self.browser, which, self) for which in ("tl", "tr", "bl", "br")]
         for corner in self.corners:
             corner.hide()
@@ -185,6 +185,8 @@ class WebPanel(QFrame):
             self._place_corners()
         elif event.type() == QEvent.Type.Resize and obj is self.browser.content_wrap:
             self.fit()
+        elif event.type() == QEvent.Type.LayoutRequest and obj is self.browser.content_wrap and not self.isHidden():
+            QTimer.singleShot(0, self.fit)  # (Ask About This Page opened or closed beside it: the room changed)
         return False
 
     def _place_corners(self):

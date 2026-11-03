@@ -1,6 +1,6 @@
 
 
-def test_letter_tiles_stay_readable_on_pale_colours(qapp):
+def test_letter_tiles_stay_readable_on_pale_colors(qapp):
     from PyQt6.QtGui import QColor
     from browser.theme import _luminance, letter_icon
     for pale in ("#f4d4c4", "#fde68a", "#bbf7d0", "#ffffff"):
@@ -49,7 +49,7 @@ def test_a_wrapped_note_in_a_form_is_as_tall_as_its_text(qapp):
     host.close()
 
 
-def test_a_dark_grey_icon_gets_a_tile_on_a_dark_space_but_a_colourful_one_doesnt(qapp):
+def test_a_dark_gray_icon_gets_a_tile_on_a_dark_space_but_a_colorful_one_doesnt(qapp):
     from PyQt6.QtGui import QColor, QIcon, QPixmap
     from browser.theme import legible, make_theme
     dark = make_theme("#7c5cff", dark=True)
@@ -59,5 +59,5 @@ def test_a_dark_grey_icon_gets_a_tile_on_a_dark_space_but_a_colourful_one_doesnt
         pixmap.fill(QColor(color))
         return QIcon(pixmap)
     octocat, youtube = solid("#24292e"), solid("#ff0000")
-    assert legible(octocat, dark) is not octocat  # (GitHub's grey: tiled)
+    assert legible(octocat, dark) is not octocat  # (GitHub's gray: tiled)
     assert legible(youtube, dark) is youtube

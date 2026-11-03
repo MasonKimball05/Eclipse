@@ -20,14 +20,21 @@ def build_profile(parent, name=DEFAULT_PROFILE) -> QWebEngineProfile:
     profile.setPersistentStoragePath(str(folder))
     profile.setCachePath(str(folder / "cache"))
     profile.setDownloadPath(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation))
-    # Some sites serve a degraded page when they see "QtWebEngine" in the user agent
-    profile.setHttpUserAgent(re.sub(r"QtWebEngine/\S+\s*", "", profile.httpUserAgent()))
+    look_like_chrome(profile)
 
     settings = profile.settings()
     settings.setAttribute(QWebEngineSettings.WebAttribute.FullScreenSupportEnabled, True)
     settings.setAttribute(QWebEngineSettings.WebAttribute.ScrollAnimatorEnabled, True)
     harden(profile)
     return profile
+
+
+def look_like_chrome(profile):
+    """The User-Agent without "QtWebEngine" (some sites serve a degraded page when they see it); the engine's
+    own, untouched, is kept for Google's sign-in (site_quirks.py)."""
+    from . import site_quirks
+    site_quirks.remember_engine_agent(profile.httpUserAgent())
+    profile.setHttpUserAgent(re.sub(r"QtWebEngine/\S+\s*", "", profile.httpUserAgent()))
 
 
 def harden(profile):
@@ -40,6 +47,15 @@ def harden(profile):
     profile.settings().setAttribute(QWebEngineSettings.WebAttribute.JavascriptCanOpenWindows, False)
     # Nor open another app (zoommtg:, vscode:…) by itself: the browser's visible pages ask first (WebPage)
     profile.settings().setUnknownUrlSchemePolicy(QWebEngineSettings.UnknownUrlSchemePolicy.DisallowUnknownUrlSchemes)
+    if not profile.scripts().find("eclipse-quirks"):
+        from . import site_quirks
+        quirks = QWebEngineScript()  # (Google's sign-in sees the engine as it is: site_quirks.py)
+        quirks.setName("eclipse-quirks")
+        quirks.setSourceCode(site_quirks.script_source())
+        quirks.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+        quirks.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
+        quirks.setRunsOnSubFrames(True)
+        profile.scripts().insert(quirks)
     if not profile.scripts().find("eclipse-painted"):
         painted = QWebEngineScript()  # (each page says when it's about to draw its first frame)
         painted.setName("eclipse-painted")
@@ -48,15 +64,6 @@ def harden(profile):
         painted.setWorldId(QWebEngineScript.ScriptWorldId.ApplicationWorld)
         painted.setRunsOnSubFrames(False)
         profile.scripts().insert(painted)
-    if not profile.scripts().find("eclipse-quirks"):
-        from . import site_quirks
-        quirks = QWebEngineScript()  # (sites that need to see another browser: Google's sign-in)
-        quirks.setName("eclipse-quirks")
-        quirks.setSourceCode(site_quirks.script_source())
-        quirks.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
-        quirks.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
-        quirks.setRunsOnSubFrames(True)
-        profile.scripts().insert(quirks)
 
 
 # Content scripts and userscripts call the extension runtime with console messages starting with

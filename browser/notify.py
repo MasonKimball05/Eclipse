@@ -79,9 +79,13 @@ class Banner(QFrame):
         row.addWidget(icon)
         row.addLayout(text, 1)
         row.addWidget(close, 0, Qt.AlignmentFlag.AlignTop)
-        # Owned by the banner, so it can't fire after the banner's gone
-        self._timer = QTimer(self, singleShot=True, interval=BANNER_MS, timeout=lambda: center.dismiss(self))
+        # Owned by the banner, so it can't fire after the banner's gone (and a method, not a lambda holding the
+        # banner: that made a cycle the garbage collector could take apart while the timer still ran)
+        self._timer = QTimer(self, singleShot=True, interval=BANNER_MS, timeout=self._expire)
         self._timer.start()
+
+    def _expire(self):
+        self.center.dismiss(self)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:

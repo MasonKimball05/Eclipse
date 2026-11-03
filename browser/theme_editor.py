@@ -1,4 +1,4 @@
-# Arc's Space theme picker: up to three colours blended into the window, how strongly
+# Arc's Space theme picker: up to three colors blended into the window, how strongly
 # they tint it, light/dark per Space, and an optional grain texture. Every change
 # previews live on the real window; Cancel puts the old theme back.
 
@@ -11,6 +11,54 @@ from .theme import DEFAULT_SPACE_THEME, PALETTE, stylesheet
 
 MAX_COLORS = 3
 DRAG_MS = 30  # while the intensity's being dragged, the window's restyled at most this often
+
+
+def edit_theme(browser, space):
+    """The theme editor: a native sheet previewing on the window as you go (forms.py), else Qt's dialog."""
+    from . import forms
+    original = (space.color, dict(space.theme))
+    t = {**DEFAULT_SPACE_THEME, **space.theme}
+
+    def apply(values):
+        colors = [c for c in values.get("colors", []) if isinstance(c, str) and c.startswith("#")][:MAX_COLORS]
+        if not colors:
+            return
+        mode = values.get("mode") if values.get("mode") in ("auto", "light", "dark") else "auto"
+        space.color = colors[0]
+        space.theme = {"colors": colors if len(colors) > 1 else [], "intensity": float(values.get("intensity", 0.5)),
+                       "mode": mode, "grain": bool(values.get("grain"))}
+        browser.apply_theme()
+
+    def done(_, values):
+        apply(values)
+        browser.store.schedule_save()
+
+    form = None
+
+    def closed():
+        if form is not None and not form.saved:  # (Cancel, or closed: the theme it had)
+            space.color, space.theme = original
+            browser.apply_theme()
+    form = forms.open_form(
+        browser, f"{space.name} · Theme",
+        [forms.section({"id": "colors", "kind": "gradient", "label": "Colors", "max": MAX_COLORS,
+                        "value": list(t["colors"]) or [space.color]},
+                       {"id": "presets", "kind": "swatches", "label": "", "target": "colors",
+                        "options": [{"value": c, "label": n} for n, c in PALETTE]},
+                       footer="Drag a dot to change its color. Double-click the field to add one (up to three, "
+                              "blended into a gradient); double-click a dot to take it out."),
+         forms.section({"id": "intensity", "kind": "slider", "label": "Intensity", "min": 0, "max": 1,
+                        "value": float(t["intensity"])},
+                       {"id": "mode", "kind": "menu", "label": "Appearance", "style": "segmented", "value": t["mode"],
+                        "options": [{"value": "auto", "label": "Match System"}, {"value": "light", "label": "Light"},
+                                    {"value": "dark", "label": "Dark"}]},
+                       {"id": "grain", "kind": "toggle", "label": "Grain texture", "value": bool(t["grain"])})],
+        [{"id": "cancel", "label": "Cancel", "role": "cancel"}, {"id": "done", "label": "Done", "role": "default"}],
+        done, width=460, height=640, on_change=apply, on_closed=closed)
+    if form is not None:
+        return form
+    ThemeEditor(browser, space).exec()
+    return None
 
 
 class ThemeEditor(QDialog):
@@ -28,11 +76,11 @@ class ThemeEditor(QDialog):
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
-        layout.addWidget(self._heading("Colours"))
+        layout.addWidget(self._heading("Colors"))
         self.swatch_row = QHBoxLayout()
         self.swatch_row.setSpacing(8)
         layout.addLayout(self.swatch_row)
-        hint = QLabel("Click a colour to change it. Two or three colours blend into a gradient.")
+        hint = QLabel("Click a color to change it. Two or three colors blend into a gradient.")
         hint.setObjectName("Hint")
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -109,7 +157,7 @@ class ThemeEditor(QDialog):
         for i, color in enumerate(self.colors):
             swatch = QPushButton()
             swatch.setFixedSize(46, 46)
-            swatch.setToolTip("Change colour" + ("  (right-click to remove)" if len(self.colors) > 1 else ""))
+            swatch.setToolTip("Change color" + ("  (right-click to remove)" if len(self.colors) > 1 else ""))
             swatch.setStyleSheet(f"background: {color}; border-radius: 23px; border: 2px solid white;")
             swatch.clicked.connect(lambda _=False, i=i: self._pick(i))
             swatch.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -118,14 +166,14 @@ class ThemeEditor(QDialog):
         if len(self.colors) < MAX_COLORS:
             add = QPushButton("+")
             add.setFixedSize(46, 46)
-            add.setToolTip("Add a colour")
+            add.setToolTip("Add a color")
             add.setStyleSheet("border-radius: 23px; font-size: 20px;")
             add.clicked.connect(self._add)
             self.swatch_row.addWidget(add)
         self.swatch_row.addStretch(1)
 
     def _pick(self, i):
-        color = QColorDialog.getColor(QColor(self.colors[i]), self, "Space Colour")
+        color = QColorDialog.getColor(QColor(self.colors[i]), self, "Space Color")
         if color.isValid():
             self._set_color(i, color.name())
 
@@ -135,7 +183,7 @@ class ThemeEditor(QDialog):
         self._apply()
 
     def _add(self):
-        # Start the new colour as a hue-shifted version of the last one, then let them tweak it
+        # Start the new color as a hue-shifted version of the last one, then let them tweak it
         last = QColor(self.colors[-1])
         self.colors.append(QColor.fromHsv((last.hsvHue() + 60) % 360, last.hsvSaturation(), last.value()).name())
         self._rebuild_swatches()

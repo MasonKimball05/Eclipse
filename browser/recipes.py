@@ -15,9 +15,10 @@ import uuid
 from urllib.parse import parse_qs
 
 from PyQt6.QtCore import QUrl
-from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QInputDialog, QLineEdit,
+from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLineEdit,
                              QMessageBox, QPlainTextEdit, QPushButton)
 
+from . import forms, prompts
 from .external_links import OWN_SCHEME
 from .features import Feature
 from .models import TODAY, Tab, walk_tabs
@@ -77,10 +78,10 @@ class RecipesFeature(Feature):
             self.window.toast("Open the tabs for your recipe first (in Today, or side by side)")
             return None
         if name is None:
-            name, ok = QInputDialog.getText(self.window, "Save Tabs as Recipe",
-                                            f"Name for these {len(urls)} tab{'s' if len(urls) != 1 else ''}:")
-            if not ok or not name.strip():
-                return None
+            prompts.ask_text(self.window, "Save Tabs as Recipe",
+                             f"Name for these {len(urls)} tab{'s' if len(urls) != 1 else ''}:",
+                             lambda typed: self.save_current(typed) if typed.strip() else None, action="Save")
+            return None
         recipe = {"id": uuid.uuid4().hex[:12], "name": name.strip(), "urls": urls, "split": split,
                   "space": self.window.store.active_space.id, "ask": ""}
         old = self.find(recipe["name"])
@@ -154,6 +155,11 @@ class RecipesFeature(Feature):
         return True
 
     def edit(self, recipe):
+        form = forms.open_form(self.window, f"Recipe · {recipe['name']}", recipe_sections(recipe, self.window.store.spaces),
+                               forms.save_buttons("Delete Recipe", f"Delete “{recipe['name']}”?"),
+                               lambda button, values: self._edited(recipe, button, values), width=500, height=480)
+        if form is not None:
+            return form
         dialog = RecipeDialog(self.window, recipe)
         answer = dialog.exec()
         if dialog.deleted:
@@ -162,6 +168,35 @@ class RecipesFeature(Feature):
             recipe.update(dialog.result_recipe())
         self.window.store.schedule_save()
         return dialog
+
+    def _edited(self, recipe, button, values):
+        if button == "delete":
+            if recipe in self.recipes():
+                self.recipes().remove(recipe)
+        else:
+            recipe.update(recipe_from(values))
+        self.window.store.schedule_save()
+
+
+def recipe_sections(recipe: dict, spaces) -> list[dict]:
+    """The recipe form (forms.py): as RecipeDialog has it, natively."""
+    ids = [space.id for space in spaces]
+    return [forms.section(
+        {"id": "name", "kind": "text", "label": "Name", "value": recipe["name"]},
+        {"id": "space", "kind": "menu", "label": "Space", "options": [{"value": s.id, "label": s.name} for s in spaces],
+         "value": recipe.get("space") if recipe.get("space") in ids else (ids[:1] or [""])[0]},
+        {"id": "urls", "kind": "lines", "label": "Pages (one per line)", "value": "\n".join(recipe.get("urls", [])),
+         "height": 120},
+        {"id": "split", "kind": "toggle", "label": f"Side by side (the first {MAX_PANES})",
+         "value": bool(recipe.get("split"))},
+        {"id": "ask", "kind": "text", "label": "Then", "placeholder": "Optional: ask Claude to Browse for Me…",
+         "value": recipe.get("ask", "")})]
+
+
+def recipe_from(values: dict) -> dict:
+    return {"name": str(values.get("name", "")).strip() or "Recipe", "space": values.get("space"),
+            "urls": web_urls(values.get("urls", "")), "split": bool(values.get("split")),
+            "ask": str(values.get("ask", "")).strip()}
 
 
 class RecipeDialog(QDialog):

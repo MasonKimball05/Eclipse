@@ -1,8 +1,10 @@
 # Eclipse's features, end to end, in the real window: swipes, Now Playing, Browse for Me, Easels, GitHub,
 # Boosts and Ask About This Page. Run with:  ./run.sh --live-tests
 
+import os
 import time
 
+import pytest
 from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt, QTimer, QUrl
 from PyQt6.QtGui import QMouseEvent, QWheelEvent
 from PyQt6.QtWebEngineCore import QWebEngineSettings
@@ -82,6 +84,79 @@ def test_now_playing_card_controls_a_background_tab(window, site):
     assert card.title.text() == "Blue in Green" and card.subtitle.text() == "Miles Davis"
     card.play_btn.click()
     assert wait_until(lambda: run_js(radio.view, "document.documentElement.getAttribute('data-pb-media')") == "paused", 5)
+    # Its right-click menu: what it can do; Dismiss hides it, the music going on, till you visit the tab
+    player = window.feature("now_playing").player
+    card.play_btn.click()  # (playing again)
+    assert wait_until(lambda: run_js(radio.view, "document.documentElement.getAttribute('data-pb-media')") == "playing", 5)
+    player.refresh()
+    assert wait_until(lambda: [a[1] for a in player.menu_actions() if a][:2] == ["Go to Tab", "Pause"], 5)
+    assert {"Mute Tab", "Dismiss", "Stop", "Close Tab"} <= {a[1] for a in player.menu_actions() if a}
+    player.dismiss()
+    assert not card.isVisible()
+    player.audible_changed(radio)  # (still playing: it stays away)
+    pause(0.6)
+    assert not card.isVisible() and player.dismissed is radio
+    window.activate_tab(radio)
+    assert player.dismissed is None
+
+
+def test_the_first_page_after_a_launch_doesnt_remake_the_window(window, site):
+    # (a launch opens on no tab: the first page used to have Qt switch the window to the GPU there and then,
+    # remaking it, so everything in it hid, showed again and jumped)
+    from PyQt6.QtCore import QEvent, QObject
+    from PyQt6.QtGui import QSurface
+    assert window.current_tab is None or window.current_tab.view is None
+    handle = window.windowHandle()
+    assert handle.surfaceType() == QSurface.SurfaceType.MetalSurface  # (already, before any page)
+    number = int(handle.winId())
+    flickers = []
+
+    class Watch(QObject):
+        def eventFilter(self, obj, event):
+            if event.type() in (QEvent.Type.Hide, QEvent.Type.Show):
+                flickers.append(event.type())
+            return False
+    watch = Watch()
+    window.sidebar.installEventFilter(watch)
+    open_page(window, site + "/article.html")
+    window.sidebar.removeEventFilter(watch)
+    assert int(window.windowHandle().winId()) == number and not flickers
+
+
+def test_up_next_card_right_click_says_done_or_hides_for_today(window, tmp_path, monkeypatch):
+    import datetime
+    import json
+    from browser import upnext
+    now = datetime.datetime.now().astimezone()
+    if now.hour >= 22:
+        pytest.skip("needs two events still to come today")
+    at = lambda minutes: (now + datetime.timedelta(minutes=minutes)).isoformat()  # noqa: E731
+    feed = tmp_path / "feed.json"
+    feed.write_text(json.dumps({"today": [
+        {"title": "Standup", "start": at(10), "end": at(25), "place": "https://meet.google.com/abc-defg-hij"},
+        {"title": "Review", "start": at(40), "end": at(70)}]}))
+    up = window.feature("up_next").up_next
+    monkeypatch.setattr(up, "path", feed)
+    monkeypatch.setitem(window.store.settings, upnext.SETTING, True)  # (off in the tests, but for this feed)
+    for key in (upnext.HIDDEN, upnext.QUIET):
+        monkeypatch.delitem(window.store.settings, key, raising=False)
+    up.refresh()
+    assert wait_until(lambda: up.event is not None and up.event["title"] == "Standup", 3)
+    names = [a[1] for a in up.menu_actions() if a]
+    assert names == ["Join Meeting", "Copy Meeting Link", "Open in Daybook", "Done, Show the Next One",
+                     "Hide for the Rest of Today"]
+    up.done()  # (the next one shows, and Standup stays done)
+    assert up.event["title"] == "Review" and "Join Meeting" not in [a[1] for a in up.menu_actions() if a]
+    up.refresh()
+    assert up.event["title"] == "Review"
+    up.quiet_today()
+    assert up.event is None
+    monkeypatch.delitem(window.store.settings, upnext.QUIET)
+    monkeypatch.delitem(window.store.settings, upnext.HIDDEN)
+    up.refresh()
+    assert up.event["title"] == "Standup"
+    monkeypatch.undo()
+    up.refresh()
 
 
 def test_space_swipe_follows_the_fingers_and_springs_back_only_if_barely_moved(window, site):
@@ -659,11 +734,11 @@ def test_a_video_keeps_playing_in_the_mini_player_when_you_leave_its_tab(window,
     from PyQt6.QtCore import QEvent, QPointF
     from PyQt6.QtGui import QEnterEvent
     from browser import mini_player
+    from PyQt6.QtCore import QRect
     player = window.mini_player
-    # (made ahead, off the screen: a test window mustn't float over yours)
-    player.window = mini_player.MiniPlayerWindow(player)
-    player.window.setStyleSheet(mini_player.stylesheet(window.theme) + mini_player.MINI_STYLE)
-    player.window.move(-4000, -4000)
+    # (its corners on a pretend screen, off yours: a test window mustn't float over yours)
+    screen = QRect(-6000, -4000, 1600, 1000)
+    player._screen_area = lambda: screen
     video = open_page(window, f"{site}/video.html")  # (a video with sound, made in the page)
     assert wait_until(lambda: window.tab_audio(video)[0], 5)
     other = open_page(window, f"{site}/index.html")  # leaving it: it floats, just the video
@@ -671,6 +746,8 @@ def test_a_video_keeps_playing_in_the_mini_player_when_you_leave_its_tab(window,
     assert video.view.parentWidget() is player.window
     assert wait_until(lambda: run_js(video.view, "!!document.getElementById('pb-mini-style')"), 3)
     assert player.window.title.text() == "Video Tab"
+    corner = player._corner_spot(window.store.settings.get(mini_player.CORNER_SETTING, "br"), screen)
+    assert player.window.pos() == corner  # (in its corner of the screen the browser's on)
     import sys
     if sys.platform == "darwin":  # rounded like Arc's, the page in it too (macOS clips it: its style can't)
         from browser import macos
@@ -719,24 +796,33 @@ def test_a_video_keeps_playing_in_the_mini_player_when_you_leave_its_tab(window,
     assert mini.size() == mini_player.MAX_SIZE
     mini.resize_from("r", mini.geometry(), QPoint(-5000, 0))
     assert mini.size() == mini_player.MIN_SIZE
-    # Let go: it glides to the nearest corner of its screen (a pretend one, off yours), and that's kept
-    screen = QRect(-6000, -4000, 1600, 1000)
-    player._screen_area = lambda: screen
+    # Let go: it glides to the nearest corner of its screen (the pretend one), and that's kept
     mini.move(screen.left() + 1100, screen.top() + 150)  # (top right of the screen)
     player.settle()
     spot = QPoint(screen.right() + 1 - mini_player.MARGIN - mini.width(), screen.top() + mini_player.MARGIN)
     assert wait_until(lambda: mini.pos() == spot, 2), (mini.pos(), spot)
     assert window.store.settings[mini_player.CORNER_SETTING] == "tr"
     assert window.store.settings[mini_player.SIZE_SETTING] == [mini.width(), mini.height()]
-    mini.move(-4000, -4000)
+    mini.move(screen.left() + 100, screen.bottom() - 300)  # grabbed again mid-glide: the drag has it, not the glide
+    player.settle()
+    pause(0.05)
+    from PyQt6.QtGui import QMouseEvent
+    press = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(5, 5), QPointF(mini.mapToGlobal(QPoint(5, 5))),
+                        Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+    QApplication.sendEvent(mini, press)
+    held = mini.pos()
+    pause(0.3)
+    assert mini.pos() == held  # (stopped where it was)
+    mini._drag_from = None
 
     window.activate_tab(video)  # back to its tab: back in the page, as it was
     assert player.tab is None and not player.window.isVisible()
     assert video.view.parentWidget() is not player.window and video.view.isVisible()
     assert wait_until(lambda: not run_js(video.view, "!!document.getElementById('pb-mini-style')"), 3)
 
-    window.activate_tab(other)  # away again, then closed: it stops
+    window.activate_tab(other)  # away again: back in the corner it was left in, then closed: it stops
     assert wait_until(lambda: player.tab is video, 5)
+    assert player.window.pos() == player._corner_spot(window.store.settings[mini_player.CORNER_SETTING], screen)
     player.close()
     assert player.tab is None and not player.window.isVisible()
     assert wait_until(lambda: run_js(video.view, "document.getElementById('v').paused"), 3)
@@ -749,6 +835,15 @@ def test_a_video_keeps_playing_in_the_mini_player_when_you_leave_its_tab(window,
     pause(1)
     assert player.tab is None and not player.window.isVisible()
     window.store.settings["mini_player_enabled"] = True
+
+    window.activate_tab(video)  # the window put away (closed, Eclipse still running): the player goes too
+    run_js(video.view, "document.getElementById('v').play(); true")
+    assert wait_until(lambda: window.tab_audio(video)[0], 5)
+    window.activate_tab(other)
+    assert wait_until(lambda: player.tab is video, 5)
+    window._put_away()
+    assert player.tab is None and not player.window.isVisible()
+    window.show()
 
 
 def test_the_window_menu_lists_the_windows_and_minimizes_the_front_one(window):
@@ -1249,7 +1344,7 @@ def test_switching_spaces_slides_with_no_tab_open_too(window):
     first = store.active_space
     window.switch_space(second)
     slides = [w for w in window.findChildren(SpaceSlide) if w.isVisible()]
-    # Over the whole window: the start view takes on the new Space's colours and name with the rest, past halfway
+    # Over the whole window: the start view takes on the new Space's colors and name with the rest, past halfway
     assert len(slides) == 1 and slides[0].mask().isEmpty() and slides[0].geometry() == window.rect()
     travels = []
     end = time.monotonic() + 0.5
@@ -1826,6 +1921,18 @@ def test_panels_beside_the_page_never_crush_it_in_a_small_window(window, site):
     from browser.window import MIN_SIZE, PAGE_MIN
     open_page(window, f"{site}/index.html")
     size = window.size()
+    window.resize(1400, size.height())  # Ask opened beside the panel: the panel makes room, and takes it back after
+    panel = window.feature("web_panel").panel
+    panel.open(f"{site}/links.html")
+    assert wait_until(lambda: panel.isVisible(), 3)
+    pause(0.3)
+    alone = panel.width()
+    window.feature("page_chat").toggle()
+    assert wait_until(lambda: panel.width() < alone, 3)
+    window.feature("page_chat").toggle()
+    assert wait_until(lambda: panel.width() == alone, 3)
+    panel.close_panel()
+    assert wait_until(lambda: window.minimumWidth() == MIN_SIZE[0], 3)  # (once it's faded out)
     window.resize(*MIN_SIZE)
     assert wait_until(lambda: window.width() == MIN_SIZE[0], 2)
     panel = window.feature("web_panel").panel
@@ -2257,7 +2364,7 @@ def test_dragging_the_theme_intensity_keeps_up_and_cancel_wins(window):
         window.apply_theme()
 
 
-def test_a_space_swipe_turns_the_colours_over_past_halfway_and_catches_up_smoothly(window):
+def test_a_space_swipe_turns_the_colors_over_past_halfway_and_catches_up_smoothly(window):
     from browser.gestures import CATCH_UP_RATE
     from browser.space_slide import _smooth
     # The window looks like the Space you're leaving until past halfway, and the next one's by the end
@@ -2390,7 +2497,7 @@ def test_a_swipe_not_far_enough_springs_back_smoothly(window):
 
 
 def test_the_address_slides_across_rounded_not_as_a_box(window):
-    # (grab() filled the pill's whole rectangle with its colour: during a switch it slid across as a box)
+    # (grab() filled the pill's whole rectangle with its color: during a switch it slid across as a box)
     from browser.space_slide import capture, cover_layout
     pause(0.3)
     regions, _mask = cover_layout(window)
@@ -2488,14 +2595,14 @@ def test_the_spaces_either_side_are_pictured_ahead_so_a_slide_starts_at_once(win
             samples = [(x, y) for x in range(0, a.width(), step) for y in range(0, a.height(), step)]
             same = sum(1 for x, y in samples if abs(a.pixelColor(x, y).value() - b.pixelColor(x, y).value()) < 24)
             return same / len(samples) > 0.9
-        assert all(close(m[1], r[1]) for m, r in zip(made[0], real[0]))  # (the colours round the page)
+        assert all(close(m[1], r[1]) for m, r in zip(made[0], real[0]))  # (the colors round the page)
         assert all(close(m[0], r[0]) for m, r in zip(made[1], real[1]))  # (its tabs and address)
-        # A slide to it starts at once: you're in it (a tab opened now goes there), its colours wait until it lands
-        colours = window.theme
+        # A slide to it starts at once: you're in it (a tab opened now goes there), its colors wait until it lands
+        colors = window.theme
         window.switch_space(second)
         slide = [c for c in window.findChildren(SpaceSlide) if c.isVisible()][0]
-        assert slide.after is made and store.active_space is second and window.theme is colours
-        assert wait_until(lambda: window.theme is not colours, 2)
+        assert slide.after is made and store.active_space is second and window.theme is colors
+        assert wait_until(lambda: window.theme is not colors, 2)
         assert wait_until(lambda: not [c for c in window.findChildren(SpaceSlide) if c.isVisible()], 2)
         # Tabs changing: the pictures are made again soon, and still used till then (thrown away, the next swipe
         # switched Spaces mid-slide, and dropped frames)
@@ -2534,3 +2641,699 @@ def test_older_pages_kept_for_swiping_back_are_compressed(window):
     back = shots.get(view, 0, "u0")  # opened again, the same picture
     assert back.size() == pictures[0].size() and back.devicePixelRatio() == 2.0
     assert abs(back.toImage().pixelColor(600, 400).green() - 100) < 8
+
+
+def test_whats_new_and_the_update_window_open_natively_where_built(window, monkeypatch):
+    import subprocess
+    from PyQt6 import sip
+    from browser import native, whats_new
+    from browser.update_window import SKIP_SETTING, NativeUpdateWindow
+    monkeypatch.setenv("ECLIPSE_NATIVE", "1")
+    if not native.available():
+        pytest.skip("the native pages aren't built (python tools/build_native.py)")
+    shots = os.environ.get("NATIVE_SHOTS")
+
+    window.show_whats_new()
+    page = window._whats_new
+    assert isinstance(page, whats_new.NativeWhatsNew) and page.isVisible()
+    state = page.page.state()
+    assert state["page"] == "whats_new" and state["sections"][0]["heading"] == "This week"
+    assert state["dark"] == window.theme.dark and state["accent"] == window.theme.accent.name()
+    assert any("mini player" in line["text"] for line in state["sections"][0]["lines"])
+    if shots:
+        pause(0.4)
+        subprocess.run(["screencapture", "-x", "-o", "-l", str(page.page.window_number()), f"{shots}/whats_new.png"])
+    page.page.press("close")  # (Close, from SwiftUI back through Python)
+    assert wait_until(lambda: not page.isVisible(), 3)
+
+    updater = window.feature("self_update").updater
+    found = {"state": "available", "build": 202611011200, "version": "Eclipse 2026.11.1", "size": 168_000_000,
+             "notes": "### This week\n- Better tabs\n- Passwords fill faster"}
+    asked = []
+    monkeypatch.setattr(updater, "update_and_restart", lambda: asked.append(1))
+    updater._manual = False
+    updater._offer(found)
+    offer = updater.window
+    assert isinstance(offer, NativeUpdateWindow) and offer.isVisible()
+    state = offer.page.state()
+    assert state["can_skip"] and "Eclipse 2026.11.1 · 168 MB." in state["about"]
+    assert [line["text"] for line in state["sections"][0]["lines"]] == ["Better tabs", "Passwords fill faster"]
+    offer.page.press("update")
+    assert asked == [1] and offer.page.state()["busy"]
+    updater._set_status({**found, "state": "downloading", "percent": 40})
+    assert offer.page.state()["progress"] == 40 and "40%" in offer.page.state()["status"]
+    if shots:
+        pause(0.4)
+        subprocess.run(["screencapture", "-x", "-o", "-l", str(offer.page.window_number()), f"{shots}/update.png"])
+    updater._set_status({"state": "failed", "reason": "The download didn't finish."})
+    state = offer.page.state()
+    assert not state["busy"] and state["go_label"] == "Try Again" and state["progress"] is None
+    offer.page.press("skip")
+    assert window.store.settings[SKIP_SETTING] == 202611011200
+    assert wait_until(lambda: not offer.isVisible(), 3)
+    QApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete.value)  # (the tests run no event loop of their own)
+    assert sip.isdeleted(offer)  # (closed, and let go of)
+    updater._offer(found)
+    assert updater.window is offer  # (skipped: not offered again by itself)
+    updater._set_status({"state": "idle"})
+
+
+def test_settings_open_natively_and_drive_their_qt_pages(window, monkeypatch):
+    import json
+    import subprocess
+    from browser import native, settings_native
+    monkeypatch.setenv("ECLIPSE_NATIVE", "1")
+    if not native.available():
+        pytest.skip("the native pages aren't built (python tools/build_native.py)")
+    shots = os.environ.get("NATIVE_SHOTS")
+    window.open_settings("tabs")
+    settings = window._settings
+    assert isinstance(settings, settings_native.NativeSettings) and settings.isVisible()
+    state = settings.page.state()
+    assert state["selected"] == "tabs" and not settings.qt.isVisible()  # (its Qt pages, never shown)
+    pages = {p["key"]: p for p in state["pages"]}
+    assert {"general", "tabs", "privacy", "passwords", "shortcuts"} <= set(pages)
+
+    def rows(page):
+        found = []
+        for item in pages[page]["items"]:
+            found += item["items"] if item["kind"] == "card" else [item]
+        return {r["title"]: r for r in found if r["kind"] == "row"}
+
+    peek = rows("tabs")["Peek"]["control"]  # a switch: flipped natively, the Qt checkbox's own handler runs
+    was = window.store.settings.get("peek_enabled", True)
+    assert peek["type"] == "toggle" and peek["checked"] == was
+    settings._act("toggle", {"id": peek["id"], "value": not was})
+    assert window.store.settings.get("peek_enabled", True) == (not was)
+    settings.refresh()
+    pages = {p["key"]: p for p in settings.page.state()["pages"]}
+    assert rows("tabs")["Peek"]["control"]["checked"] == (not was)  # (read again, and sent over)
+    settings._act("toggle", {"id": rows("tabs")["Peek"]["control"]["id"], "value": was})
+
+    engine = rows("general")["Search engine"]["control"]  # a menu
+    assert engine["type"] == "menu" and "DuckDuckGo" in engine["options"]
+    settings._act("choose", {"id": engine["id"], "value": engine["options"].index("DuckDuckGo")})
+    assert window.store.settings["search_engine"] == "duckduckgo"
+    settings._act("choose", {"id": engine["id"], "value": engine["index"]})
+
+    card = next(i for i in pages["general"]["items"] if i["kind"] == "card"
+                and any(r.get("title") == "App icon" for r in i["items"]))
+    icons = card["items"][[r.get("title") for r in card["items"]].index("App icon") + 1]["control"]
+    # (the icon grid under it: pictures to pick from, the chosen one ringed)
+    assert icons["type"] == "group" and icons["axis"] == "grid"
+    assert sum(i["checked"] for i in icons["items"]) == 1 and all(i["type"] == "icon" and i["png"] for i in icons["items"])
+    default = rows("general")["Default browser"]  # (its status, added under its title after it was made)
+    assert default["description"] and default["control"]["text"] == "Make Default"
+    new_tab = rows("shortcuts")["New Tab"]["control"]  # a shortcut, typed natively, given to the menu item
+    assert new_tab["type"] == "keys"
+    assert settings_native.mac_keys({"key": "t", "cmd": True, "shift": True}) == "Ctrl+Shift+T"
+    assert settings_native.mac_keys({"key": "t"}) is None and settings_native.mac_keys({"key": "F5"}) == "F5"
+    assert settings_native.mac_keys({"key": "left", "alt": True, "ctrl": True}) == "Meta+Alt+Left"
+    settings._act("keys", {"id": new_tab["id"], "key": "y", "cmd": True, "alt": True, "ctrl": True})
+    assert window.store.settings["shortcuts"] and "Meta+Ctrl+Alt+Y" in json.dumps(window.store.settings["shortcuts"])
+    settings.qt._reset_shortcuts([k for k in window.store.settings["shortcuts"]])
+    search = next(i["control"] for i in pages["shortcuts"]["items"]
+                  if i["kind"] == "control" and i["control"]["type"] == "text")
+    assert search["type"] == "text" and search["placeholder"] == "Search shortcuts…"
+    settings._act("text", {"id": search["id"], "value": "reopen", "finished": False})  # (filters as it's typed)
+    settings.refresh()
+    pages = {p["key"]: p for p in settings.page.state()["pages"]}
+    assert set(rows("shortcuts")) == {"Reopen Closed Tab"}
+    settings._act("text", {"id": search["id"], "value": "", "finished": True})
+
+    settings._act("select", {"key": "privacy"})
+    assert settings.current_key() == "privacy"
+    if shots:
+        for mode in ("light", "dark"):
+            space = window.store.active_space
+            space.theme = {**space.theme, "mode": mode}
+            window.apply_theme()
+            for key in [p["key"] for p in settings.page.state()["pages"] if p["key"] != "card"]:
+                window.open_settings(key)
+                pause(0.6)
+                subprocess.run(["screencapture", "-x", "-o", "-l", str(settings.page.window_number()),
+                                f"{shots}/settings_{mode}_{key}.png"])
+    assert json.dumps(settings.describe())  # (all of it can be sent)
+    tabs = len(list(window.store.all_tabs()))
+    assert settings.page.key("w")  # ⌘W closes Settings, not a tab (the menu bar is the browser's)
+    assert wait_until(lambda: not settings.isVisible(), 3)
+    assert len(list(window.store.all_tabs())) == tabs
+
+
+def test_the_library_and_downloads_open_natively(window, site, monkeypatch):
+    import subprocess
+    import time as clock
+    from browser import downloads, native
+    from browser.downloads_native import NativeDownloads
+    from browser.library_native import NativeLibrary
+    monkeypatch.setenv("ECLIPSE_NATIVE", "1")
+    if not native.available():
+        pytest.skip("the native pages aren't built (python tools/build_native.py)")
+    shots = os.environ.get("NATIVE_SHOTS")
+    now = clock.time()
+    import datetime
+    yesterday = datetime.datetime.combine(datetime.date.today() - datetime.timedelta(days=1), datetime.time(12))
+    window.store.history = [{"url": f"{site}/index.html", "title": "Index Page", "ts": now},  # (yesterday at noon:
+                            {"url": f"{site}/links.html", "title": "Links Page", "ts": yesterday.timestamp()}]  # any hour)
+    window.open_library()
+    library = window._library
+    assert isinstance(library, NativeLibrary) and library.isVisible()
+    state = library.page.state()
+    assert [e["title"] for e in state["entries"]] == ["Index Page", "Links Page"]
+    assert [e["day"] for e in state["entries"]] == ["Today", "Yesterday"] and state["can_clear"]
+    assert all(state["icons"][e["icon"]] for e in state["entries"])  # (each site's icon, as a picture)
+    library._act("search", {"value": "links"})  # searched: just what matches
+    assert [e["title"] for e in library.page.state()["entries"]] == ["Links Page"]
+    library._act("open", {"id": 0})  # opened: a tab for it
+    assert wait_until(lambda: window.current_tab is not None and window.current_tab.url.endswith("links.html"), 5)
+    library._act("search", {"value": ""})
+    library._act("remove", {"id": 0})  # removed from history
+    assert [h["title"] for h in window.store.history] == ["Links Page"]
+    library._act("section", {"key": "notes"})
+    assert library.page.state()["entries"] == [] and "notes" in library.page.state()["empty"].lower()
+    if shots:
+        library._act("section", {"key": "history"})
+        pause(0.5)
+        subprocess.run(["screencapture", "-x", "-o", "-l", str(library.page.window_number()), f"{shots}/library.png"])
+    assert library.page.key("w") and wait_until(lambda: not library.isVisible(), 3)
+
+    window.show_downloads()
+    view = window._native_downloads
+    assert isinstance(view, NativeDownloads) and view.isVisible()
+    item = downloads.DownloadItem("talk.mp4", "ph.film-strip")  # a download coming in, as a page's would
+    window.downloads_window.add(item)
+    item.fraction, item.status = 0.4, "12.0 MB of 30.0 MB"
+    item.changed.emit()
+    view.refresh()
+    shown = view.page.state()["items"]
+    assert len(shown) == 1 and shown[0]["fraction"] == 0.4 and shown[0]["symbol"] == "film"
+    assert shown[0]["status"] == "12.0 MB of 30.0 MB" and shown[0]["state"] == "running"
+    view.qt.info = {"title": "A Talk", "playlist": False, "count": 1, "uploader": "Someone", "duration": 600,
+                    "subtitles": ["en"], "has_video": True, "heights": [720, 1080], "url": f"{site}/video.html"}
+    view.qt._show_options(view.qt.info)  # what yt-dlp found at a link: how to save it
+    view.refresh()
+    options = view.page.state()["options"]
+    assert options["title"] == "A Talk" and options["video"] and "1080p" in " ".join(options["qualities"])
+    view._act("kind", {"value": "audio"})
+    assert view.page.state()["options"]["video"] is False and view.qt.audio_btn.isChecked()
+    if shots:
+        pause(0.5)
+        subprocess.run(["screencapture", "-x", "-o", "-l", str(view.page.window_number()), f"{shots}/downloads.png"])
+    item.state, item.status = "done", "Done"
+    item.changed.emit()
+    view._act("remove", {"id": id(item)})  # finished, then taken off the list
+    assert view.page.state()["items"] == [] and item not in view.qt.items
+    assert view.page.key("w") and wait_until(lambda: not view.isVisible(), 3)
+
+
+def test_space_rules_a_recipe_and_a_boost_are_native_forms(window, site, monkeypatch):
+    import subprocess
+    from browser import native
+    from browser.forms import NativeForm
+    monkeypatch.setenv("ECLIPSE_NATIVE", "1")
+    if not native.available():
+        pytest.skip("the native pages aren't built (python tools/build_native.py)")
+    shots = os.environ.get("NATIVE_SHOTS")
+    reloads = []
+    monkeypatch.setattr(window, "reload", lambda: reloads.append(1))
+
+    # Space Rules: what's set shows, and Save keeps what's filled in
+    rules = window.feature("space_rules")
+    work = window.store.spaces[1]
+    rules.rules()[work.id] = {"days": [0, 1], "start": "08:00", "end": "12:00", "blocked": ["x.com"]}
+    form = rules.edit(work)
+    assert isinstance(form, NativeForm) and form.is_open()
+    fields = {f["id"]: f for s in form.page.state()["sections"] for f in s["fields"] if f.get("id")}
+    assert fields["days"]["value"] == [0, 1] and fields["blocked"]["value"] == "x.com"
+    if shots:
+        pause(0.5)
+        subprocess.run(["screencapture", "-x", "-o", "-l", str(form.page.window_number()), f"{shots}/space_rules.png"])
+    form.fill({"days": [2, 3], "start": "10:00", "blocked": "news.example.com\nx.com"}, press="save")
+    assert wait_until(lambda: not form.is_open(), 3)
+    assert rules.rule(work) == {"days": [2, 3], "start": "10:00", "end": "12:00",
+                                "blocked": ["news.example.com", "x.com"]}
+    # Closed without saving (⌘W): nothing changes
+    form = rules.edit(work)
+    form.fill({"blocked": ""})
+    assert form.page.key("w") and wait_until(lambda: not form.is_open(), 3)
+    assert rules.rule(work)["blocked"] == ["news.example.com", "x.com"]
+    rules.set_rule(work, {})
+
+    # A recipe: renamed, then deleted (its confirmation answered)
+    recipes = window.feature("recipes")
+    recipe = {"name": "Morning", "space": work.id, "urls": [site + "/index.html"], "split": False, "ask": ""}
+    window.store.settings["recipes"] = [recipe]
+    form = recipes.edit(recipe)
+    assert [b["id"] for b in form.page.state()["buttons"]] == ["delete", "cancel", "save"]
+    if shots:
+        pause(0.5)
+        subprocess.run(["screencapture", "-x", "-o", "-l", str(form.page.window_number()), f"{shots}/recipe.png"])
+    form.fill({"name": "Evening", "urls": f"{site}/index.html\n{site}/links.html", "split": True}, press="save")
+    assert wait_until(lambda: not form.is_open(), 3)
+    assert recipe["name"] == "Evening" and len(recipe["urls"]) == 2 and recipe["split"]
+    form = recipes.edit(recipe)
+    form.fill({}, press="delete")
+    assert wait_until(lambda: not form.is_open(), 3) and window.store.settings["recipes"] == []
+
+    # A Boost for the page that's open: saved (and the page reloaded), then deleted
+    boosts = window.feature("boosts")
+    tab = open_page(window, site + "/index.html")
+    form = boosts.boost_site()
+    assert [b["id"] for b in form.page.state()["buttons"]] == ["cancel", "save"]  # (a new one: nothing to delete)
+    if shots:
+        pause(0.5)
+        subprocess.run(["screencapture", "-x", "-o", "-l", str(form.page.window_number()), f"{shots}/boost.png"])
+    form.fill({"css": "body { color: red }"}, press="save")
+    assert wait_until(lambda: not form.is_open(), 3) and reloads == [1]
+    saved = boosts.boosts.for_site("127.0.0.1")
+    assert len(saved) == 1 and saved[0].css == "body { color: red }"
+    form = boosts.boost_site(saved[0])
+    assert form.page.state()["buttons"][0]["id"] == "delete"
+    form.fill({}, press="delete")
+    assert wait_until(lambda: not form.is_open(), 3) and boosts.boosts.for_site("127.0.0.1") == []
+    window.close_tab(tab)
+
+    # A Live Folder: something missing says so and stays open; then it's made
+    live = window.feature("live_folders")
+    made = []
+    monkeypatch.setattr(live, "create_live_folder", lambda *a: made.append(a))
+    form = live.new_live_folder({"kind": "calendar"})
+    assert {f.get("id"): f for s in form.page.state()["sections"] for f in s["fields"]}["kind"]["value"] == "calendar"
+    if shots:
+        form.fill({"kind": "json", "json_auth": "token"})
+        pause(0.5)
+        subprocess.run(["screencapture", "-x", "-o", "-l", str(form.page.window_number()), f"{shots}/live_folder.png"])
+        form.fill({"kind": "calendar", "json_auth": "browser"})
+    form.fill({"calendar_url": ""}, press="create")
+    assert wait_until(lambda: "address" in form.page.state().get("error", ""), 3) and form.is_open() and not made
+    form.fill({"kind": "feed", "feed_url": "example.com/feed", "name": "News"}, press="create")
+    assert wait_until(lambda: not form.is_open(), 3)
+    assert made == [({"kind": "feed", "url": "https://example.com/feed", "named": True}, "News", None)]
+
+    # Download Settings: from the native Downloads window, a sheet on it
+    saved = dict(window.store.settings.get("ytdlp", {}))
+    window.show_downloads()
+    view = window._native_downloads
+    view._act("settings", {})
+    form = next(f for f in window.findChildren(NativeForm) if f.is_open())
+    assert form.page.state()["sheet_page"] == view.page.id
+    if shots:
+        pause(0.5)
+        subprocess.run(["screencapture", "-x", "-o", "-l", str(form.page.window_number()), f"{shots}/download_settings.png"])
+    form.fill({"max_height": "720", "kind": "audio"}, press="save")
+    assert wait_until(lambda: not form.is_open(), 3)
+    assert window.store.settings["ytdlp"]["max_height"] == 720 and window.store.settings["ytdlp"]["kind"] == "audio"
+    window.store.settings["ytdlp"] = saved
+    view.close()
+
+    # Where it can be, a sheet on the browser window (it stays behind with it), put away when closed: a second
+    # one comes, not queued behind the first
+    monkeypatch.setattr(native, "KEEP_BEHIND", False)
+    for cancel in (False, True):  # (⌘W, then Cancel)
+        form = rules.edit(work)
+        frame, outer = form.page.frame(), window.frameGeometry()
+        assert frame is not None and outer.left() <= frame.left() and frame.right() <= outer.right()
+        assert abs(frame.center().x() - outer.center().x()) <= 2 and 0 <= frame.top() - outer.top() < 140, (frame, outer)
+        form.fill({"blocked": "x.com"}, press="cancel") if cancel else form.page.key("w")
+        assert wait_until(lambda: not form.is_open(), 3)
+    assert rules.rule(work) == {}
+
+
+def test_names_and_questions_are_macos_alerts_on_the_window(window, monkeypatch):
+    from browser import native, prompts
+    from browser.models import Folder, Tab
+    monkeypatch.setenv("ECLIPSE_NATIVE", "1")
+    if not native.available():
+        pytest.skip("the native pages aren't built (python tools/build_native.py)")
+
+    def alert():
+        assert wait_until(lambda: len(prompts._open) == 1, 3)
+        return next(iter(prompts._open))
+
+    def answer(page, button, text=None):
+        if text is not None:
+            page.update({"text": text})
+        page.press(f"button:{button}")
+        assert wait_until(lambda: not page.is_open() and page not in prompts._open, 3)
+
+    # A name: typed into the alert's field (Rename, then Cancel: nothing changes)
+    space = window.store.active_space
+    before = space.name
+    window.rename_space(space)
+    page = alert()
+    state = page.state()
+    assert state["title"] == "Rename Space" and state["buttons"] == ["Rename", "Cancel"]
+    assert state["field"]["value"] == before
+    frame, outer = page.frame(), window.frameGeometry()  # (a sheet: on the window, in its middle)
+    assert frame is not None and abs(frame.center().x() - outer.center().x()) <= 2, (frame, outer)
+    if shots := os.environ.get("NATIVE_SHOTS"):
+        import subprocess
+        pause(0.5)
+        subprocess.run(["screencapture", "-x", "-o", "-l", str(page.window_number()), f"{shots}/rename_alert.png"])
+    answer(page, 1, "Not this")
+    assert space.name == before
+    window.rename_space(space)
+    answer(alert(), 0, "Renamed Natively")
+    assert space.name == "Renamed Natively"
+    space.name = before
+    # A question: Delete Folder asks first (Cancel keeps it; Delete deletes it)
+    folder = Folder("Doomed", [Tab("https://example.com/", "Example")])
+    space.pinned.append(folder)
+    window.delete_folder(folder)
+    page = alert()
+    assert page.state()["destructive"] == 0 and page.state()["buttons"] == ["Delete", "Cancel"]
+    answer(page, 1)
+    assert folder in space.pinned
+    window.delete_folder(folder)
+    answer(alert(), 0)
+    assert folder not in space.pinned
+    # On a native window that hides its Qt one (Settings): a sheet on the native window
+    window.open_settings("general")
+    settings = window._settings
+    history = list(window.store.history)
+    window.store.history = [{"url": "https://example.com/", "title": "Example", "ts": 1}]
+    settings.qt._clear_history()
+    page = alert()
+    assert page.state()["sheet_page"] == settings.page.id
+    answer(page, 1)
+    assert len(window.store.history) == 1
+    window.store.history = history
+    settings.close()
+    # Two at once (a note, then a question straight after it): the second waits for the first, then is a sheet too
+    asked = []
+    prompts.tell(window, "Import", "From a file: 2 new.")
+    prompts.confirm(window, "Import", "Move it to the Trash?", lambda: asked.append("yes"), action="Move to Trash")
+    first = alert()
+    assert first.state()["title"] == "Import" and len(prompts._waiting) == 1
+    answer(first, 0)
+    second = alert()
+    assert second.state()["buttons"] == ["Move to Trash", "Cancel"] and not prompts._waiting
+    answer(second, 0)
+    assert asked == ["yes"]
+    # Asked from a form's button: once the form's sheet is away, not Qt's box behind it
+    from browser import forms
+    told = []
+    form = forms.open_form(window, "Recover", [forms.section({"id": "pin", "kind": "text", "label": "PIN"})],
+                           [{"id": "cancel", "label": "Cancel", "role": "cancel"},
+                            {"id": "ok", "label": "OK", "role": "default"}],
+                           lambda *_: told.append(prompts.tell(window, "Recover", "That isn't the PIN.")))
+    assert form is not None and wait_until(form.is_open, 3)
+    form._action("button", {"id": "ok", "values": {}})  # (OK pressed)
+    assert told == [None]  # (waiting, not shown under the form)
+    page = alert()
+    assert not form_open(form) and page.state()["text"] == "That isn't the PIN."
+    answer(page, 0)
+
+
+def form_open(form):
+    from PyQt6 import sip
+    return not sip.isdeleted(form) and form.is_open()
+
+
+def test_the_native_sidebar_shows_and_drives_the_spaces_tabs(window, site, monkeypatch):
+    import subprocess
+    from browser import native, sidebar_native
+    from browser.models import Folder, Tab
+    monkeypatch.setenv("ECLIPSE_NATIVE", "1")
+    if not sidebar_native.available():
+        pytest.skip("the native sidebar needs the native pages built, on macOS 14 or later")
+    monkeypatch.delitem(window.store.settings, sidebar_native.SETTING, raising=False)
+    assert sidebar_native.wanted(window.store)  # (on unless it's been turned off)
+    monkeypatch.setitem(window.store.settings, sidebar_native.SETTING, False)
+    assert not sidebar_native.wanted(window.store)
+    shots = os.environ.get("NATIVE_SHOTS")
+    space = window.store.active_space
+    a = open_page(window, site + "/index.html")
+    b = open_page(window, site + "/article.html")
+    folder = Folder("Reading", [Tab(site + "/links.html", "Links Page", home_url=site + "/links.html")])
+    space.pinned.append(folder)
+    window.store._changed()
+    window.sidebar.use_native(True)
+    body = window.sidebar.native
+    assert body is not None and body.container.isVisible() and not window.sidebar.scroll.isVisible()
+    # A Space slide's pictures (a swipe on the page, say) leave Qt's hidden list hidden: shown again, it took half
+    # the sidebar under the native one
+    from browser import space_slide
+    space_slide.capture(window, [])
+    assert not window.sidebar.scroll.isVisible() and body.container.isVisible()
+    pause(0.3)
+    state = body.page.state()
+    assert state["current"] == space.id and [s["id"] for s in state["spaces"]] == [s.id for s in window.store.spaces]
+    shown = next(s for s in state["spaces"] if s["id"] == space.id)
+    assert {a.id, b.id} <= {n["id"] for n in shown["today"]}
+    assert next(n for n in shown["today"] if n["id"] == a.id)["title"] == a.label
+    assert next(n for n in shown["today"] if n["id"] == b.id)["selected"]
+    assert any(n["kind"] == "folder" and n["name"] == "Reading" for n in shown["pinned"])
+    assert all(n["icon"] for n in shown["today"])  # (each tab's icon, sent as a picture)
+    if shots:
+        pause(0.5)
+        window.raise_()
+        subprocess.run(["screencapture", "-x", "-o", "-l", str(int(_window_number(window))), f"{shots}/sidebar.png"])
+    # Qt's pictures of the sidebar (the floating sidebar's slide) have the native view in them
+    shot = body.page.snapshot()
+    assert not shot.isNull() and shot.width() >= body.container.width()
+    grabbed = window.sidebar.grab().toImage()
+    middle = body.container.geometry().center()
+    assert grabbed.pixelColor(middle.x(), middle.y()).alpha() > 0
+    # Resting on a row (not the tab you're on): its preview, beside the sidebar at that row's height
+    body._act("hover", {"id": a.id, "y": 120, "height": 34})
+    assert wait_until(lambda: window.tab_preview.isVisible(), 3)
+    middle = window.tab_preview.geometry().center().y()
+    row_middle = body.container.mapTo(window, QPoint(0, 137)).y()
+    assert abs(middle - row_middle) < 4 or window.tab_preview.geometry().top() == 8, (middle, row_middle)
+    body._act("hover", {"id": ""})
+    assert wait_until(lambda: not window.tab_preview.isVisible(), 3)
+    # A row dragged: the page takes tabs while it's on (and stops once no button's down)
+    body._act("drag", {"id": a.id})
+    assert window.content.split_drop.isVisible()
+    assert wait_until(lambda: not window.content.split_drop.isVisible(), 3)
+    # Collapsed to icons: still the native view, drawing just the icons
+    window.sidebar.set_compact(True)
+    pause(0.3)
+    assert body.container.isVisible() and body.page.state()["compact"]
+    if shots:
+        window.raise_()
+        subprocess.run(["screencapture", "-x", "-o", "-l", str(int(_window_number(window))), f"{shots}/sidebar_compact.png"])
+    window.sidebar.set_compact(False)
+    # Clicked: that tab; ⌘-clicked: marked
+    body._act("activate", {"id": a.id})
+    assert window.current_tab is a
+    body._act("activate", {"id": b.id, "mark": "add"})
+    assert {t.id for t in window.sidebar.marked} == {a.id, b.id}
+    assert wait_until(lambda: set(body.page.state()["marked"]) == {a.id, b.id}, 3)  # (a drag of one takes both)
+    # Several dropped together (picked here, or dragged from Qt): all of them go, in order
+    body._act("move", {"id": f"{a.id},{b.id}", "space": space.id, "section": "pinned", "index": 0})
+    assert space.pinned[:2] == [a, b]
+    body._act("move", {"id": f"{a.id},{b.id}", "space": space.id, "section": "today", "index": 0})
+    assert space.today[:2] == [a, b]
+    window.sidebar.clear_marks()
+    # One dropped below the next (the line under b: index 2): it goes after it, not back where it was
+    body._act("move", {"id": a.id, "space": space.id, "section": "today", "index": 2})
+    assert space.today[:2] == [b, a]
+    # Into a folder (the middle of its row: its end)
+    body._act("move", {"id": a.id, "space": space.id, "section": "pinned", "folder": folder.id,
+                       "index": len(folder.children)})
+    assert folder.children[-1] is a
+    body._act("move", {"id": a.id, "space": space.id, "section": "today", "index": 0})
+    assert space.today[0] is a
+    # What the rows are told: the tab you're on, its tooltip only without previews, VoiceOver's words
+    state = body.page.state()
+    assert state["selected_id"] == window.current_tab.id
+    shown = next(s for s in state["spaces"] if s["id"] == space.id)
+    row = next(n for n in shown["today"] if n["id"] == a.id)
+    assert row["label"].startswith(a.label) and row["hint"].startswith("Its menu can")
+    reading = next(n for n in shown["pinned"] if n.get("kind") == "folder" and n["id"] == folder.id)
+    assert "locked" in reading and "size" in reading
+    # Tidy, when it's offered, is on the divider of the Space you're on (its Qt button lives in the hidden list)
+    window.sidebar.tidy_btn.setVisible(True)
+    body.push()  # (looked at straight away: with no Claude here, the next refresh hides it again)
+    spaces = {s["id"]: s for s in body.page.state()["spaces"]}
+    assert spaces[space.id]["tidy"]["label"] == "✦ Tidy" and spaces[space.id]["tidy"]["tip"]
+    assert not any(s["tidy"]["label"] for i, s in spaces.items() if i != space.id)  # (only on the Space you're on)
+    window.sidebar._update_tidy_visibility()
+    # A folder opens and closes; a tab dropped first in Today goes first
+    body._act("folder", {"id": folder.id})
+    assert not folder.expanded
+    body._act("move", {"id": b.id, "space": space.id, "section": "today", "index": 0})
+    assert space.today[0] is b
+    body._act("move", {"id": b.id, "space": space.id, "section": "pinned", "index": 0})
+    assert space.pinned[0] is b
+    # Switching Spaces: the native view scrolls there, the window follows
+    other = window.store.spaces[1] if len(window.store.spaces) > 1 else window.store.add_space("Other", "#10b981")
+    window.switch_space(other)
+    assert wait_until(lambda: body.page.state()["current"] == other.id and window.store.active_space is other, 3)
+    body._act("swiped", {"id": space.id})  # (a swipe that landed back)
+    assert wait_until(lambda: window.store.active_space is space, 3)
+    # Two switches in quick succession: the second wins, colors and all
+    window.switch_space(other)
+    window.switch_space(space)
+    pause(0.5)
+    assert window.store.active_space is space and body.page.state()["current"] == space.id
+    assert window.sidebar.space_title.text() == space.name  # (the window rebuilt for it, not for the one between)
+    # Switched while it's hidden (the sidebar tucked away): it's on that Space when it's back
+    went = body._go
+    body.container.hide()
+    window.switch_space(other)
+    assert wait_until(lambda: window.store.active_space is other, 3)
+    body.container.show()
+    assert wait_until(lambda: body.page.state()["current"] == other.id and body.page.state().get("go", 0) > went, 3)
+    window.switch_space(space)
+    assert wait_until(lambda: window.store.active_space is space, 3)
+    window.sidebar.use_native(False)
+    assert window.sidebar.native is None and window.sidebar.scroll.isVisible()
+    space.pinned.remove(b) if b in space.pinned else None
+    space.pinned.remove(folder)
+    window.store._changed()
+    window.close_tab(a)
+
+
+def _window_number(widget):
+    import ctypes
+    from browser import macos
+    window = macos._send(ctypes.c_void_p(int(widget.winId())), "window")
+    return macos._send(window, "windowNumber", restype=ctypes.c_long)
+
+
+def test_a_question_that_cant_wait_is_still_a_sheet(window, monkeypatch):
+    from PyQt6.QtCore import QTimer
+    from browser import native, prompts
+    monkeypatch.setenv("ECLIPSE_NATIVE", "1")
+    if not native.available():
+        pytest.skip("the native pages aren't built (python tools/build_native.py)")
+    answers = iter([1, 0])  # (Cancel, then Allow: pressed while the alert holds the caller)
+
+    def press():
+        native._lib.eclipse_native_press(-1, f"button:{next(answers)}".encode())
+    for expected in (False, True):
+        QTimer.singleShot(300, press)
+        assert prompts.confirm_now(window, "Download Files", "A page wants several files.", action="Allow") is expected
+
+
+def test_more_forms_are_native_sheets(window, monkeypatch):
+    from browser import addresses, forms, native, page_index, page_watch, passwords
+    from browser.forms import NativeForm
+    monkeypatch.setenv("ECLIPSE_NATIVE", "1")
+    if not native.available():
+        pytest.skip("the native pages aren't built (python tools/build_native.py)")
+
+    def opened():
+        assert wait_until(lambda: any(f.is_open() for f in window.findChildren(NativeForm)), 3)
+        return next(f for f in window.findChildren(NativeForm) if f.is_open())
+
+    def closed(form):
+        assert wait_until(lambda: not form.is_open(), 3)
+
+    # The recovery PIN: two that differ say so; matching ones are given back (nothing kept here: a test's PIN)
+    pins = []
+    form = passwords._pin_dialog(window, window, "Set a Recovery PIN", "Why.", True, pins.append)
+    form.fill({"pin": "correct horse 1", "again": "different"}, press="ok")
+    assert wait_until(lambda: "match" in form.page.state().get("error", ""), 3) and form.is_open()
+    form.fill({"again": "correct horse 1"}, press="ok")
+    closed(form)
+    assert pins == ["correct horse 1"]
+    # A login: Suggest fills a strong password in (shown), and a bad address is caught
+    logins = []
+    form = passwords._login_dialog(window, window, logins.append)
+    form.on_field(form, "suggest", {})
+    assert wait_until(lambda: len(form.page.state().get("set", {}).get("values", {}).get("password", "")) >= 16, 3)
+    form.fill({"url": "", "password": "x"}, press="save")
+    assert wait_until(lambda: "address" in form.page.state().get("error", ""), 3)
+    form.fill({"url": "example.com", "username": " me ", "password": "pw"}, press="save")
+    closed(form)
+    assert logins == [{"url": "https://example.com", "username": "me", "password": "pw", "otp": ""}]
+    # An address
+    got = []
+    form = addresses._address_form(window, window, got.append)
+    form.fill({"label": "Home", "street": "1 Main St\nApt 2"}, press="save")
+    closed(form)
+    assert got[0]["label"] == "Home" and got[0]["street"] == "1 Main St\nApt 2"
+    # Watch for Changes: how often, from a menu
+    tab = window.current_tab or window.open_url("https://example.com/")
+    monkeypatch.setattr(tab, "url", "https://example.com/news")
+    watch = window.feature("page_watch")
+    added = []
+    monkeypatch.setattr(watch.watcher, "add", lambda url, title, interval: added.append(interval) or {})
+    form = watch.watch_tab(tab)
+    form.fill({"every": str(page_watch.INTERVALS[-1])}, press="watch")
+    closed(form)
+    assert added == [page_watch.INTERVALS[-1]]
+    # Excluded Sites: one added, one taken out, done on Done
+    settings = window.store.settings
+    page_index.excluded_sites_form(window, window)
+    form = opened()
+    labels = form.page.state()["sections"][0]["fields"][1]["value"]
+    assert labels
+    form.on_field(form, "add", {"new": "https://www.Example.org/x", "sites": labels})
+    assert wait_until(lambda: "example.org" in form.page.state().get("set", {}).get("values", {}).get("sites", []), 3)
+    sites = form.page.state()["set"]["values"]["sites"]
+    form.fill({"sites": [s for s in sites if s != labels[0]]}, press="done")
+    closed(form)
+    shown = [site for site, _ in page_index.excluded(settings)]
+    assert "example.org" in shown and labels[0].split("  ")[0] not in shown
+    page_index.unskip(settings, "example.org")
+    # Search shortcut: a bad address says so; a good one's kept
+    window.open_settings("general")
+    native_settings = window._settings
+    native_settings.qt._add_search_shortcut()
+    form = next(f for f in window.findChildren(NativeForm) if f.is_open())
+    assert form.page.state()["sheet_page"] == native_settings.page.id  # (a sheet on native Settings)
+    form.fill({"keyword": "wk", "url": "https://wiki.example/?q="}, press="save")
+    assert wait_until(lambda: "%s" in form.page.state().get("error", ""), 3)
+    form.fill({"url": "https://wiki.example/?q=%s"}, press="save")
+    closed(form)
+    from browser.command_bar import CUSTOM_SETTING
+    assert any(e["keyword"] == "wk" for e in settings[CUSTOM_SETTING])
+    settings[CUSTOM_SETTING] = [e for e in settings[CUSTOM_SETTING] if e["keyword"] != "wk"]
+    native_settings.close()
+
+
+def test_the_space_and_theme_editors_are_native(window, monkeypatch):
+    import subprocess
+    from browser import native
+    from browser.space_editor import native_space_editor
+    from browser.theme_editor import edit_theme
+    monkeypatch.setenv("ECLIPSE_NATIVE", "1")
+    if not native.available():
+        pytest.skip("the native pages aren't built (python tools/build_native.py)")
+    shots = os.environ.get("NATIVE_SHOTS")
+    space = window.store.active_space
+    before = (space.name, space.icon, space.color, dict(space.theme))
+    # The Space editor: a popover from the Space's name, changes applying as they're made
+    form = native_space_editor(window, space, window.sidebar.space_title_anchor())
+    assert form is not None and form.is_open() and form.page.state()["popover_view"]
+    if shots:
+        pause(0.6)
+        subprocess.run(["screencapture", "-x", "-o", "-l", str(form.page.window_number()), f"{shots}/space_editor.png"])
+    form.fill({"name": "Renamed Live", "icon": "ph.code", "color": "#14b8a6"})
+    assert wait_until(lambda: space.name == "Renamed Live" and space.icon == "ph.code"
+                      and space.color.lower() == "#14b8a6", 3)
+    form.close()
+    assert wait_until(lambda: not form.is_open(), 3)
+    # From the sidebar (edit_space): beside the Space's name, to the right of the sidebar, level with it
+    from browser import forms
+    window.edit_space()
+    opened = [f for f in window.findChildren(forms.NativeForm) if f.is_open()]
+    assert opened and "popover_rect" in opened[0].page.state()
+    pause(0.4)
+    frame, name = opened[0].page.frame(), window.sidebar.space_title_rect()
+    assert frame is not None and frame.left() >= name.right() - 4 and frame.top() <= name.center().y() <= frame.bottom()
+    opened[0].close()
+    assert wait_until(lambda: not opened[0].is_open(), 3)
+    # The theme editor: previews as it goes, and Cancel puts the old one back
+    form = edit_theme(window, space)
+    if shots:
+        pause(0.6)
+        subprocess.run(["screencapture", "-x", "-o", "-l", str(form.page.window_number()), f"{shots}/theme_editor.png"])
+    form.fill({"colors": ["#f43f5e", "#eab308"], "intensity": 0.9, "mode": "dark"})
+    assert wait_until(lambda: space.theme.get("colors") == ["#f43f5e", "#eab308"] and window.theme.dark, 3)
+    if shots:
+        pause(0.4)
+        subprocess.run(["screencapture", "-x", "-o", "-l", str(form.page.window_number()), f"{shots}/theme_editor_two.png"])
+    form.fill({}, press="cancel")
+    assert wait_until(lambda: not form.is_open() and space.color.lower() == "#14b8a6", 3)
+    form = edit_theme(window, space)
+    form.fill({"colors": ["#3b82f6"], "intensity": 0.3}, press="done")
+    assert wait_until(lambda: not form.is_open(), 3)
+    assert space.color == "#3b82f6" and space.theme["intensity"] == 0.3 and space.theme["colors"] == []
+    space.name, space.icon, space.color, space.theme = before
+    window.apply_theme()

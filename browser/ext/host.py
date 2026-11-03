@@ -1100,7 +1100,7 @@ class ExtensionHost(QObject):
             self.badges_changed.emit()
 
     def _m_action_setBadgeColor(self, bridge, ext_id, details):
-        pass  # the badge always uses the theme's accent colour
+        pass  # the badge always uses the theme's accent color
 
     # chrome.contextMenus -----------------------------------------------------------------------
 

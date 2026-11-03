@@ -9,10 +9,10 @@ from pathlib import Path
 import qtawesome as qta
 from PyQt6.QtCore import QRectF, QSize, Qt, QUrl
 from PyQt6.QtGui import QColor, QFont, QGuiApplication, QPainter
-from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
                              QPushButton, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
-from . import clean_links, storage
+from . import clean_links, prompts, storage
 from .motion import FadesIn
 from .models import display_host
 from .shortcuts import for_here
@@ -87,7 +87,7 @@ class EntryDelegate(QStyledItemDelegate):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(theme.accent)
             painter.drawRoundedRect(rect.adjusted(2, 1, -2, -1), 8, 8)
-            ink = QColor(theme.on_accent)  # (dark on a pale Space colour)
+            ink = QColor(theme.on_accent)  # (dark on a pale Space color)
         elif option.state & QStyle.StateFlag.State_MouseOver:
             hover = QColor(ink)
             hover.setAlphaF(0.06)
@@ -251,10 +251,20 @@ class LibraryWindow(FadesIn, QWidget):
             entries.append({"url": url, "title": title, "ts": path.stat().st_mtime, "subtitle": sub, "path": path})
         return entries
 
+    def matching(self, query: str) -> list[dict]:
+        """The section's entries with `query` in their title or address (all of them for none)."""
+        query = query.strip().lower()
+        return [e for e in self._entries() if not query or query in e["title"].lower() or query in e["url"].lower()]
+
+    def empty_text(self, query: str) -> str:
+        empty = {"history": "No history yet.", "archive": "Nothing archived yet. Today tabs you stop using end up here.",
+                 "notes": "No notes yet. ⇧⌘N starts one.", "answers": "No Browse for Me answers yet. Ask a question "
+                                                                    "in ⌘T and press ⌘↩."}[self.section]
+        return "Nothing matches." if query.strip() else for_here(empty)
+
     def refresh(self, *_):
         query = self.search.text().strip().lower()
-        entries = [e for e in self._entries()
-                   if not query or query in e["title"].lower() or query in e["url"].lower()]
+        entries = self.matching(query)
         self.count.setText(f"{len(entries):,}" + (" matching" if query else ""))
         self.list.clear()
         last_day = None
@@ -272,12 +282,11 @@ class LibraryWindow(FadesIn, QWidget):
             item.setData(ENTRY, entry)
             item.setToolTip(entry["url"] if not entry["url"].startswith("file:") else entry["title"])
             self.list.addItem(item)
-        empty = {"history": "No history yet.", "archive": "Nothing archived yet. Today tabs you stop using end up here.",
-                 "notes": "No notes yet. ⇧⌘N starts one.", "answers": "No Browse for Me answers yet. Ask a question "
-                                                                    "in ⌘T and press ⌘↩."}[self.section]
-        self.empty.setText("Nothing matches." if query else for_here(empty))
+        self.empty.setText(self.empty_text(query))
         self.empty.setVisible(not entries)
         self.list.setVisible(bool(entries))
+        self.count.setVisible(bool(entries) or bool(query))  # (no "0" beside the title of an empty list)
+        self.clear_btn.setEnabled(bool(entries) or bool(query))  # (nothing to clear)
         first = next((i for i in range(self.list.count()) if self.list.item(i).data(ENTRY)), None)
         if first is not None:
             self.list.setCurrentRow(first)
@@ -290,9 +299,10 @@ class LibraryWindow(FadesIn, QWidget):
             self._open_item(item)
 
     def _open_item(self, item, little=False):
-        entry = item.data(ENTRY)
-        if not entry:
-            return
+        if item.data(ENTRY):
+            self.open_entry(item.data(ENTRY), little)
+
+    def open_entry(self, entry, little=False):
         url = entry["url"]
         if little and not url.startswith("note:"):
             self.browser.new_little_window(url)
@@ -320,11 +330,13 @@ class LibraryWindow(FadesIn, QWidget):
         if not entry["url"].startswith("note:"):
             b._act(menu, "ph.app-window", "Open in Little Window", lambda: self._open_item(item, little=True))
         if entry["url"].startswith("http"):
-            b._act(menu, "ph.link", "Copy Link", lambda: QGuiApplication.clipboard().setText(
-                clean_links.for_copy(entry["url"], b.store.settings)))
+            b._act(menu, "ph.link", "Copy Link", lambda: self.copy_link(entry))
         menu.addSeparator()
         b._act(menu, "ph.trash", "Delete" if "path" in entry else "Remove", lambda: self._remove(entry))
         menu.exec(self.list.viewport().mapToGlobal(pos))
+
+    def copy_link(self, entry):
+        QGuiApplication.clipboard().setText(clean_links.for_copy(entry["url"], self.browser.store.settings))
 
     def _remove(self, entry):
         if self.section == "history":
@@ -335,28 +347,36 @@ class LibraryWindow(FadesIn, QWidget):
             self.store.archive = [a for a in self.store.archive if a != entry["source"]]
         else:
             kind = "note" if self.section == "notes" else "answer"
-            answer = QMessageBox.question(self, f"Delete {kind.capitalize()}",
-                                          plain_tip(f"Delete “{entry['title']}”? This can't be undone."))
-            if answer != QMessageBox.StandardButton.Yes:
-                return
-            for tab in [t for t in self.store.all_tabs() if t.url == entry["url"]]:
-                self.browser.delete_tab(tab)  # close it first, so an open note doesn't save itself back
-            entry["path"].unlink(missing_ok=True)
+
+            def delete():
+                for tab in [t for t in self.store.all_tabs() if t.url == entry["url"]]:
+                    self.browser.delete_tab(tab)  # close it first, so an open note doesn't save itself back
+                entry["path"].unlink(missing_ok=True)
+                self.store.schedule_save()
+                self.refresh()
+            prompts.confirm(self, f"Delete {kind.capitalize()}", f"Delete “{entry['title']}”? This can't be undone.",
+                            delete, action="Delete", destructive=True)
+            return
         self.store.schedule_save()
         self.refresh()
 
     def _clear_all(self):
+        def done():
+            self.store.schedule_save()
+            self.refresh()
+
+        def clear_history():
+            self.store.history = []
+            self.browser.page_index.clear()  # what you read goes with where you went
+            self.browser.emit("history_cleared")
+            done()
+
+        def empty_archive():
+            self.store.archive = []
+            done()
         if self.section == "history":
-            answer = QMessageBox.question(self, "Clear History", f"Delete all {len(self.store.history):,} history "
-                                                                 "entries?")
-            if answer == QMessageBox.StandardButton.Yes:
-                self.store.history = []
-                self.browser.page_index.clear()  # what you read goes with where you went
-                self.browser.emit("history_cleared")
+            prompts.confirm(self, "Clear History", f"Delete all {len(self.store.history):,} history entries?",
+                            clear_history, action="Clear History", destructive=True)
         elif self.section == "archive":
-            answer = QMessageBox.question(self, "Empty Archive", f"Delete all {len(self.store.archive):,} archived "
-                                                                 "tabs?")
-            if answer == QMessageBox.StandardButton.Yes:
-                self.store.archive = []
-        self.store.schedule_save()
-        self.refresh()
+            prompts.confirm(self, "Empty Archive", f"Delete all {len(self.store.archive):,} archived tabs?",
+                            empty_archive, action="Empty Archive", destructive=True)

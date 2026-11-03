@@ -65,7 +65,7 @@ class Feature:
         """The window's closing."""
 
     def theme_changed(self):
-        """The Space's colours changed."""
+        """The Space's colors changed."""
 
     def sidebar_side_changed(self):
         """The sidebar moved to the other side of the window."""

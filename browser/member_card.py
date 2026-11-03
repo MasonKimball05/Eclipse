@@ -47,7 +47,7 @@ PALETTES = [
     {"name": "Honey", "paper": "#fffbea", "ink": "#c27a00", "stops": ["#fcc419", "#ffd96b", "#fff3bf"]},
     {"name": "Fern", "paper": "#13241d", "ink": "#8ce99a", "stops": ["#2f9e44", "#69db7c", "#1f3b2d"]},
     {"name": "Midnight", "paper": "#16151f", "ink": "#b197fc", "stops": ["#7048e8", "#9775fa", "#2b2547"]},
-    # (Eclipse's own, after Arc's: added at the end, so a card's number still means the colours it had)
+    # (Eclipse's own, after Arc's: added at the end, so a card's number still means the colors it had)
     {"name": "Mint", "paper": "#f3fcf8", "ink": "#0ca678", "stops": ["#38d9a9", "#8ce9cc", "#d3f9ec"]},
     {"name": "Coral", "paper": "#fff5f3", "ink": "#e03131", "stops": ["#ff6b6b", "#ffa8a0", "#ffe3e0"]},
     {"name": "Plum", "paper": "#fcf5fd", "ink": "#9c36b5", "stops": ["#cc5de8", "#e2a3f2", "#f6e1fb"]},
@@ -67,7 +67,7 @@ SHAPES = ["Shape1", "Shape2", "Shape3", "Shape4",  # (Arc's names: a round one, 
 SHAPE_NAMES = {"Shape1": "Round", "Shape2": "Leaf", "Shape3": "Arch", "Shape4": "Petal",  # (what the others are called)
                "Onion": "Onion Dome"}
 STAMP = QColor("#4f46e5")
-CHOICES_PER_ROW = 8  # (the colour and shape buttons in the editor)
+CHOICES_PER_ROW = 8  # (the color and shape buttons in the editor)
 
 ADJECTIVES = ["STATUESQUE", "LUMINOUS", "CURIOUS", "VELVET", "RADIANT", "QUIET", "NIMBLE", "GALLANT", "COSMIC",
               "MERRY", "SERENE", "DAUNTLESS", "WHIMSICAL", "GOLDEN", "STEADFAST", "BREEZY", "ELEGANT", "PLUCKY",
@@ -144,14 +144,14 @@ def started_with_eclipse() -> str:
 
 
 def new_card(rng=random, name=None, since=None) -> dict:
-    """A fresh card: a new title, colours and shape."""
+    """A fresh card: a new title, colors and shape."""
     return {"name": name or _first_name(), "title": random_title(rng), "palette": rng.randrange(len(PALETTES)),
             "shape": rng.choice(SHAPES), "since": since or date.today().isoformat(), "origin": "",
             "blob": [rng.randrange(16) for _ in range(15)]}
 
 
 def new_eclipse_card(name=None, since=None) -> dict:
-    """Your Eclipse card as it starts: a new title, in Eclipse's own colours and shape (yours to change)."""
+    """Your Eclipse card as it starts: a new title, in Eclipse's own colors and shape (yours to change)."""
     return {**new_card(name=name, since=since), **ECLIPSE_LOOK, "look": 1}
 
 
@@ -176,7 +176,7 @@ def card_for(settings: dict) -> dict:
         arc = settings.get(ARC_SETTING) if isinstance(settings.get(ARC_SETTING), dict) else read_arc_card()
         card = settings[SETTING] = new_eclipse_card(name=(arc or {}).get("name"), since=started_with_eclipse())
     elif "look" not in card:
-        # (made by an early version, which gave it your Arc card's colours and shape: it gets its own)
+        # (made by an early version, which gave it your Arc card's colors and shape: it gets its own)
         arc = settings.get(ARC_SETTING) if isinstance(settings.get(ARC_SETTING), dict) else {}
         if (card.get("palette"), card.get("shape")) == (arc.get("palette"), arc.get("shape")):
             card.update(ECLIPSE_LOOK)
@@ -366,24 +366,24 @@ def _font(family, size, weight=QFont.Weight.Normal, spacing=0.0, fixed=False) ->
     return font
 
 
-def _stamp(p: QPainter, centre: QPointF, year: int, color: QColor, paper: QColor, maker: str):
+def _stamp(p: QPainter, center: QPointF, year: int, color: QColor, paper: QColor, maker: str):
     """An anniversary stamp: a ring with the year in it and the words round the edge."""
     p.save()
     p.setPen(QPen(color, 1.6))
     fill = QColor(paper)
     fill.setAlphaF(0.88)
     p.setBrush(fill)
-    p.drawEllipse(centre, 25, 25)
+    p.drawEllipse(center, 25, 25)
     p.setBrush(Qt.BrushStyle.NoBrush)
-    p.drawEllipse(centre, 11, 11)
+    p.drawEllipse(center, 11, 11)
     p.setFont(_font("", 13, QFont.Weight.Bold))
-    p.drawText(QRectF(centre.x() - 11, centre.y() - 11, 22, 22), Qt.AlignmentFlag.AlignCenter, str(year))
+    p.drawText(QRectF(center.x() - 11, center.y() - 11, 22, 22), Qt.AlignmentFlag.AlignCenter, str(year))
     text = f"{maker.upper()} · ANNIVERSARY · "
     p.setFont(_font("", 6, QFont.Weight.Bold, 0.4))
     step = 360 / len(text)
     for i, ch in enumerate(text):
         p.save()
-        p.translate(centre)
+        p.translate(center)
         p.rotate(-90 + i * step)
         p.translate(0, -18)
         p.drawText(QRectF(-4, -4, 8, 8), Qt.AlignmentFlag.AlignCenter, ch)
@@ -408,8 +408,8 @@ def paint_card(p: QPainter, rect: QRectF, card: dict, today: date | None = None)
 
     # The shape, in a soft glow of the palette (where its brightest part sits comes from the card's own numbers)
     art = QRectF(22, 22, w - 44, 218)
-    centre = QPointF(art.left() + art.width() * (0.3 + blob[0] / 40), art.top() + art.height() * (0.4 + blob[1] / 50))
-    glow = QRadialGradient(centre, art.width() * (0.75 + blob[2] / 60))
+    center = QPointF(art.left() + art.width() * (0.3 + blob[0] / 40), art.top() + art.height() * (0.4 + blob[1] / 50))
+    glow = QRadialGradient(center, art.width() * (0.75 + blob[2] / 60))
     stops = [QColor(c) for c in palette["stops"]]
     glow.setColorAt(0.0, stops[0])
     glow.setColorAt(0.5 + blob[3] / 80, stops[1])
@@ -614,7 +614,7 @@ def build_page(self):
             grid.addWidget(button, i // CHOICES_PER_ROW, i % CHOICES_PER_ROW)
             buttons.append(button)
         return box, buttons
-    colours, colour_buttons = choices([(i, p["name"]) for i, p in enumerate(PALETTES)], palette_icon,
+    colors, color_buttons = choices([(i, p["name"]) for i, p in enumerate(PALETTES)], palette_icon,
                                       lambda i: save(palette=i))
     shapes, shape_buttons = choices([(n, SHAPE_NAMES.get(n, n)) for n in SHAPES],
                                     lambda n: shape_icon(n, self.browser.theme.panel_text), lambda n: save(shape=n))
@@ -622,7 +622,7 @@ def build_page(self):
     since.setObjectName("Hint")
 
     def show_choices():
-        for button in colour_buttons:
+        for button in color_buttons:
             button.setChecked(button.value == card.get("palette"))
         for button in shape_buttons:
             button.setChecked(button.value == card.get("shape"))
@@ -674,7 +674,7 @@ def build_page(self):
     rows = [self._row("Name", "The name on your card.", name),
             self._row("Title", f"Yours alone, as {brand.NAME}'s maker: nobody else can have it." if card.get("maker")
                       else "Made up, like Arc's. Shuffle for another, or write your own.", title_box),
-            self._row("Colours", None, colours),
+            self._row("Colors", None, colors),
             self._row("Shape", None, shapes),
             self._row(f"Started with {brand.NAME}", "A stamp for every year since.", since)]
     page = QWidget()

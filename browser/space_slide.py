@@ -1,8 +1,8 @@
 # Switching Spaces, Arc style: the Space's part of the sidebar slides across to the next one while the
-# rest of the window blends over to its colours. Used by ⌃1–⌃9, the Space switcher and ⌥⌘←/→, and by a
+# rest of the window blends over to its colors. Used by ⌃1–⌃9, the Space switcher and ⌥⌘←/→, and by a
 # two-finger swipe on the sidebar (gestures.py, which drives the same slide with your fingers).
 #
-# Switching is the heavy part (the whole window takes the new Space's colours: tens of milliseconds, more on an
+# Switching is the heavy part (the whole window takes the new Space's colors: tens of milliseconds, more on an
 # older Mac), and doing it as a slide began held the slide up for its first frames. So the Spaces either side of
 # the one you're in have their pictures ready (SpacePictures: the one you left, and the others made while
 # nothing's happening), and a slide to one of them starts at once, the switch itself waiting until it lands,
@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import QApplication, QWidget
 CONTENT_RADIUS = 10  # (content.RADIUS: the page's rounded corners)
 
 
-BLEND = (0.4, 0.7)  # how far across the colours (and anything else round the tabs) turn over: just past halfway
+BLEND = (0.4, 0.7)  # how far across the colors (and anything else round the tabs) turn over: just past halfway
 
 
 def _smooth(t: float, start=BLEND[0], end=BLEND[1]) -> float:
@@ -30,7 +30,7 @@ def _smooth(t: float, start=BLEND[0], end=BLEND[1]) -> float:
 
 class SpaceSlide(QWidget):
     """Switching Spaces, the way Arc does it: the Space's own tabs and address slide across to the next
-    Space's, while everything else round the page (Favorites, the bottom bar, the window's colours)
+    Space's, while everything else round the page (Favorites, the bottom bar, the window's colors)
     blends over underneath. The page itself isn't covered: it stays live, and changes once the switch
     lands. Driven by your fingers (set_travel) or on its own (run).
 
@@ -186,7 +186,7 @@ def cover_layout(window):
     """(the regions the cover holds pictures of, the mask that keeps the rest of the window live, or None)"""
     floating = any(getattr(getattr(window, name, None), "active", False) for name in ("floating_sidebar", "spread_sidebar"))
     if getattr(window.content, "blank", False):
-        # No tab open: the "page" is the start view, in the Space's colours and with its name, so it's covered too
+        # No tab open: the "page" is the start view, in the Space's colors and with its name, so it's covered too
         # (left live, it turned to the new Space's the moment a swipe began)
         return [QRectF(window.rect())], None
     if floating:
@@ -211,8 +211,9 @@ def cover_layout(window):
 
 def sliding_parts(window):
     """What belongs to one Space and so slides: its tabs, and the address of its current tab.
-    (Favorites are the same in every Space, so they simply stay.)"""
-    return [window.sidebar.url_pill, window.sidebar.scroll]
+    (Favorites are the same in every Space, so they simply stay.) Only what's there: the tab list is hidden while
+    the native sidebar draws it, and capture() mustn't show it again."""
+    return [part for part in (window.sidebar.url_pill, window.sidebar.scroll) if not part.isHidden()]
 
 
 def capture(window, regions):
@@ -235,8 +236,8 @@ def capture(window, regions):
 
 
 def _picture(widget) -> QPixmap:
-    """The widget as it looks on screen, on nothing. grab() fills the whole rectangle with its background colour
-    first, which a stylesheet's colour is, too: the address pill slid across as a box, not rounded."""
+    """The widget as it looks on screen, on nothing. grab() fills the whole rectangle with its background color
+    first, which a stylesheet's color is, too: the address pill slid across as a box, not rounded."""
     ratio = widget.devicePixelRatioF()
     picture = QPixmap(widget.size() * ratio)
     picture.setDevicePixelRatio(ratio)
@@ -265,7 +266,7 @@ def slide_region(window, widget, change, direction, target=None, choose=None):
     """Run change() (switching Spaces to target), sliding the Space's part of the sidebar across and blending
     the rest over. direction 1: the new one comes from the right. With target's picture ready, choose() (just
     which Space you're in: what comes next, a tab opened in it say, goes there) is run at once and the rest of
-    change() (its colours and page) once the slide's landed."""
+    change() (its colors and page) once the slide's landed."""
     from .motion import NORMAL
     slide = SpaceSlide(window, direction)  # holds the old look meanwhile
     pictures = space_pictures(window)
@@ -300,7 +301,7 @@ PREPARE = "prepare_spaces"  # (a setting: on unless turned off)
 class SpacePictures(QObject):
     """Pictures of the Spaces either side of the one you're in (as a slide shows them), ready before they're
     needed. A picture's only used while it still fits: the same window size and sidebar, the same kind of cover
-    (a page open or not), the Space's colours unchanged."""
+    (a page open or not), the Space's colors unchanged."""
 
     def __init__(self, window):
         super().__init__(window)
@@ -387,7 +388,7 @@ class SpacePictures(QObject):
             for space in spaces:
                 store.active_space_id = space.id
                 w.current_tab = real_tab
-                w.apply_theme()  # (its colours, and its tabs in the sidebar)
+                w.apply_theme()  # (its colors, and its tabs in the sidebar)
                 tab = store.find_tab(space.active_tab_id)
                 if tab in store.visible_tabs():
                     w.current_tab = tab  # (its own tab highlighted, its address in the pill: only for the picture)

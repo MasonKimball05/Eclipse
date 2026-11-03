@@ -100,7 +100,7 @@ def icon_image(size: int = 1024, look: str | None = None, tile: bool = True) -> 
     p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
     p.scale(size / 1024, size / 1024)  # drawn on Apple's 1024 grid
 
-    # An 824px rounded square centred in the canvas, as macOS icons are
+    # An 824px rounded square centered in the canvas, as macOS icons are
     card = QRectF(100, 100, 824, 824)
     shape = QPainterPath()
     shape.addRoundedRect(card, 185, 185)

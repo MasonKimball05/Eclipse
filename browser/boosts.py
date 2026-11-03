@@ -1,7 +1,7 @@
 # Arc's Boosts: your own tweaks for a website, re-applied every time it loads.
 #
 # A Boost targets one site (and its subdomains) and can carry:
-#   - CSS        restyle the site (fonts, colours, hide clutter)
+#   - CSS        restyle the site (fonts, colors, hide clutter)
 #   - JavaScript run your own code on the page
 #   - Zapped     elements you clicked away with the Zap tool, hidden for good
 #
@@ -19,6 +19,7 @@ from PyQt6.QtWebEngineCore import QWebEngineScript
 from PyQt6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
                              QListWidget, QPlainTextEdit, QPushButton, QVBoxLayout)
 
+from . import forms
 from .features import Feature
 from .models import new_id
 from .theme import stylesheet
@@ -273,6 +274,33 @@ class BoostEditor(QDialog):
         self.accept()
 
 
+def boost_sections(boost: Boost) -> list[dict]:
+    """The Boost form (forms.py): as BoostEditor has it, natively."""
+    return [
+        forms.section({"id": "name", "kind": "text", "label": "Name", "placeholder": boost.site, "value": boost.name},
+                      {"id": "site", "kind": "text", "label": "Website", "value": boost.site},
+                      {"id": "enabled", "kind": "toggle", "label": "Boost is on", "value": boost.enabled}),
+        forms.section({"id": "css", "kind": "code", "label": "CSS", "height": 140, "value": boost.css,
+                       "placeholder": "body { font-family: Georgia, serif; }\n.sidebar { display: none; }"},
+                      {"id": "js", "kind": "code", "label": "JavaScript (runs once the page is ready)", "height": 140,
+                       "value": boost.js,
+                       "placeholder": "document.querySelectorAll('video').forEach(v => v.playbackRate = 1.5);"}),
+        forms.section({"id": "zapped", "kind": "list", "label": "Zapped elements (hidden)", "value": list(boost.zapped),
+                       "placeholder": "None: Zap Elements on This Page hides things you click",
+                       "remove_help": "Un-zap"}),
+    ]
+
+
+def apply_values(boost: Boost, values: dict):
+    """The form's values into the Boost (as BoostEditor._save does)."""
+    boost.name = str(values.get("name", "")).strip()
+    boost.site = site_of("https://" + str(values.get("site", "")).strip()) or boost.site
+    boost.enabled = bool(values.get("enabled"))
+    boost.css = str(values.get("css", ""))
+    boost.js = str(values.get("js", ""))
+    boost.zapped = [z for z in values.get("zapped", []) if isinstance(z, str)]
+
+
 class BoostsFeature(Feature):
     """Boosts: your own CSS and JavaScript for a site, and Zap (click things to hide them for good)."""
     name = "boosts"
@@ -302,8 +330,22 @@ class BoostsFeature(Feature):
                 window.toast("Open a website first, then boost it")
                 return
             boost = next(iter(self.boosts.for_site(site)), None) or Boost(site)
+        known = boost in self.boosts.boosts
+        form = forms.open_form(window, f"Boost · {boost.site}", boost_sections(boost),
+                               forms.save_buttons("Delete Boost" if known else "", f"Delete the Boost for {boost.site}?"),
+                               lambda button, values: self._edited(boost, button, values), width=640, height=720)
+        if form is not None:
+            return form
         if BoostEditor(self.boosts, boost, window.theme, window).exec():
             window.reload()
+
+    def _edited(self, boost, button, values):
+        if button == "delete":
+            self.boosts.delete(boost)
+        else:
+            apply_values(boost, values)
+            self.boosts.save(boost)
+        self.window.reload()
 
     def start_zap(self):
         import secrets

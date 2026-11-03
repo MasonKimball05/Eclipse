@@ -690,6 +690,73 @@ class DownloadSettingsForm(QWidget):
         self.store.schedule_save()
 
 
+def settings_sections(store) -> list[dict]:
+    """Download Settings as a native form (forms.py): as DownloadSettingsForm has it."""
+    from . import forms
+    o = ytdlp_settings(store)
+    menu = lambda key, label, options: {"id": key, "kind": "menu", "label": label, "value": str(o[key]),  # noqa: E731
+                                        "options": [{"value": str(v), "label": t} for v, t in options]}
+    toggle = lambda key, label: {"id": key, "kind": "toggle", "label": label, "value": bool(o[key])}  # noqa: E731
+    return [
+        forms.section({"id": "folder", "kind": "folder", "label": "Save to", "value": o["folder"]},
+                      {"id": "template", "kind": "text", "label": "File names", "value": o["template"]},
+                      footer="A yt-dlp output template: %(uploader)s/%(title)s.%(ext)s makes a folder per channel."),
+        forms.section(menu("kind", "Download", [("video", "Video"), ("audio", "Audio only")]),
+                      menu("video_format", "Video format", VIDEO_FORMATS),
+                      menu("max_height", "Video quality", [(h, _quality_label(h)) for h in QUALITIES]),
+                      menu("audio_format", "Audio format", AUDIO_FORMATS)),
+        forms.section({"id": "subtitle_langs", "kind": "text", "label": "Subtitles", "value": o["subtitle_langs"],
+                       "placeholder": "Language codes, e.g. en, es (blank for none)"},
+                      toggle("embed_subs", "Embed subtitles in the video file"),
+                      toggle("embed_metadata", "Add title, channel and date to the file"),
+                      toggle("embed_thumbnail", "Add the thumbnail as cover art")),
+        forms.section(menu("cookies_from", "Cookies from", COOKIE_BROWSERS),
+                      {"id": "rate_limit", "kind": "text", "label": "Speed limit", "value": o["rate_limit"],
+                       "placeholder": "e.g. 5M (blank for no limit)"},
+                      footer="Cookies let yt-dlp use that browser's logins for age-restricted or members-only "
+                             "videos. Safari needs Full Disk Access for this."),
+    ]
+
+
+def settings_from(values: dict, store) -> dict:
+    """The ytdlp setting from the form's values (as DownloadSettingsForm.save makes it), anything odd left as it was."""
+    o = ytdlp_settings(store)
+    pick = lambda key, options: next((v for v, _ in options if str(v) == str(values.get(key))), o[key])  # noqa: E731
+    return {
+        "folder": str(values.get("folder") or o["folder"]),
+        "template": str(values.get("template", "")).strip() or DEFAULT_SETTINGS["template"],
+        "kind": pick("kind", [("video", ""), ("audio", "")]),
+        "video_format": pick("video_format", VIDEO_FORMATS),
+        "max_height": pick("max_height", [(h, "") for h in QUALITIES]),
+        "audio_format": pick("audio_format", AUDIO_FORMATS),
+        "subtitle_langs": str(values.get("subtitle_langs", "")).strip(),
+        "embed_subs": bool(values.get("embed_subs")),
+        "embed_metadata": bool(values.get("embed_metadata")),
+        "embed_thumbnail": bool(values.get("embed_thumbnail")),
+        "cookies_from": pick("cookies_from", COOKIE_BROWSERS),
+        "rate_limit": str(values.get("rate_limit", "")).strip(),
+    }
+
+
+def edit_settings(browser, parent, then=None, on_page=None):
+    """Download Settings: a native sheet (on `on_page`, a native page, or the browser window), else Qt's dialog
+    over `parent`. then() once they're saved."""
+    from . import forms
+
+    def saved(_, values):
+        browser.store.settings["ytdlp"] = settings_from(values, browser.store)
+        browser.store.schedule_save()
+        if then is not None:
+            then()
+    form = forms.open_form(browser, "Download Settings", settings_sections(browser.store), forms.save_buttons(), saved,
+                           width=560, height=640, on_page=on_page)
+    if form is not None:
+        return form
+    if DownloadSettings(browser.store, browser.theme, parent).exec() and then is not None:
+        then()
+    return None
+
+
 class DownloadSettings(QDialog):
     def __init__(self, store, theme, parent):
         super().__init__(parent)
@@ -774,7 +841,7 @@ class DownloadsWindow(FadesIn, QWidget):
         self.list_layout = QVBoxLayout(self.list_body)
         self.list_layout.setContentsMargins(0, 0, 0, 0)
         self.list_layout.setSpacing(6)
-        # Empty: a quiet picture and a line of help, centred, instead of a bare sentence
+        # Empty: a quiet picture and a line of help, centered, instead of a bare sentence
         self.empty = QWidget()
         ev = QVBoxLayout(self.empty)
         ev.setContentsMargins(0, 48, 0, 0)
@@ -886,8 +953,10 @@ class DownloadsWindow(FadesIn, QWidget):
         else:
             self.url.setFocus()
 
-    def open_settings(self):
-        DownloadSettings(self.store, self.browser.theme, self).exec()
+    def open_settings(self, on_page=None):
+        edit_settings(self.browser, self, then=self._settings_saved, on_page=on_page)
+
+    def _settings_saved(self):
         if self.info is not None:
             self._show_options(self.info)  # re-apply the new defaults to the open form
 

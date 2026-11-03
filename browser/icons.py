@@ -1,6 +1,6 @@
 # Space icons: either a line icon from the Phosphor set ("ph.planet") or an emoji ("🎮").
-# Line icons are drawn in the theme's text colour, so a row of them stays calm and readable;
-# emoji keep their own colours. No icon falls back to a dot in the Space's colour.
+# Line icons are drawn in the theme's text color, so a row of them stays calm and readable;
+# emoji keep their own colors. No icon falls back to a dot in the Space's color.
 
 from functools import lru_cache
 
@@ -61,7 +61,7 @@ def symbol(name: str, color, active=None) -> QIcon:
 
 
 def space_icon(space, color: QColor, size: int = 32) -> QIcon:
-    """The icon for a Space: its symbol (tinted), its emoji, or a dot in its colour."""
+    """The icon for a Space: its symbol (tinted), its emoji, or a dot in its color."""
     value = getattr(space, "icon", "") or ""
     if is_symbol(value):
         try:

@@ -27,6 +27,9 @@ from .permissions import origin_key
 
 SETTING = "external_apps"  # {origin: [schemes it may open without asking]}
 ARM_MS = 600
+# Links that are commands, with values a page chooses (hop://deadlines?…), not just "open this app": asked about each
+# time, never "Always allow", so a site you allowed once can't go on sending them unseen
+ASK_EVERY_TIME = {"hop"}
 QUIET_AFTER_CANCEL = 3.0   # seconds a page can't ask again about a kind of link you just turned down
 ALLOWED_GAP = 2.0          # seconds between links an allowed site opens by itself (no relaunch loops)
 # Eclipse's own links, for Shortcuts and other apps (scripting.py): never followed from a page, which mustn't
@@ -43,7 +46,7 @@ def is_external(url: QUrl) -> bool:
 
 
 def allowed(settings: dict, origin: str, scheme: str) -> bool:
-    return bool(origin) and scheme in settings.get(SETTING, {}).get(origin, [])
+    return bool(origin) and scheme not in ASK_EVERY_TIME and scheme in settings.get(SETTING, {}).get(origin, [])
 
 
 def set_allowed(settings: dict, origin: str, scheme: str, allow: bool):
@@ -120,7 +123,8 @@ class ExternalPrompt(QFrame):
         self.link.setText(short_link(url))
         self.setToolTip(url.toString()[:300])
         self.always_button.setToolTip(f"Open it, and let {site} open {url.scheme()}: links from now on without asking")
-        self.always_button.setVisible(own and bool(origin) and not private)  # (a private window remembers nothing)
+        self.always_button.setVisible(own and bool(origin) and not private  # (a private window remembers nothing)
+                                      and url.scheme().lower() not in ASK_EVERY_TIME)
         # A new question: a moment before it can be answered yes (the same one asked again, by a page that
         # keeps trying, leaves the wait alone, or the card could never be answered)
         question = (url.toString(), self.origin, own, private)

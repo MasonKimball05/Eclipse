@@ -2,7 +2,7 @@
 #
 #   Feed     any RSS or Atom feed (or a site's address: its feed is found for you). A GitHub repo's
 #            address follows its releases (its tags or a branch's commits from those pages), a
-#            person's or organisation's their public activity: GitHub has feeds for these it doesn't link to
+#            person's or organization's their public activity: GitHub has feeds for these it doesn't link to
 #   GitHub   pull requests waiting for your review, your open pull requests, or issues assigned
 #            to you, read with the GitHub CLI (`gh`), so it uses the account you're signed in to
 #   JSON     any JSON API (your own apps): where the list is, and which fields are the title and link.
@@ -193,7 +193,7 @@ def find_feed_link(html: str, base: str) -> str | None:
 
 # --- GitHub's own feeds -----------------------------------------------------------------------------
 
-# github.com/<name> paths that aren't a person or an organisation
+# github.com/<name> paths that aren't a person or an organization
 _GITHUB_PAGES = {"about", "account", "apps", "codespaces", "collections", "contact", "copilot", "customer-stories",
                  "dashboard", "enterprise", "enterprises", "events", "explore", "features", "github-copilot",
                  "home", "issues", "join", "login", "logout", "marketplace", "new", "notifications",

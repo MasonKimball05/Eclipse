@@ -1,7 +1,7 @@
 # Addresses: your name, email, phone and address, filled into forms (a checkout, a sign-up) from a card, the way
 # Safari's and Chrome's AutoFill do. Kept in Settings → Addresses.
 #
-# A small script in each page, in a world of its own the page can't see into, recognises a form's contact and
+# A small script in each page, in a world of its own the page can't see into, recognizes a form's contact and
 # address fields (by the autocomplete="…" names sites are meant to use, or else by their names), and when you
 # click into one of a form that asks for at least three such things, it tells Eclipse. A card then offers your
 # saved addresses; picking one fills the form's empty fields. Nothing is filled by itself, a page never learns
@@ -19,7 +19,7 @@ from PyQt6.QtCore import QObject, QTimer
 from PyQt6.QtWebEngineCore import QWebEngineScript
 from PyQt6.QtWidgets import QPushButton
 
-from . import storage
+from . import prompts, storage
 from .features import Feature
 from .passkeys import PageCard, _escape, _gone
 from .webview import ADDRESS_CALL
@@ -272,8 +272,27 @@ class Addresses(QObject):
 
 # --- Settings → Addresses -------------------------------------------------------------------------------------
 
+def _address_form(parent, browser, on_done, address=None):
+    """Add an address, or change one: on_done(its fields) once saved. A native sheet where it can be (forms.py),
+    else Qt's dialog."""
+    from . import forms
+    fields = [{"id": key, "kind": "lines" if key == "street" else "text", "label": label,
+               "value": (address or {}).get(key, ""), "height": 56,
+               "placeholder": {"label": "Home, Work…", "street": "Street, then apartment or suite on a second line"}
+               .get(key, "")} for key, label in FIELDS]
+    form = forms.open_form(browser, "Edit Address" if address else "Add Address", [forms.section(*fields)],
+                           forms.save_buttons(), lambda _, values: on_done({k: str(values.get(k, "")) for k, _l in FIELDS}),
+                           width=480, height=560, on_page=forms.native_page_of(parent))
+    if form is not None:
+        return form
+    made = _address_dialog(parent, address)
+    if made is not None:
+        on_done(made)
+    return None
+
+
 def _address_dialog(parent, address=None):
-    """Add an address, or change one: its fields, or None if cancelled."""
+    """Add an address, or change one (Qt's dialog): its fields, or None if cancelled."""
     from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QFormLayout, QLayout, QLineEdit, QPlainTextEdit, QVBoxLayout
     dialog = QDialog(parent)
     dialog.setWindowTitle("Edit Address" if address else "Add Address")
@@ -304,29 +323,31 @@ def _address_dialog(parent, address=None):
 
 
 def settings_page(settings):
-    from PyQt6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QMessageBox, QVBoxLayout, QWidget
+    from PyQt6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
     browser = settings.browser
     page = QWidget()
     outer = QVBoxLayout(page)
     outer.setContentsMargins(0, 0, 0, 0)
 
     def add():
-        made = _address_dialog(settings)
-        if made is not None and any(made.values()):
-            save(made)
-            fill()
+        def made(fields):
+            if any(fields.values()):
+                save(fields)
+                fill()
+        _address_form(settings, browser, made)
 
     def edit(address):
-        changed = _address_dialog(settings, address)
-        if changed is not None:
-            save(changed, address["id"])
+        def changed(fields):
+            save(fields, address["id"])
             fill()
+        _address_form(settings, browser, changed, address)
 
     def remove(address):
-        if QMessageBox.question(settings, "Remove Address", f"Remove {summary(address)}?") == \
-                QMessageBox.StandardButton.Yes:
+        def gone():
             delete(address["id"])
             fill()
+        prompts.confirm(settings, "Remove Address", f"Remove {summary(address)}?", gone, action="Remove",
+                        destructive=True)
 
     def fill():
         while outer.count():

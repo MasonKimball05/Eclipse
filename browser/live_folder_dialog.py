@@ -2,10 +2,10 @@
 # APIs and pages.
 
 from PyQt6.QtCore import QUrl
-from PyQt6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QInputDialog, QLabel, QLineEdit,
-                             QMessageBox, QRadioButton, QStackedWidget, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit,
+                             QRadioButton, QStackedWidget, QVBoxLayout, QWidget)
 
-from . import keychain
+from . import forms, keychain, prompts
 from .features import Feature
 from .live_folders import (DEFAULT_ROOT, GITHUB, LiveFolders, allow_here, allowed_here, feed_name, github_repo,
                            mark_seen, token_account)
@@ -195,41 +195,112 @@ class LiveFolderDialog(QDialog):
         elif kind == "repos":
             self.repos_root.setText(preset.get("root", "") or "~/projects/GitHub")
 
+    def values(self) -> dict:
+        """What's filled in, as the native form sends it (live_from reads either)."""
+        return {"kind": KINDS[self.kind_group.checkedId()][0], "name": self.name.text(),
+                "feed_url": self.feed_url.text(), "github_query": self.github_query.currentData(),
+                "json_url": self.json_url.text(), "json_items": self.json_items.text(),
+                "json_title": self.json_title.text(), "json_link": self.json_link.text(),
+                "json_auth": self.json_auth.currentData(), "json_header": self.json_header.text(),
+                "json_token": self.json_token.text(), "page_url": self.page_url.text(),
+                "page_selector": self.page_selector.text(), "calendar_url": self.calendar_url.text(),
+                "repos_root": self.repos_root.text()}
+
     def result_live(self) -> tuple[dict, str, str | None] | None:
-        """(live settings, folder name, token to keep in the Keychain), or None if something's missing."""
-        kind = KINDS[self.kind_group.checkedId()][0]
-        name = self.name.text().strip()
-        if kind == "feed":
-            url = self.feed_url.text().strip()
-            if not url:
-                return None
-            return {"kind": "feed", "url": url if "://" in url else "https://" + url}, name, None
-        if kind == "github":
-            query = self.github_query.currentData()
-            return {"kind": "github", "query": query, "named": True}, name or GITHUB[query][0], None
-        if kind == "json":
-            url = self.json_url.text().strip()
-            if not url.startswith(("http://", "https://")):
-                return None
-            live = {"kind": "json", "url": url, "items": self.json_items.text().strip(),
-                    "title": self.json_title.text().strip() or "title", "link": self.json_link.text().strip() or "url",
-                    "auth": self.json_auth.currentData()}
-            token = None
-            if live["auth"] == "token":
-                live["header"] = self.json_header.text().strip() or "Authorization"
-                token = self.json_token.text().strip() or None
-                if token is None:
-                    return None
-            return live, name, token
-        if kind == "calendar":
-            url = self.calendar_url.text().strip().replace("webcal://", "https://")
-            return ({"kind": "calendar", "url": url}, name, None) if url.startswith(("http://", "https://")) else None
-        if kind == "repos":
-            return {"kind": "repos", "root": self.repos_root.text().strip()}, name or "Repo Radar", None
-        url, selector = self.page_url.text().strip(), self.page_selector.text().strip()
-        if not url.startswith(("http://", "https://")) or not selector:
+        return live_from(self.values())
+
+
+def live_from(v: dict) -> tuple[dict, str, str | None] | None:
+    """(live settings, folder name, token to keep in the Keychain) from the form's values, or None if something's
+    missing."""
+    text = lambda key: str(v.get(key) or "").strip()  # noqa: E731
+    kind = v.get("kind") if v.get("kind") in [k for k, _t, _d in KINDS] else "feed"
+    name = text("name")
+    if kind == "feed":
+        url = text("feed_url")
+        if not url:
             return None
-        return {"kind": "page", "url": url, "selector": selector}, name, None
+        return {"kind": "feed", "url": url if "://" in url else "https://" + url}, name, None
+    if kind == "github":
+        query = v.get("github_query") if v.get("github_query") in GITHUB else next(iter(GITHUB))
+        return {"kind": "github", "query": query, "named": True}, name or GITHUB[query][0], None
+    if kind == "json":
+        url = text("json_url")
+        if not url.startswith(("http://", "https://")):
+            return None
+        live = {"kind": "json", "url": url, "items": text("json_items"), "title": text("json_title") or "title",
+                "link": text("json_link") or "url", "auth": "token" if v.get("json_auth") == "token" else "browser"}
+        token = None
+        if live["auth"] == "token":
+            live["header"] = text("json_header") or "Authorization"
+            token = text("json_token") or None
+            if token is None:
+                return None
+        return live, name, token
+    if kind == "calendar":
+        url = text("calendar_url").replace("webcal://", "https://")
+        return ({"kind": "calendar", "url": url}, name, None) if url.startswith(("http://", "https://")) else None
+    if kind == "repos":
+        return {"kind": "repos", "root": text("repos_root")}, name or "Repo Radar", None
+    url, selector = text("page_url"), text("page_selector")
+    if not url.startswith(("http://", "https://")) or not selector:
+        return None
+    return {"kind": "page", "url": url, "selector": selector}, name, None
+
+
+def live_sections(preset: dict | None = None) -> list[dict]:
+    """The New Live Folder form (forms.py): as LiveFolderDialog has it, natively. Each kind's fields show while
+    it's chosen."""
+    p = preset or {}
+    kind = p.get("kind") if p.get("kind") in [k for k, _t, _d in KINDS] else "feed"
+    when = lambda *kinds: {"id": "kind", "is": list(kinds)}  # noqa: E731
+    given = lambda k, key, default="": p.get(key, default) if kind == k else default  # noqa: E731
+    auth = "token" if given("json", "auth") == "token" else "browser"
+    return [
+        forms.section(
+            {"id": "kind", "kind": "menu", "label": "Follow", "value": kind,
+             "options": [{"value": k, "label": t} for k, t, _d in KINDS]},
+            *[{"kind": "hint", "text": d, "shown_when": when(k)} for k, _t, d in KINDS]),
+        forms.section(
+            {"id": "feed_url", "kind": "text", "label": "Address", "value": given("feed", "url"),
+             "placeholder": "https://example.com/feed.xml, example.com, or a GitHub repo", "shown_when": when("feed")},
+            {"id": "github_query", "kind": "menu", "label": "Show", "shown_when": when("github"),
+             "value": next(iter(GITHUB)),
+             "options": [{"value": key, "label": "Everything, in sub-folders" if key == "overview" else name}
+                         for key, (name, _args) in GITHUB.items()]},
+            {"id": "json_url", "kind": "text", "label": "API address", "value": given("json", "url"),
+             "placeholder": "http://localhost:8000/api/announcements/", "shown_when": when("json")},
+            {"id": "json_items", "kind": "text", "label": "List is at", "value": given("json", "items"),
+             "placeholder": "results (blank if the answer is the list)", "shown_when": when("json")},
+            {"id": "json_title", "kind": "text", "label": "Title field", "value": given("json", "title", "title"),
+             "shown_when": when("json")},
+            {"id": "json_link", "kind": "text", "label": "Link", "value": given("json", "link", "url"),
+             "shown_when": when("json")},
+            {"kind": "hint", "shown_when": when("json"), "text": "A field name (url, links.html), or an address with "
+             "fields in braces: https://app.example/items/{id}/"},
+            {"id": "json_auth", "kind": "menu", "label": "Sign in with", "value": auth, "shown_when": when("json"),
+             "options": [{"value": "browser", "label": "My login in this browser (cookies)"},
+                         {"value": "token", "label": "A token (kept in the Keychain)"}]},
+            {"id": "json_header", "kind": "text", "label": "Header", "value": given("json", "header", "Authorization"),
+             "shown_when": when("json"), "enabled_when": {"id": "json_auth", "is": ["token"]}},
+            {"id": "json_token", "kind": "secret", "label": "Token", "shown_when": when("json"),
+             "placeholder": "Goes straight to the Keychain", "enabled_when": {"id": "json_auth", "is": ["token"]}},
+            {"id": "page_url", "kind": "text", "label": "Page", "value": given("page", "url"),
+             "placeholder": "https://app.example/dashboard", "shown_when": when("page")},
+            {"id": "page_selector", "kind": "text", "label": "Links matching", "value": given("page", "selector"),
+             "placeholder": "main a.item-title", "shown_when": when("page")},
+            {"kind": "hint", "shown_when": when("page"),
+             "text": "Read with the logins of the Space it's in, a few seconds after the page loads. To find a "
+                     "selector, right-click a link and choose Inspect."},
+            {"id": "calendar_url", "kind": "text", "label": "Calendar feed", "value": given("calendar", "url"),
+             "placeholder": "https://app.example/calendar.ics", "shown_when": when("calendar")},
+            {"kind": "hint", "text": "The next 60 days, soonest first.", "shown_when": when("calendar")},
+            {"id": "repos_root", "kind": "text", "label": "Repos folder",
+             "value": given("repos", "root") or "~/projects/GitHub", "shown_when": when("repos")},
+            {"kind": "hint", "text": "Each item opens the repo on GitHub.", "shown_when": when("repos")}),
+        forms.section({"id": "name", "kind": "text", "label": "Folder name", "value": p.get("name", ""),
+                       "placeholder": "Optional"}),
+    ]
 
 
 class LiveFoldersFeature(Feature):
@@ -253,6 +324,12 @@ class LiveFoldersFeature(Feature):
 
     def new_live_folder(self, preset=None):
         window = self.window
+        form = forms.open_form(window, "New Live Folder", live_sections(preset),
+                               [{"id": "cancel", "label": "Cancel", "role": "cancel"},
+                                {"id": "create", "label": "Create", "role": "default"}],
+                               lambda _, values: self._made(live_from(values)), width=540, height=520)
+        if form is not None:
+            return form
         dialog = LiveFolderDialog(window, preset)
         while True:
             if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -261,10 +338,16 @@ class LiveFoldersFeature(Feature):
             if result is not None:
                 break
             window.toast("Fill in the address (and a token, if you chose one)")
+        self._made(result)
+
+    def _made(self, result):
+        if result is None:
+            return "Fill in the address (and a token, if you chose one)."  # (the form says so, and stays open)
         live, name, token = result
         if name:
             live["named"] = True
         self.create_live_folder(live, name or (feed_name(live["url"]) if live.get("url") else "Live Folder"), token)
+        return None
 
     def create_live_folder(self, live, name, token=None):
         window = self.window
@@ -310,7 +393,9 @@ class LiveFoldersFeature(Feature):
         for kind, title, says in KINDS:
             how, examples = GUIDE[kind]
             button = QPushButton("New…")
-            button.clicked.connect(lambda _=False, k=kind: self.new_live_folder({"kind": k}))
+            # (on the browser window, in front: the new folder shows in its sidebar)
+            button.clicked.connect(lambda _=False, k=kind: (self.window.bring_to_front(),
+                                                            self.new_live_folder({"kind": k})))
             rows.append(settings._row(title, f"{says}\n\nHow: {how.format(**filled)}\n\nFor example: {examples}",
                                       button))
         note = settings._row(
@@ -336,15 +421,16 @@ class LiveFoldersFeature(Feature):
     def _ask_token(self, folder):
         window = self.window
         site = QUrl(folder.live.get("url", "")).host() or "its site"
-        token, ok = QInputDialog.getText(window, "Set Token", f"Token for “{folder.name}”, sent to {site} "
-                                         "(kept in the Keychain):", QLineEdit.EchoMode.Password)
-        if not ok or not token.strip():
-            return
-        if self.set_token(folder, token.strip()):
-            allow_here(folder)
-            self._refresh(folder)
-        else:
-            window.toast("Couldn't keep the token in the Keychain")
+        def given(token):
+            if not token.strip():
+                return
+            if self.set_token(folder, token.strip()):
+                allow_here(folder)
+                self._refresh(folder)
+            else:
+                window.toast("Couldn't keep the token in the Keychain")
+        prompts.ask_text(window, "Set Token", f"Token for “{folder.name}”, sent to {site} (kept in the Keychain):",
+                         given, action="Save", secret=True)
 
     def folder_deleted(self, folder):
         if folder.live and folder.live.get("auth") == "token":
@@ -410,10 +496,10 @@ class LiveFoldersFeature(Feature):
         else:
             question = (f"Send this folder's token from the Keychain to {QUrl(live.get('url', '')).host()}?\n\n"
                         "It was set up, or changed, on another computer.")
-        if QMessageBox.question(self.window, f"Use “{folder.name}” on This Computer", question) == \
-                QMessageBox.StandardButton.Yes:
+        def yes():
             allow_here(folder)
             self._refresh(folder)
+        prompts.confirm(self.window, f"Use “{folder.name}” on This Computer", question, yes, action="Use Here")
 
 
 FEATURE = LiveFoldersFeature

@@ -203,6 +203,8 @@ class TabPreview(QFrame):
             self.picture.show()
         else:
             self.picture.hide()
+        if live_kind(tab.url) is None:
+            self._live.pop(tab.id, None)  # (gone on from the inbox, say, to one mail: its picture again)
         items = self._live.get(tab.id) if self._live_for is row else None
         self._set_live(row, items)
         if items is None:
@@ -242,10 +244,11 @@ class TabPreview(QFrame):
 
     def _set_live(self, row, items, fade=False):
         """The newest from a mail or calendar tab in the picture's place; none (or nothing found): the picture."""
-        if not items:
+        kind = live_kind(row.tab.url)
+        if not items or kind is None:  # (None: the page went on elsewhere while it was being read)
             self.live.hide()
             return
-        heading = LIVE[live_kind(row.tab.url)][0]
+        heading = LIVE[kind][0]
         metrics = QFontMetrics(self.live.font())
         dim = self.browser.theme.panel_text
         lines = "".join(f"<div style='margin-top: 3px'>{html.escape(metrics.elidedText(item, Qt.TextElideMode.ElideRight, WIDTH - 40))}</div>"

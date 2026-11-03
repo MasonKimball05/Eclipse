@@ -206,21 +206,21 @@ def test_a_section_with_its_own_icon_doesnt_change_the_sites(qapp, data_dir):
         pixmap.fill(QColor(color))
         return QIcon(pixmap)
 
-    def colour(icon):
+    def color(icon):
         return icon.pixmap(32, 32).toImage().pixelColor(16, 16).name()
     storage.save_favicon("https://www.google.com/", solid("#4285f4"))            # Google's G
     storage.save_favicon("https://www.google.com/maps/place/x", solid("#34a853"))  # Maps' pin
-    assert colour(storage.favicon("https://www.google.com/")) == "#4285f4"       # (your Favorite keeps its G)
-    assert colour(storage.favicon("https://www.google.com/maps/@1,2")) == "#34a853"
-    assert colour(storage.favicon("https://www.google.com/search?q=x")) == "#4285f4"
+    assert color(storage.favicon("https://www.google.com/")) == "#4285f4"       # (your Favorite keeps its G)
+    assert color(storage.favicon("https://www.google.com/maps/@1,2")) == "#34a853"
+    assert color(storage.favicon("https://www.google.com/search?q=x")) == "#4285f4"
     # Pages whose icon is the site's own don't each get a copy
     storage.save_favicon("https://www.google.com/search?q=y", solid("#4285f4"))
     assert not (data_dir / "favicons" / "google.com_search.png").exists()
     # The first page seen of a site stands in for it until its home page says otherwise
     storage.save_favicon("https://github.com/anthropics/claude-code", solid("#000000"))
-    assert colour(storage.favicon("https://github.com/")) == "#000000"
+    assert color(storage.favicon("https://github.com/")) == "#000000"
     storage._icons.clear()  # (and it's all still there next launch)
-    assert colour(storage.favicon("https://www.google.com/maps")) == "#34a853"
+    assert color(storage.favicon("https://www.google.com/maps")) == "#34a853"
 
 
 def test_each_subreddit_has_its_own_section():

@@ -2,7 +2,7 @@
 #
 # Arc's model, which we copy:
 #   - Favorites: a small grid of tabs shared by every Space
-#   - Spaces: each has its own name, colour, pinned tabs and "Today" tabs
+#   - Spaces: each has its own name, color, pinned tabs and "Today" tabs
 #   - Pinned tabs remember a home URL; closing one just unloads it
 #   - Today tabs are ephemeral and get archived after sitting unused for a while
 #   - Pinned and Today tabs can be grouped into (nested) folders (Tidy Tabs makes Today ones)
@@ -99,7 +99,7 @@ class Folder:
                  icon=None):
         self.id = folder_id or new_id()
         self.name = name
-        self.color: str | None = color  # (its icon's colour, "#3b82f6", and a symbol in place of the folder's own:
+        self.color: str | None = color  # (its icon's color, "#3b82f6", and a symbol in place of the folder's own:
         self.icon: str | None = icon    # picked in its menu; None for the usual)
         self.children: list = children or []
         self.expanded = expanded
@@ -180,7 +180,7 @@ class Space:
                  profile="default", theme=None, start_view=None):
         self.id = space_id or new_id()
         self.start_view = start_view  # its own choice of start view (True/False), or None for Settings' default
-        self.theme: dict = theme or {}  # extra colours, intensity, light/dark, grain (see theme.py)
+        self.theme: dict = theme or {}  # extra colors, intensity, light/dark, grain (see theme.py)
         self.profile = profile  # which browser profile (cookies, logins) this Space's tabs use
         self.name = name
         self.color = color

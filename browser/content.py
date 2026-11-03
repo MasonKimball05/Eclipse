@@ -458,7 +458,7 @@ class ContentFrame(QFrame):
 
     def _update_chrome(self):
         # In Split View each pane is its own rounded card, so the frame itself disappears; with nothing
-        # open it's a faint, rounded shade of the Space's colours
+        # open it's a faint, rounded shade of the Space's colors
         for c in self.corners:
             c.setVisible(self._rounded and not self.splitting)
         if (self.property("split") is True) != self.splitting or (self.property("blank") is True) != self.blank:

@@ -1,4 +1,4 @@
-# Small bits of native macOS window behaviour Qt doesn't expose, done through the
+# Small bits of native macOS window behavior Qt doesn't expose, done through the
 # Objective-C runtime with ctypes (no extra dependency like PyObjC needed).
 
 import ctypes
@@ -206,7 +206,7 @@ class _NSPoint(ctypes.Structure):
 
 
 def traffic_lights(widget) -> tuple[float, float] | None:
-    """(right edge, vertical centre) of the window's traffic lights, in points from the window's
+    """(right edge, vertical center) of the window's traffic lights, in points from the window's
     top-left, so our own buttons can line up with them. None off macOS or before the window exists."""
     if not _cocoa():
         return None
@@ -221,7 +221,7 @@ def traffic_lights(widget) -> tuple[float, float] | None:
 
 
 def traffic_light_frames(widget) -> list[tuple[float, float, float, float]]:
-    """Where the window's three buttons are (close, minimise, zoom): (x, y, width, height) in points from the
+    """Where the window's three buttons are (close, minimize, zoom): (x, y, width, height) in points from the
     window's top-left, hidden or not. [] off macOS or before the window exists."""
     if not _cocoa():
         return []

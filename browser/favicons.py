@@ -56,7 +56,7 @@ def redirect_ok(start: str, to: str) -> bool:
 
 
 def icon_candidates(html: str, base: str) -> list[str]:
-    """The icons a page names, best first: big enough to look sharp, and not a one-colour mask icon
+    """The icons a page names, best first: big enough to look sharp, and not a one-color mask icon
     (Safari's pinned-tab outline), then the site's /favicon.ico. A few at most, and nothing on your own
     network unless the site itself is there."""
     local_ok = is_private_host(urlsplit(base).hostname or "")

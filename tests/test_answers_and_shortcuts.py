@@ -34,10 +34,10 @@ def test_world_time():
     assert world_time("time in atlantis", noon_utc) is None
 
 
-def test_colours():
+def test_colors():
     assert color("#7c5cff").detail.startswith("rgb(124, 92, 255)")
     assert color("#fff").text == "#ffffff"
-    assert color("facade") is None and color("beef") is None  # words, not colours
+    assert color("facade") is None and color("beef") is None  # words, not colors
 
 
 def test_answer_picks_one():

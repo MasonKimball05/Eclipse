@@ -8,7 +8,7 @@
 # trouble Chrome had: its key was there for any program to take).
 #
 # (While Eclipse runs from source, "Eclipse" is the Python that runs it; a rebuilt app is a new app to the
-# Keychain, so the first read after a rebuild asks once. A signed release is recognised across updates.)
+# Keychain, so the first read after a rebuild asks once. A signed release is recognized across updates.)
 #
 # On Windows the same calls keep them in Windows Credential Manager instead (windows_vault.py).
 

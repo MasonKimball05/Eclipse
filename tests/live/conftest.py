@@ -20,6 +20,10 @@ from live_helpers import pause, wait_until  # noqa: F401
 TONE_LEVEL = 20  # (of 32,767: the test tone's loudness, see site())
 MEMORY_CAP_GB = float(os.environ.get("ECLIPSE_TEST_MEMORY_GB", 4))  # the run stops if the tests use more than this
 
+# The Qt pages, unless a test asks for the native ones (monkeypatch.setenv("ECLIPSE_NATIVE", "1")): most tests read
+# a window's Qt widgets
+os.environ.setdefault("ECLIPSE_NATIVE", "0")
+
 SITE = Path(__file__).parent / "site"
 _site_root = [""]  # where `site` copied the pages
 
@@ -105,6 +109,8 @@ def in_the_background(qapp):
                 QTimer.singleShot(0, lambda w=obj: _keep_out_of_the_way(w))
             return False
     _keep_out_of_the_way()
+    from browser import native
+    native.KEEP_BEHIND = True  # (native pages open behind everything too)
     behind = Behind()
     qapp.installEventFilter(behind)
     yield

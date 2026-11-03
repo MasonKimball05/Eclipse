@@ -3,7 +3,7 @@
 
 from browser import page_watch
 from browser.page_watch import (INTERVALS, MAX_TEXT, Watcher, changed, clean_watch, diff_summary, next_delay,
-                                normalise)
+                                normalize)
 
 
 # --- What counts as a change -----------------------------------------------------------------------------
@@ -11,7 +11,7 @@ from browser.page_watch import (INTERVALS, MAX_TEXT, Watcher, changed, clean_wat
 def test_noise_isnt_a_change():
     before = "Posted 3 minutes ago · 1,204 views · 12 comments\nUpdated Oct 27, 2026 at 10:42 AM\nPrice: $299"
     after = "Posted 4 minutes ago · 1,388 views · 15 comments\nUpdated Oct 28, 2026 at 9:05 AM\nPrice:   $299"
-    assert normalise(before) == normalise(after)
+    assert normalize(before) == normalize(after)
     assert not changed(before, after)
     assert not changed("Last updated 2026-10-27T10:42:00Z", "Last updated 2026-10-28T09:01:13Z")
     assert not changed("just now", "an hour ago") and not changed("Seen 28/10/2026", "Seen 29/10/2026")

@@ -80,7 +80,7 @@ def test_dark_websites_rules():
     on = {dark_pages.SETTING: True}
     assert not dark_pages.wanted({}, "https://example.com/")  # off unless turned on
     assert dark_pages.wanted(on, "https://example.com/")
-    assert not dark_pages.wanted(on, "pbext://abc/popup.html")  # the browser's own pages keep their colours
+    assert not dark_pages.wanted(on, "pbext://abc/popup.html")  # the browser's own pages keep their colors
     dark_pages.set_skipped(on, "www.example.com", True)
     assert not dark_pages.wanted(on, "https://example.com/a") and not dark_pages.wanted(on, "https://docs.example.com/")
     assert dark_pages.wanted(on, "https://notexample.com/")

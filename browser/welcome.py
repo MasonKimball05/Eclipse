@@ -1,5 +1,5 @@
 # The welcome, on a first launch: bring your things over from the browser you used before (bookmarks, history,
-# passwords; Arc's Spaces and tabs), then make Eclipse your own (default browser, your Space's colour).
+# passwords; Arc's Spaces and tabs), then make Eclipse your own (default browser, your Space's color).
 # Any time later: ⌘T or File → Import from Another Browser…
 #
 # Nothing is brought over unless you tick it, and passwords only after macOS asks you about that browser's key.
@@ -261,21 +261,21 @@ class Welcome(FadesIn, QWidget):
             default.addWidget(make)
         v.addLayout(default)
         v.addSpacing(8)
-        v.addWidget(QLabel(f"Your Space's colour ({window.store.active_space.name}):"))
+        v.addWidget(QLabel(f"Your Space's color ({window.store.active_space.name}):"))
         swatches = QHBoxLayout()
         swatches.setSpacing(8)
         self.swatches = []
         for name, color in PALETTE:
             swatch = QToolButton()
             swatch.setToolTip(name)
-            swatch.setAccessibleName(f"{name} colour")
+            swatch.setAccessibleName(f"{name} color")
             swatch.setFixedSize(30, 30)
             swatch.setCursor(Qt.CursorShape.PointingHandCursor)
             swatch.setCheckable(True)
             swatch.setChecked(color == window.store.active_space.color)
             swatch.setStyleSheet(f"QToolButton {{ background: {color}; border-radius: 15px; border: none; }}"
                                  f"QToolButton:hover, QToolButton:checked {{ border: 3px solid palette(text); }}")
-            swatch.clicked.connect(lambda _=False, c=color: self._colour(c))
+            swatch.clicked.connect(lambda _=False, c=color: self._color(c))
             swatches.addWidget(swatch)
             self.swatches.append(swatch)
         swatches.addStretch(1)
@@ -291,7 +291,7 @@ class Welcome(FadesIn, QWidget):
         v.addLayout(done)
         return page
 
-    def _colour(self, color):
+    def _color(self, color):
         window = self.window_
         window.set_space_color(window.store.active_space, color)
         self.setStyleSheet(stylesheet(window.theme))

@@ -3,7 +3,7 @@
 #   23 * 4 + 7          → 99            sqrt(2) / 2, 2^10, 15% of 80, (3+4)*2
 #   5 km in miles       → 3.107 mi      lengths, weights, volumes, temperatures, speeds, data, time
 #   time in tokyo       → 4:12 AM Sat   any city in the time-zone database, or "tokyo time"
-#   #7c5cff             → a colour swatch, with its RGB and HSL
+#   #7c5cff             → a color swatch, with its RGB and HSL
 #
 # Return copies the answer.
 
@@ -22,7 +22,7 @@ class Answer:
     text: str      # what's copied, and shown big
     detail: str    # what it answers ("23 × 4 + 7"), shown smaller
     kind: str      # "math", "unit", "time" or "color"
-    color: str = ""  # for "color": the colour itself
+    color: str = ""  # for "color": the color itself
 
 
 # --- Math --------------------------------------------------------------------------------------
@@ -250,11 +250,11 @@ def world_time(text: str, now: datetime.datetime | None = None) -> Answer | None
     return Answer(now.strftime(portable("%-I:%M %p · %a %b %-d")), f"Time in {place} ({diff})", "time")
 
 
-# --- Colours ---------------------------------------------------------------------------------------
+# --- Colors ---------------------------------------------------------------------------------------
 
 def color(text: str) -> Answer | None:
     q = text.strip().lower()
-    m = re.fullmatch(r"#([0-9a-f]{6}|[0-9a-f]{3})", q)  # the # is required: "facade" is a word, not a colour
+    m = re.fullmatch(r"#([0-9a-f]{6}|[0-9a-f]{3})", q)  # the # is required: "facade" is a word, not a color
     if m:
         hexa = m.group(1)
         if len(hexa) == 3:

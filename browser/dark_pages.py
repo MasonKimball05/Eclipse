@@ -1,5 +1,5 @@
 # Dark websites: pages that only come in light are darkened by Chromium itself (its "force dark":
-# it recolours the page, keeping images as they are). Pages with a dark look of their own are left as
+# it recolors the page, keeping images as they are). Pages with a dark look of their own are left as
 # they are. Off by default; on in Settings → General, and any site can be left light from the shield
 # in the address bar.
 
@@ -21,7 +21,7 @@ def wanted(settings, url) -> bool:
         return False
     scheme = (url if isinstance(url, QUrl) else QUrl(url)).scheme()
     if scheme not in ("http", "https", "file"):
-        return False  # (the browser's own pages, extensions: they have their own colours)
+        return False  # (the browser's own pages, extensions: they have their own colors)
     host = site(url)
     return not any(host == s or host.endswith("." + s) for s in settings.get(SKIP, []))
 

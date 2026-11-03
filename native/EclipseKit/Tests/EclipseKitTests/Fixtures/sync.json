@@ -1,0 +1,603 @@
+{
+ "files": [
+  {
+   "format": "eclipse-sync",
+   "version": 1,
+   "device": "mac-1",
+   "name": "Studio",
+   "written": 1730000000.5,
+   "items": {
+    "space:work": {
+     "modified": 100.0,
+     "data": {
+      "name": "Wörk  ‮ tricks\n",
+      "color": "#3B82F6",
+      "icon": "ph.briefcase",
+      "theme": {
+       "colors": [
+        "#3b82f6",
+        "nope",
+        "#f59e0b"
+       ],
+       "intensity": 1.5,
+       "mode": "dark",
+       "grain": true,
+       "extra": 1
+      },
+      "pinned": [
+       {
+        "id": "t1",
+        "url": "https://mail.example.com/inbox",
+        "title": "Inbox",
+        "custom_title": null
+       },
+       {
+        "id": "t2",
+        "url": "javascript:alert(1)",
+        "title": "Bad"
+       },
+       {
+        "type": "folder",
+        "id": "f1",
+        "name": "Docs \"quoted\" \\ back",
+        "children": [
+         {
+          "id": "t3",
+          "url": "https://docs.example.com/a b",
+          "title": "Has a space"
+         },
+         {
+          "id": "t4",
+          "url": "https://docs.example.com/q3",
+          "title": "Q3 plan – 💼",
+          "custom_title": "Q3"
+         }
+        ]
+       },
+       {
+        "type": "folder",
+        "id": "f2",
+        "name": "Feed",
+        "live": {
+         "kind": "feed",
+         "url": "https://example.com/rss",
+         "every": 30,
+         "on": true
+        }
+       },
+       {
+        "type": "folder",
+        "id": "f3",
+        "name": "Sneaky",
+        "live": {
+         "kind": "feed",
+         "url": "file:///etc/passwd"
+        }
+       }
+      ]
+     }
+    },
+    "favorites": {
+     "modified": 90,
+     "data": [
+      {
+       "id": "fav1",
+       "url": "https://example.org",
+       "title": "Ex"
+      },
+      {
+       "type": "folder",
+       "id": "nf",
+       "name": "Not a tab"
+      }
+     ]
+    },
+    "order": {
+     "modified": 95.25,
+     "data": [
+      "work",
+      "home",
+      7
+     ]
+    },
+    "space:broken": {
+     "modified": "soon",
+     "data": {
+      "name": "Home",
+      "color": "red",
+      "icon": "🏠",
+      "theme": {
+       "intensity": 0.25,
+       "mode": "auto"
+      },
+      "pinned": []
+     }
+    },
+    "unknown": {
+     "modified": 1,
+     "data": {}
+    }
+   },
+   "deleted": {
+    "space:old": 80,
+    "space:bad": "x"
+   }
+  },
+  {
+   "format": "eclipse-sync",
+   "version": 1,
+   "device": "mac-2",
+   "name": "Laptop",
+   "written": 1730000100,
+   "items": {
+    "space:home": {
+     "modified": 120,
+     "data": {
+      "name": "Home",
+      "color": "red",
+      "icon": "🏠",
+      "theme": {
+       "intensity": 0.25,
+       "mode": "auto"
+      },
+      "pinned": []
+     }
+    },
+    "space:work": {
+     "modified": 50,
+     "data": {
+      "name": "Older",
+      "color": "#3B82F6",
+      "icon": "ph.briefcase",
+      "theme": {
+       "colors": [
+        "#3b82f6",
+        "nope",
+        "#f59e0b"
+       ],
+       "intensity": 1.5,
+       "mode": "dark",
+       "grain": true,
+       "extra": 1
+      },
+      "pinned": [
+       {
+        "id": "t1",
+        "url": "https://mail.example.com/inbox",
+        "title": "Inbox",
+        "custom_title": null
+       },
+       {
+        "id": "t2",
+        "url": "javascript:alert(1)",
+        "title": "Bad"
+       },
+       {
+        "type": "folder",
+        "id": "f1",
+        "name": "Docs \"quoted\" \\ back",
+        "children": [
+         {
+          "id": "t3",
+          "url": "https://docs.example.com/a b",
+          "title": "Has a space"
+         },
+         {
+          "id": "t4",
+          "url": "https://docs.example.com/q3",
+          "title": "Q3 plan – 💼",
+          "custom_title": "Q3"
+         }
+        ]
+       },
+       {
+        "type": "folder",
+        "id": "f2",
+        "name": "Feed",
+        "live": {
+         "kind": "feed",
+         "url": "https://example.com/rss",
+         "every": 30,
+         "on": true
+        }
+       },
+       {
+        "type": "folder",
+        "id": "f3",
+        "name": "Sneaky",
+        "live": {
+         "kind": "feed",
+         "url": "file:///etc/passwd"
+        }
+       }
+      ]
+     }
+    },
+    "space:old": {
+     "modified": 70,
+     "data": {
+      "name": "Home",
+      "color": "red",
+      "icon": "🏠",
+      "theme": {
+       "intensity": 0.25,
+       "mode": "auto"
+      },
+      "pinned": []
+     }
+    }
+   },
+   "deleted": {
+    "favorites": 85
+   }
+  }
+ ],
+ "clean": [
+  {
+   "device": "mac-1",
+   "name": "Studio",
+   "items": {
+    "space:work": {
+     "modified": 100.0,
+     "data": {
+      "name": "Wörk tricks",
+      "color": "#3B82F6",
+      "icon": "ph.briefcase",
+      "theme": {
+       "colors": [
+        "#3b82f6",
+        "#f59e0b"
+       ],
+       "intensity": 1.0,
+       "mode": "dark",
+       "grain": true
+      },
+      "pinned": [
+       {
+        "id": "t1",
+        "url": "https://mail.example.com/inbox",
+        "title": "Inbox",
+        "custom_title": null
+       },
+       {
+        "type": "folder",
+        "id": "f1",
+        "name": "Docs \"quoted\" \\ back",
+        "children": [
+         {
+          "id": "t4",
+          "url": "https://docs.example.com/q3",
+          "title": "Q3 plan – 💼",
+          "custom_title": "Q3"
+         }
+        ]
+       },
+       {
+        "type": "folder",
+        "id": "f2",
+        "name": "Feed",
+        "live": {
+         "kind": "feed",
+         "url": "https://example.com/rss",
+         "every": 30,
+         "on": true
+        }
+       }
+      ]
+     }
+    },
+    "favorites": {
+     "modified": 90,
+     "data": [
+      {
+       "id": "fav1",
+       "url": "https://example.org",
+       "title": "Ex",
+       "custom_title": null
+      }
+     ]
+    },
+    "order": {
+     "modified": 95.25,
+     "data": [
+      "work",
+      "home"
+     ]
+    }
+   },
+   "deleted": {
+    "space:old": 80
+   },
+   "written": 1730000000.5
+  },
+  {
+   "device": "mac-2",
+   "name": "Laptop",
+   "items": {
+    "space:home": {
+     "modified": 120,
+     "data": {
+      "name": "Home",
+      "color": "#6b7280",
+      "icon": "🏠",
+      "theme": {
+       "intensity": 0.25,
+       "mode": "auto"
+      },
+      "pinned": []
+     }
+    },
+    "space:work": {
+     "modified": 50,
+     "data": {
+      "name": "Older",
+      "color": "#3B82F6",
+      "icon": "ph.briefcase",
+      "theme": {
+       "colors": [
+        "#3b82f6",
+        "#f59e0b"
+       ],
+       "intensity": 1.0,
+       "mode": "dark",
+       "grain": true
+      },
+      "pinned": [
+       {
+        "id": "t1",
+        "url": "https://mail.example.com/inbox",
+        "title": "Inbox",
+        "custom_title": null
+       },
+       {
+        "type": "folder",
+        "id": "f1",
+        "name": "Docs \"quoted\" \\ back",
+        "children": [
+         {
+          "id": "t4",
+          "url": "https://docs.example.com/q3",
+          "title": "Q3 plan – 💼",
+          "custom_title": "Q3"
+         }
+        ]
+       },
+       {
+        "type": "folder",
+        "id": "f2",
+        "name": "Feed",
+        "live": {
+         "kind": "feed",
+         "url": "https://example.com/rss",
+         "every": 30,
+         "on": true
+        }
+       }
+      ]
+     }
+    },
+    "space:old": {
+     "modified": 70,
+     "data": {
+      "name": "Home",
+      "color": "#6b7280",
+      "icon": "🏠",
+      "theme": {
+       "intensity": 0.25,
+       "mode": "auto"
+      },
+      "pinned": []
+     }
+    }
+   },
+   "deleted": {
+    "favorites": 85
+   },
+   "written": 1730000100
+  }
+ ],
+ "letters": {
+  "mail.google.com": "G",
+  "en.wikipedia.org": "W",
+  "www.bbc.co.uk": "B",
+  "abc.net.au": "A",
+  "example.com": "E",
+  "localhost": "L",
+  "192.168.0.1": "1",
+  "github.io": "G",
+  "x.com": "X",
+  "über.de": "Ü",
+  "": "?"
+ },
+ "digests": {
+  "space:work": "2e4d9e12bb2d542eb71728e5",
+  "favorites": "b532127d2ef80fb6234ed1c3",
+  "order": "b1376ab261d33a9942fe645c",
+  "space:home": "e5ae12705c7afb6b8696a6c7",
+  "space:old": "e5ae12705c7afb6b8696a6c7"
+ },
+ "state": {
+  "device": "phone",
+  "known": {
+   "space:home": {
+    "hash": "old",
+    "modified": 130
+   },
+   "space:work": {
+    "hash": "a507717c523689c1e2ac41c6",
+    "modified": 100.0
+   },
+   "favorites": {
+    "hash": "b532127d2ef80fb6234ed1c3",
+    "modified": 90
+   },
+   "order": {
+    "hash": "b1376ab261d33a9942fe645c",
+    "modified": 95.25
+   }
+  },
+  "deleted": {
+   "space:old": 80
+  }
+ },
+ "plan": {
+  "apply": {
+   "space:work": {
+    "name": "Wörk tricks",
+    "color": "#3B82F6",
+    "icon": "ph.briefcase",
+    "theme": {
+     "colors": [
+      "#3b82f6",
+      "#f59e0b"
+     ],
+     "intensity": 1.0,
+     "mode": "dark",
+     "grain": true
+    },
+    "pinned": [
+     {
+      "id": "t1",
+      "url": "https://mail.example.com/inbox",
+      "title": "Inbox",
+      "custom_title": null
+     },
+     {
+      "type": "folder",
+      "id": "f1",
+      "name": "Docs \"quoted\" \\ back",
+      "children": [
+       {
+        "id": "t4",
+        "url": "https://docs.example.com/q3",
+        "title": "Q3 plan – 💼",
+        "custom_title": "Q3"
+       }
+      ]
+     },
+     {
+      "type": "folder",
+      "id": "f2",
+      "name": "Feed",
+      "live": {
+       "kind": "feed",
+       "url": "https://example.com/rss",
+       "every": 30,
+       "on": true
+      }
+     }
+    ]
+   },
+   "favorites": [
+    {
+     "id": "fav1",
+     "url": "https://example.org",
+     "title": "Ex",
+     "custom_title": null
+    }
+   ],
+   "order": [
+    "work",
+    "home"
+   ]
+  },
+  "delete": []
+ },
+ "canonical": [
+  {
+   "value": 0.5,
+   "text": "0.5"
+  },
+  {
+   "value": 1.0,
+   "text": "1.0"
+  },
+  {
+   "value": 0.1,
+   "text": "0.1"
+  },
+  {
+   "value": 1e-05,
+   "text": "1e-05"
+  },
+  {
+   "value": 0.0001,
+   "text": "0.0001"
+  },
+  {
+   "value": 1000000000000000.0,
+   "text": "1000000000000000.0"
+  },
+  {
+   "value": 1e+16,
+   "text": "1e+16"
+  },
+  {
+   "value": 123456789.125,
+   "text": "123456789.125"
+  },
+  {
+   "value": -2.5,
+   "text": "-2.5"
+  },
+  {
+   "value": 1e+100,
+   "text": "1e+100"
+  },
+  {
+   "value": 2.5e-07,
+   "text": "2.5e-07"
+  },
+  {
+   "value": 3,
+   "text": "3"
+  },
+  {
+   "value": -0.0,
+   "text": "-0.0"
+  },
+  {
+   "value": "tab\there",
+   "text": "\"tab\\there\""
+  },
+  {
+   "value": "quote\" back\\ slash/",
+   "text": "\"quote\\\" back\\\\ slash/\""
+  },
+  {
+   "value": "ctl\u0001\u001f",
+   "text": "\"ctl\\u0001\\u001f\""
+  },
+  {
+   "value": "é ü 中文 😀  ",
+   "text": "\"é ü 中文 😀  \""
+  },
+  {
+   "value": true,
+   "text": "true"
+  },
+  {
+   "value": null,
+   "text": "null"
+  },
+  {
+   "value": {
+    "b": 1,
+    "a": [
+     1,
+     2.0,
+     {
+      "é": "x",
+      "e": "y",
+      "Z": 0
+     }
+    ]
+   },
+   "text": "{\"a\": [1, 2.0, {\"Z\": 0, \"e\": \"y\", \"é\": \"x\"}], \"b\": 1}"
+  },
+  {
+   "value": [],
+   "text": "[]"
+  }
+ ]
+}

@@ -1,4 +1,4 @@
-# Sharing a Space: its name, icon, colours and pinned tabs (in their folders) as a small file, "Work.eclipse-space",
+# Sharing a Space: its name, icon, colors and pinned tabs (in their folders) as a small file, "Work.eclipse-space",
 # to AirDrop, message or mail to someone. Opening it in Eclipse (double-click, drag it onto the Dock icon, or
 # File → Import Space…) adds the Space after asking. What's shared is only what you see: the addresses of the
 # pinned tabs and their names. Not Today's tabs, not where you'd scrolled, not the profile (cookies, sign-ins),
@@ -6,7 +6,7 @@
 # fills itself on the other Mac.
 #
 # A shared file comes from someone else, so nothing in it is trusted: only web addresses, names cut to length
-# and without control characters, colours that are colours, a known look.
+# and without control characters, colors that are colors, a known look.
 
 import json
 import re
@@ -106,7 +106,7 @@ def color_of(value) -> str | None:
 
 
 def look_of(theme) -> dict:
-    """A Space's look (theme.py's colours, intensity, light or dark, grain), only what makes sense."""
+    """A Space's look (theme.py's colors, intensity, light or dark, grain), only what makes sense."""
     theme = theme if isinstance(theme, dict) else {}
     look = {}
     colors = [c for c in theme.get("colors", []) if isinstance(c, str) and COLOR.fullmatch(c)][:4] \

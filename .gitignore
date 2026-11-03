@@ -5,3 +5,9 @@ venv/
 .DS_Store
 .pytest_cache/
 dist/
+native/build/
+native/EclipseKit/.build/
+native/EclipseKit/.swiftpm/
+native/EclipseApp/EclipseApp.xcodeproj/
+native/EclipseApp/Generated/
+native/EclipseApp/build/

@@ -103,7 +103,7 @@ def test_themes():
     assert len(single.stops) == 2 and not single.dark
     triple = make_theme("#ff0000", colors=["#ff0000", "#00ff00", "#0000ff"], mode="dark")
     assert len(triple.stops) == 3 and triple.dark
-    # More intensity means more colour (less white) in light mode
+    # More intensity means more color (less white) in light mode
     pale = make_theme("#ff0000", dark=False, intensity=0.1).bottom
     vivid = make_theme("#ff0000", dark=False, intensity=0.9).bottom
     assert vivid.green() < pale.green()
@@ -218,3 +218,40 @@ def test_which_pages_have_a_live_preview():
     assert live_kind("https://www.youtube.com/playlist?list=WL") == "youtube"
     assert live_kind("https://www.youtube.com/playlist?list=PL123") is None  # (someone's playlist)
     assert live_kind("https://www.youtube.com/watch?v=abc") is None
+
+
+def test_a_sites_letter_is_its_names_not_a_subdomains():
+    from browser.theme import site_letter
+    assert site_letter("en.wikipedia.org") == "W"
+    assert site_letter("mail.google.com") == "G"
+    assert site_letter("bbc.co.uk") == "B" and site_letter("news.abc.net.au") == "A"
+    assert site_letter("github.com") == "G" and site_letter("localhost") == "L"
+    assert site_letter("127.0.0.1") == "1" and site_letter("Wikipedia") == "W"
+    assert site_letter("Q3 plan. Draft") == "Q" and site_letter("") == "?"
+
+
+def test_notes_split_into_sections_for_the_native_pages():
+    from browser import native
+    notes = "## This week\n\n- **A**: one\n  carrying on\n- B\n\n## Lately\nPlain line"
+    assert native.note_sections(notes) == [
+        {"heading": "This week", "lines": [{"text": "**A**: one carrying on", "bullet": True},
+                                           {"text": "B", "bullet": True}]},
+        {"heading": "Lately", "lines": [{"text": "Plain line", "bullet": False}]}]
+    assert native.available() is False  # (offscreen, as the tests run: Qt's pages)
+
+
+def test_command_links_are_asked_about_every_time():
+    from browser import external_links
+    settings = {}
+    external_links.set_allowed(settings, "https://example.com", "zoommtg", True)
+    external_links.set_allowed(settings, "https://example.com", "hop", True)  # (allowed before this rule)
+    assert external_links.allowed(settings, "https://example.com", "zoommtg")
+    assert not external_links.allowed(settings, "https://example.com", "hop")
+
+
+def test_a_long_address_loses_whole_parts_from_the_front_not_its_site_name(qapp):
+    from browser.sidebar import site_labels
+    assert site_labels("dash.cloudflare.com") == 2  # (→ cloudflare.com, never "…udflare.com")
+    assert site_labels("news.bbc.co.uk") == 3        # (→ bbc.co.uk)
+    assert site_labels("127.0.0.1") == 4             # (an address isn't cut into parts)
+    assert site_labels("localhost") == 1

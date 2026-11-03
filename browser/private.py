@@ -18,7 +18,7 @@ from PyQt6.QtWebEngineCore import QWebEngineNewWindowRequest, QWebEngineProfile
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QStackedWidget,
                              QToolButton, QVBoxLayout, QWidget)
 
-from .webview import harden
+from .webview import harden, look_like_chrome
 from . import macos, shortcuts, spelling
 from .command_bar import search_url, to_url
 from .content import RADIUS, Corner
@@ -376,8 +376,8 @@ class PrivateWindow(QWidget):
             macos.hide_title_text(self)
             lights = macos.traffic_lights(self)
             if lights:
-                right, centre = lights
-                self.top.setFixedHeight(max(round(centre * 2), 32))
+                right, center = lights
+                self.top.setFixedHeight(max(round(center * 2), 32))
                 self.top.layout().setContentsMargins(round(right + 12), 0, 4, 0)
 
     def resizeEvent(self, event):
@@ -413,7 +413,7 @@ class PrivateSession(QObject):
         if self.profile is None:
             self.profile = QWebEngineProfile(self.browser)  # no storage name: off the record
             harden(self.profile)
-            self.profile.setHttpUserAgent(self.browser.profile.httpUserAgent())
+            look_like_chrome(self.profile)
             self.browser.adblock.attach(self.profile, private=True)  # ads still blocked, cookie banners still rejected
             self.browser.passkeys.attach_profile(self.profile)  # (security keys work there too)
             self.browser.passwords.attach_profile(self.profile)  # (filling works; saving still asks)

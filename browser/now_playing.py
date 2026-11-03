@@ -1,6 +1,7 @@
 # Now Playing: when a tab you've left is playing music or a video, a small card at the bottom of
 # the sidebar shows what it is (from the page's media session: title and artist), with play/pause,
-# next track where the site has one, and × to stop. Click the card to go back to the tab.
+# next track where the site has one, and × to stop. Click the card to go back to the tab; right-click it for those,
+# muting or closing the tab, or Dismiss (the card goes, the music plays on, and it's back next time something starts).
 #
 # Videos you switch away from go to the mini player instead; the card is for everything else
 # (Spotify, SoundCloud, a podcast, YouTube Music), and for videos when the mini player is off.
@@ -150,7 +151,7 @@ class NowPlayingCard(QFrame):
         self.next_btn.setIcon(qta.icon("ph.skip-forward-fill", color=color))
         self.close_btn.setIcon(qta.icon("ph.x", color=color))
         self.next_btn.setVisible(has_next)
-        self.setToolTip(plain_tip(f"{title} — {subtitle}\nClick to go to the tab"))
+        self.setToolTip(plain_tip(f"{title} — {subtitle}\nClick to go to the tab; right-click for more"))
         self._elide()
 
     def _elide(self):
@@ -167,6 +168,9 @@ class NowPlayingCard(QFrame):
         if event.button() == Qt.MouseButton.LeftButton:
             self.controller.go_to_tab()
 
+    def contextMenuEvent(self, event):
+        self.controller.show_menu(event.globalPos())
+
 
 class NowPlaying(QObject):
     def __init__(self, browser):
@@ -174,6 +178,9 @@ class NowPlaying(QObject):
         self.browser = browser
         self.tab = None
         self.card: NowPlayingCard | None = None
+        self.dismissed = None  # (a tab whose card you dismissed: not shown again till it stops, or you visit it)
+        self._paused = False
+        self._has_next = False
         self._info = {}
         self._poll = QTimer(self, interval=POLL_MS, timeout=self.refresh)
 
@@ -193,7 +200,10 @@ class NowPlaying(QObject):
     # --- Called by the window ----------------------------------------------------------------------
 
     def audible_changed(self, tab):
-        if self.browser.tab_audio(tab)[0] and self._eligible(tab):
+        audible = self.browser.tab_audio(tab)[0]
+        if tab is self.dismissed and not audible:
+            self.dismissed = None  # (it stopped: the next time it plays, the card's back)
+        if audible and self._eligible(tab) and tab is not self.dismissed:
             self._follow(tab)
         elif tab is self.tab:
             self.refresh()
@@ -201,13 +211,18 @@ class NowPlaying(QObject):
     def left_tab(self, tab):
         """You switched away from `tab`: if it's still playing (and the mini player didn't take it), show it."""
         if tab is not None and self.browser.tab_audio(tab)[0]:
-            QTimer.singleShot(400, lambda: self._eligible(tab) and self._follow(tab))  # after the mini player decides
+            QTimer.singleShot(400, lambda: self._eligible(tab) and tab is not self.dismissed
+                              and self._follow(tab))  # after the mini player decides
 
     def tab_shown(self, tab):
+        if tab is self.dismissed:
+            self.dismissed = None  # (you went back to it: leave it again and the card's there)
         if tab is self.tab or (self.tab is not None and self._on_screen(self.tab)):
             self._hide()
 
     def forget(self, tab):
+        if tab is self.dismissed:
+            self.dismissed = None
         if tab is self.tab:
             self.tab = None
             self._hide()
@@ -243,7 +258,8 @@ class NowPlaying(QObject):
         theme = self.browser.theme
         title, subtitle = describe(info, tab.label, tab.url)
         paused = info.get("paused") is True or (info.get("paused") is None and not self.browser.tab_audio(tab)[0])
-        self.card.set_state(title, subtitle, tab_icon(tab, theme), paused, bool(info.get("next")), theme.text)
+        self._paused, self._has_next = paused, bool(info.get("next"))
+        self.card.set_state(title, subtitle, tab_icon(tab, theme), paused, self._has_next, theme.text)
         self.card.show()
 
     def toggle(self):
@@ -263,6 +279,51 @@ class NowPlaying(QObject):
         tab = self.tab
         if tab is not None:
             self.browser.activate_tab(tab)
+
+    # --- Its right-click menu --------------------------------------------------------------------------
+
+    def menu_actions(self) -> list:
+        """[(icon, text, slot)] for the card's menu (None: a separator)."""
+        tab = self.tab
+        if tab is None:
+            return []
+        muted = self.browser.tab_audio(tab)[1]
+        return [("ph.arrow-square-out", "Go to Tab", self.go_to_tab),
+                None,
+                ("ph.play" if self._paused else "ph.pause", "Play" if self._paused else "Pause", self.toggle),
+                *([("ph.skip-forward", "Next Track", self.next_track)] if self._has_next else []),
+                ("ph.speaker-high" if muted else "ph.speaker-slash", "Unmute Tab" if muted else "Mute Tab", self.mute),
+                None,
+                ("ph.eye-slash", "Dismiss", self.dismiss),
+                ("ph.stop", "Stop", self.stop),
+                ("ph.x", "Close Tab", self.close_tab)]
+
+    def show_menu(self, pos):
+        b = self.browser
+        menu = b._menu()
+        for item in self.menu_actions():
+            if item is None:
+                menu.addSeparator()
+            else:
+                b._act(menu, *item)
+        if not menu.isEmpty():
+            menu.exec(pos)
+
+    def mute(self):
+        if self.tab is not None:
+            self.browser.toggle_mute(self.tab)
+            QTimer.singleShot(150, self.refresh)
+
+    def dismiss(self):
+        """The card goes; the music plays on. It's back once the tab stops and plays again, or you visit it."""
+        self.dismissed = self.tab
+        self._hide()
+
+    def close_tab(self):
+        tab = self.tab
+        self._hide()
+        if tab is not None and self.browser.store.locate(tab):
+            self.browser.close_tab(tab)
 
 
 class NowPlayingFeature(Feature):

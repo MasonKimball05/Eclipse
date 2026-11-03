@@ -25,7 +25,7 @@ download is signed by Eclipse's maker and notarized.
 
 - **The sidebar:** Favorites at the top, pinned tabs that remember their home page, and Today's tabs, which are
   archived after 12 hours unused (you can bring them back).
-- **Spaces:** separate sets of tabs, each with its own name, colour and icon, and its own sign-ins if you like.
+- **Spaces:** separate sets of tabs, each with its own name, color and icon, and its own sign-ins if you like.
   Swipe with two fingers to switch.
 - **Command bar (⌘T):** sites, searches, tabs, history, sums and conversions, and every command.
 - **Little windows:** links from other apps open in a small window you can glance at, or keep with ⌘O.
