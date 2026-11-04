@@ -299,6 +299,12 @@ class NativeSidebarBody(QObject):
             b.clear_today()
         elif name == "tidy":
             self.sidebar._tidy_clicked()
+        elif name == "heading":
+            # A swipe on its way to a Space: its tab starts loading now, before it's there (window.prepare_space)
+            space = next((s for s in store.spaces if s.id == event.get("id")), None)
+            if space is not None:
+                b.prepare_space(space)
+            return
         elif name == "swiped":
             space = next((s for s in store.spaces if s.id == event.get("id")), None)
             if space is not None and space is not store.active_space:

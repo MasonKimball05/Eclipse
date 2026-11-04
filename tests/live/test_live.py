@@ -2,6 +2,7 @@
 
 import functools
 import http.server
+import ctypes
 import os
 import shutil
 import signal
@@ -1331,6 +1332,38 @@ def test_the_top_row_never_runs_into_the_traffic_lights(window, site):
         reload_end = bar.reload_btn.mapTo(window, QPoint(bar.reload_btn.width(), 0)).x()
         assert toggle >= lights_end + 8, (width, toggle, lights_end)
         assert reload_end <= bar.mapTo(window, QPoint(bar.width(), 0)).x(), width  # (and nothing falls off the end)
+
+
+def test_the_top_row_sits_as_far_from_the_top_as_the_bottom_bar_from_the_bottom(window, site):
+    """macOS's spot for the traffic lights (16pt down) left the top row jammed against the top of the window next
+    to the room the bottom bar has: they're DROP lower, the row centered on them, and macOS laying them out again
+    (as a window first shows, say) doesn't leave the row behind."""
+    from browser import macos, traffic_lights
+    if not macos._cocoa():
+        pytest.skip("macOS's own window buttons")
+    open_page(window, f"{site}/index.html")
+    window.place_traffic_lights()
+    pause(0.4)
+    bar = window.sidebar
+
+    def centers():
+        _, lights = macos.traffic_lights(window)
+        toggle = bar.toggle_btn.mapTo(window, QPoint(0, 0)).y() + bar.toggle_btn.height() / 2
+        bottom = window.height() - (bar.archive_btn.mapTo(window, QPoint(0, 0)).y() + bar.archive_btn.height() / 2)
+        return lights, toggle, bottom
+    lights, toggle, bottom = centers()
+    assert window.traffic_lights.offset == (0, traffic_lights.DROP)
+    assert abs(lights - toggle) <= 1 and 0 <= bottom - lights <= 3, (lights, toggle, bottom)  # (about: a touch higher)
+    # macOS lays them out again, back where it keeps them: they're put back, and the row with them
+    native = macos._send(ctypes.c_void_p(int(window.winId())), "window")
+    for i, (x, y) in enumerate(macos._lights_home[int(native)]):
+        button = macos._send(native, "standardWindowButton:", i, argtypes=(ctypes.c_long,))
+        macos._send(button, "setFrameOrigin:", macos._NSPoint(x, y), restype=None, argtypes=(macos._NSPoint,))
+    bar.align_with_traffic_lights()
+    assert centers()[0] < lights - 3
+    window.traffic_lights.keep()
+    pause(0.1)
+    assert centers()[:2] == (lights, toggle)
 
 
 def test_traffic_lights_light_up_in_place(window, site, monkeypatch):

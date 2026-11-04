@@ -17,9 +17,13 @@ from PyQt6.QtWidgets import QWidget
 
 from . import macos
 
+DROP = 5  # points lower than macOS puts them (with the sidebar's top row, centered on them): about as far from the
+          # top as the bottom bar's buttons are from the bottom (23), where macOS's 16 left the top row looking jammed
+          # against it (7, all the way, felt like too much)
 GRAY = (0.30, 0.22)  # how strong their gray is until you point at them: in the window you're using, in one behind
 REACH = 6    # points round the circles that already count as pointing at them
 CHECK_MS = 80
+KEEP_AFTER_MS = 250  # after they're placed, a look to see macOS hasn't laid them out again meanwhile
 # macOS's own colors: (fill, edge, the symbol drawn on it as you point at them)
 COLORS = [("#ff5f57", "#e14640", "#4d0000"), ("#febc2e", "#dfa023", "#995700"), ("#28c840", "#1dad2b", "#006500")]
 ACTIONS = ["close", "minimize", "full_screen"]
@@ -142,7 +146,10 @@ class TrafficLights(QObject):
         return self.window.isFullScreen() or getattr(self.window, "_fullscreen", False)
 
     def place(self, showing: bool, dx: float = 0, dy: float = 0):
-        """Put them `dx` right and `dy` down from where macOS puts them, showing or not."""
+        """Put them `dx` right and `dy` down from where macOS puts them (and DROP lower, but in full screen, where
+        they're macOS's own in its menu bar), showing or not."""
+        if not self._native():
+            dy += DROP
         self.showing, self.offset = showing, (dx, dy)
         self._lit = self.near()
         native = self._native()
@@ -151,6 +158,7 @@ class TrafficLights(QObject):
         macos.shift_traffic_lights(self.window, dx, dy)
         QTimer.singleShot(0, lambda: self.offset == (dx, dy) and (macos.shift_traffic_lights(self.window, dx, dy),
                                                                    self._sync()))
+        QTimer.singleShot(KEEP_AFTER_MS, self.keep)  # (macOS lays them out again as a window first shows, say)
         self._sync()
         self.activity()
 
@@ -181,9 +189,15 @@ class TrafficLights(QObject):
 
     def keep(self):
         """Put them back where they belong if macOS has laid them out again (it does when the window's
-        title changes, say): a no-op when they're where they should be."""
+        title changes, say): a no-op when they're where they should be. The sidebar's top row, centered on them,
+        comes back with them."""
         if self.offset != (0, 0):
+            before = macos.traffic_lights(self.window)
             macos.shift_traffic_lights(self.window, *self.offset)
+            sidebar, floating = getattr(self.window, "sidebar", None), getattr(self.window, "floating_sidebar", None)
+            if macos.traffic_lights(self.window) != before and sidebar is not None and \
+                    not (floating is not None and floating.active):
+                sidebar.align_with_traffic_lights()
         if self.overlay.isVisible():
             self.overlay.place(macos.traffic_light_frames(self.window))
 

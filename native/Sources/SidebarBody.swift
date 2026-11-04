@@ -5,7 +5,9 @@
 //
 // The Spaces are pages of a paging scroll view: a two-finger swipe moves them with your fingers and lands with the
 // system's spring, and a switch from elsewhere (⌃2, the switcher) is the same scroll, animated, so the frames come
-// from the system's compositor at the display's own rate. A swipe that lands on another Space says so ("swiped").
+// from the system's compositor at the display's own rate. A swipe that lands on another Space says so ("swiped"),
+// once the scroll has come to rest: the view's position turns to the next Space as soon as it's halfway over, and
+// the window's change of Space (its colors, its page: 40 ms and more of Python) done then stopped the scroll mid-swipe.
 //
 // State: "spaces": [{id, name, emoji, icon, profile, profile_tip, hint, tidy {label, enabled, tip}, clear, pinned:
 // [node], today: [node]}], "current", "go" (a counter: animate to "current" when it changes), "selected_id" (the
@@ -50,6 +52,11 @@ struct SidebarBodyView: View {
     @ObservedObject var model: PageModel
     @State private var current: String?
     @State private var going = false  // (a switch from Python under way: its scroll isn't a swipe)
+    @StateObject private var settling = Settling()  // (when a swipe's done with: said then)
+    @State private var moving = false  // (the Spaces scrolling: rows passing under the pointer aren't pointed at)
+    @State private var position = 0.0  // (which Space it's scrolled to, from its offset: 1.5 is halfway to the second)
+    @State private var headingFor: String?  // (the Space a swipe's been said to be on its way to)
+    @State private var landing = false  // (done with, its spring still taking it into place: told once it's there)
     @StateObject private var meter = FrameMeter()  // (the benchmark's: frames counted while a switch is measured)
 
     private var spaces: [JSON] { model.state["spaces"] as? [JSON] ?? [] }
@@ -66,16 +73,18 @@ struct SidebarBodyView: View {
             }
             .scrollTargetLayout()
         }
-        .scrollTargetBehavior(.paging)
+        .scrollTargetBehavior(OneSpaceAtATime())
         .scrollPosition(id: $current)
         .scrollIndicators(.never)
         .scrollClipDisabled(false)
         .coordinateSpace(.named("sidebarBody"))
         .background(MeterView(meter: meter).frame(width: 1, height: 1))
-        .onAppear { current = model.string("current") }
-        .onDisappear { meter.stop() }
+        .onAppear { current = model.string("current"); settling.start() }
+        .onDisappear { meter.stop(); settling.stop() }
         .onChange(of: model.state["go"] as? Int) { _ in
             let target = model.string("current")
+            settling.cancel()  // (a switch from Python has the last word over a swipe not yet told)
+            landing = false
             guard target != current else { return }
             if let seconds = (model.state["measure"] as? NSNumber)?.doubleValue {  // (tests/live/test_spaces_benchmark.py)
                 meter.measure(for: seconds) { ticks, started in
@@ -92,10 +101,170 @@ struct SidebarBodyView: View {
             }
         }
         .onChange(of: current) { now in
-            guard let now, !going, now != model.string("current") else { return }
-            model.merge(["current": now])  // (so a refresh before Python answers doesn't scroll it back)
-            model.act("swiped", ["id": now])
+            if #unavailable(macOS 15), let now, let page = spaces.firstIndex(where: { $0.spaceId == now }) {
+                position = Double(page)  // (no scroll geometry: the scroll position's id, which can lag)
+            }
         }
+        .modifier(AtRest(moving: $moving, position: $position) { page in
+            // A switch from Python come to rest: on its Space (switches interrupting each other could leave it on
+            // another, the window on one Space and the sidebar showing the next, and `going` set for good)
+            going = false
+            let target = model.string("current")
+            guard spaces.indices.contains(page), spaces[page].spaceId != target,
+                  spaces.contains(where: { $0.spaceId == target }) else { return }
+            current = nil  // (then the Space: set straight to it, it may already think it's there)
+            DispatchQueue.main.async { current = target }
+        })
+        .onChange(of: settling.settled) { _ in landed() }
+        .onChange(of: settling.touched) { _ in landing = false }  // (fingers on it again: not done with after all)
+        .onChange(of: position) { _ in
+            if landing { landed() }
+            heading()
+        }
+        .environment(\.sidebarScrolling, moving)
+    }
+
+    /// A swipe more than halfway to another Space: said, so its tab starts loading before it's there.
+    private func heading() {
+        let index = Int(position.rounded())
+        guard settling.waiting, spaces.indices.contains(index) else { return }
+        let id = spaces[index].spaceId
+        guard id != model.string("current"), id != headingFor else { return }
+        headingFor = id
+        model.act("heading", ["id": id])
+    }
+
+    /// A swipe done with (Settling): told where it's come to rest. Read from the scroll's own offset, not the scroll
+    /// position's id or its phases, neither of which is always told of a swipe: the id was left on the Space before
+    /// till something redrew the sidebar (a page open in a tab, say: the window changed Space seconds late, or with
+    /// nothing to redraw it, not at all), and the phase could say it was at rest a few points into a swipe.
+    private func landed() {
+        going = false  // (it's your fingers' scroll: a switch from Python it interrupted has given way)
+        let page = position.rounded()
+        guard abs(position - page) < 0.02 else {
+            // Its spring's still taking it into place: told the moment it's there (waiting another moment and
+            // looking again had it told up to a quarter of a second after it had arrived)
+            landing = true
+            return settling.poke()  // (and looked at again in a moment, should it stop just short)
+        }
+        landing = false
+        settling.waiting = false
+        headingFor = nil
+        let index = Int(page)
+        guard spaces.indices.contains(index) else { return }
+        let id = spaces[index].spaceId
+        guard id != model.string("current") else { return }
+        model.merge(["current": id])  // (so a refresh before Python answers doesn't scroll it back)
+        if current != id { current = id }
+        model.act("swiped", ["id": id])
+    }
+}
+
+/// When a swipe is done with: the scroll at rest and no more scrolling from the trackpad for a moment, so swiping
+/// across several Spaces quickly, the window changes Space once, at the end (its change and fade, done after each
+/// one, stalled the next). AppKit reports every live scroll of any scroll view in the app (not an animation's): each
+/// from your fingers puts it off again. Their momentum doesn't: a trackpad's runs on a second or more after a flick,
+/// long after the Space has snapped into place, and waiting it out had the window change Space seconds late.
+@MainActor
+private final class Settling: ObservableObject {
+    @Published private(set) var settled = 0
+    var waiting = false
+    private var task: Task<Void, Never>?
+    private var observers: [NSObjectProtocol] = []
+    @Published private(set) var touched = 0  // (a scroll from your fingers: counted)
+    private let quiet: UInt64 = 150_000_000
+
+    func start() {
+        guard observers.isEmpty else { return }
+        for name in [NSScrollView.willStartLiveScrollNotification, NSScrollView.didLiveScrollNotification,
+                     NSScrollView.didEndLiveScrollNotification] {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    if let event = NSApp.currentEvent, event.type == .scrollWheel, !event.momentumPhase.isEmpty {
+                        return
+                    }
+                    self?.waiting = true
+                    self?.touched += 1
+                    self?.poke()
+                }
+            })
+        }
+    }
+
+    func stop() {
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers = []
+        cancel()
+    }
+
+    /// Wait a moment (again) before it's settled.
+    func poke() {
+        task?.cancel()
+        task = Task { @MainActor [weak self, quiet] in
+            try? await Task.sleep(nanoseconds: quiet)
+            if !Task.isCancelled { self?.settled += 1 }
+        }
+    }
+
+    func cancel() {
+        waiting = false
+        task?.cancel()
+    }
+}
+
+/// `moving` while the scroll is (fingers on it, or its spring still settling), `position` the Space it's scrolled to
+/// (from its offset), and `animated` with the page an animated switch came to rest on, on macOS 15 and later.
+private struct AtRest: ViewModifier {
+    @Binding var moving: Bool
+    @Binding var position: Double
+    let animated: (Int) -> Void
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15, *) {
+            content
+                .onScrollGeometryChange(for: Double.self) { geometry in
+                    geometry.containerSize.width > 0 ? geometry.contentOffset.x / geometry.containerSize.width : 0
+                } action: { _, now in
+                    position = now
+                }
+                .onScrollPhaseChange { old, phase, context in
+                    moving = phase != .idle
+                    let width = context.geometry.containerSize.width
+                    if old == .animating, phase == .idle, width > 0 {
+                        animated(Int((context.geometry.contentOffset.x / width).rounded()))
+                    }
+                }
+        } else {
+            content
+        }
+    }
+}
+
+/// Paging, a Space at a time: on a Mac, the system's paging let a quick swipe's momentum carry it past the next Space
+/// to the one after. Wherever the swipe would have ended, it lands on the next Space over (or back where it started,
+/// for a swipe that hardly went anywhere).
+@available(macOS 14, *)
+private struct OneSpaceAtATime: ScrollTargetBehavior {
+    func updateTarget(_ target: inout ScrollTarget, context: TargetContext) {
+        let width = context.containerSize.width
+        guard width > 0 else { return }
+        let start = (context.originalTarget.rect.minX / width).rounded()
+        let travel = target.rect.minX - start * width
+        let step: CGFloat = abs(travel) >= width * 0.3 ? (travel > 0 ? 1 : -1) : 0
+        let last = max(0, (context.contentSize.width / width).rounded() - 1)
+        target.rect.origin.x = min(max(start + step, 0), last) * width
+    }
+}
+
+private struct SidebarScrolling: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// The Spaces scrolling sideways: rows don't light up or open previews as they pass under the pointer.
+    var sidebarScrolling: Bool {
+        get { self[SidebarScrolling.self] }
+        set { self[SidebarScrolling.self] = newValue }
     }
 }
 
@@ -379,10 +548,18 @@ private struct TabRow: View {
     let look: SidebarLook
     @ObservedObject var model: PageModel
     @State private var hovering = false
+    @Environment(\.sidebarScrolling) private var scrolling
     @State private var part: String?
     @State private var frame = FrameBox()
 
     private var id: String { tab.str("id") }
+
+    /// The pointer on the row or off it: its highlight and its tab preview (none while the Spaces scroll past it).
+    private func hovered(_ now: Bool) {
+        guard now != hovering, !(now && scrolling) else { return }
+        hovering = now
+        model.act("hover", now ? ["id": id, "y": frame.rect.minY, "height": frame.rect.height] : ["id": ""])
+    }
 
     var body: some View {
         if model.bool("compact") { compactRow } else { fullRow }
@@ -398,10 +575,8 @@ private struct TabRow: View {
             .frame(height: rowHeight)
             .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(rowFill))
             .contentShape(Rectangle())
-            .onHover { now in
-                hovering = now
-                model.act("hover", now ? ["id": id, "y": frame.rect.minY, "height": frame.rect.height] : ["id": ""])
-            }
+            .onHover(perform: hovered)
+            .onChange(of: scrolling) { now in if now { hovered(false) } }
             .background(GeometryReader { geometry in
                 let _ = frame.rect = geometry.frame(in: .named("sidebarBody"))
                 Color.clear
@@ -471,10 +646,8 @@ private struct TabRow: View {
             let _ = frame.rect = geometry.frame(in: .named("sidebarBody"))
             Color.clear
         })
-        .onHover { now in
-            hovering = now
-            model.act("hover", now ? ["id": id, "y": frame.rect.minY, "height": frame.rect.height] : ["id": ""])
-        }
+        .onHover(perform: hovered)
+        .onChange(of: scrolling) { now in if now { hovered(false) } }
         .animation(.easeOut(duration: 0.12), value: hovering)
         .gesture(TapGesture().modifiers(.command).onEnded { model.act("activate", ["id": id, "mark": "add"]) })
         .gesture(TapGesture().modifiers(.shift).onEnded { model.act("activate", ["id": id, "mark": "extend"]) })
@@ -531,6 +704,7 @@ private struct FolderRow: View {
     let look: SidebarLook
     @ObservedObject var model: PageModel
     @State private var hovering = false
+    @Environment(\.sidebarScrolling) private var scrolling
 
     var body: some View {
         let compact = model.bool("compact")
@@ -564,7 +738,8 @@ private struct FolderRow: View {
         .frame(height: rowHeight)
         .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(hovering ? look.hover : .clear))
         .contentShape(Rectangle())
-        .onHover { hovering = $0 }
+        .onHover { hovering = $0 && !scrolling }
+        .onChange(of: scrolling) { now in if now { hovering = false } }
         .animation(.easeOut(duration: 0.12), value: hovering)
         .onTapGesture { model.act("folder", ["id": folder.str("id")]) }
         .overlay(RightClick { model.act("menu", ["id": folder.str("id"), "kind": "folder"]) } middle: {})
@@ -594,6 +769,7 @@ private struct NewTabRow: View {
     let look: SidebarLook
     @ObservedObject var model: PageModel
     @State private var hovering = false
+    @Environment(\.sidebarScrolling) private var scrolling
 
     var body: some View {
         let compact = model.bool("compact")
@@ -609,7 +785,8 @@ private struct NewTabRow: View {
         .frame(height: rowHeight)
         .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(hovering ? look.hover : .clear))
         .contentShape(Rectangle())
-        .onHover { hovering = $0 }
+        .onHover { hovering = $0 && !scrolling }
+        .onChange(of: scrolling) { now in if now { hovering = false } }
         .onTapGesture { model.act("new_tab") }
         .accessibilityAddTraits(.isButton)
         .accessibilityLabel("New Tab")

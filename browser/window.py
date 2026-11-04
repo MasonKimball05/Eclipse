@@ -1352,6 +1352,7 @@ class MainWindow(QMainWindow):
         if previous is not tab:
             self.mini_player.left_tab(previous)
             self.emit("tab_left", previous)
+        self._prepare_soon()
 
     def _show_nothing(self):
         self.current_tab = None
@@ -1534,6 +1535,7 @@ class MainWindow(QMainWindow):
         kind, space = found
         folder.expanded = not folder.expanded
         self.store.schedule_save()
+        self.sidebar.qt_rows()  # (made now, if a Space switch left them for later)
         section = self.sidebar.pinned if kind == PINNED else self.sidebar.today
         section.animate_changes = True
         section.set_tabs(space.pinned if kind == PINNED else space.today, refresh=False)
@@ -2226,6 +2228,41 @@ class MainWindow(QMainWindow):
         view = tab.view
         return (isinstance(view, QWebEngineView)
                 and view.page().lifecycleState() == QWebEnginePage.LifecycleState.Discarded)
+
+    # The Spaces either side, ready: a tab's page is only made the first time it's shown, so the first switch to a
+    # Space after opening Eclipse showed its page a second or two late, loading from scratch. Once you've settled on
+    # a Space, the tab each Space beside it opens on is made (or woken) in the background; a swipe heading for a
+    # Space starts on its tab too (sidebar_native.py). Not in Low Power Mode.
+    PREPARE_AFTER_MS = 1500
+
+    def _prepare_soon(self):
+        if getattr(self, "_preparing", None) is None:
+            self._preparing = QTimer(self, singleShot=True, interval=self.PREPARE_AFTER_MS,
+                                     timeout=self._prepare_neighbors)
+        self._preparing.start()
+
+    def _prepare_neighbors(self):
+        spaces = self.store.spaces
+        if self.store.active_space not in spaces:
+            return
+        i = spaces.index(self.store.active_space)
+        for j in (i - 1, i + 1):
+            if 0 <= j < len(spaces):
+                self.prepare_space(spaces[j])
+
+    def prepare_space(self, space):
+        """The tab `space` opens on, made or woken in the background, so a switch there shows it at once."""
+        if self.saving_minutes or space is self.store.active_space or not space.active_tab_id:
+            return
+        tab = self.store.find_tab(space.active_tab_id)
+        located = self.store.locate(tab) if tab is not None else None
+        if located is None or located[1] is not space:
+            return
+        if tab.view is None:
+            tab.last_active = time.time()  # (looked at, as good as: Memory Saver doesn't put it straight back)
+            self._ensure_view(tab)
+        elif self.is_sleeping(tab):
+            self.wake_ahead(tab)
 
     def wake_ahead(self, tab):
         """The pointer's resting on a sleeping tab: wake it before the click (not in Low Power Mode, nor for a tab

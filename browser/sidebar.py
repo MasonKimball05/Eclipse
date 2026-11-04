@@ -297,7 +297,7 @@ def dragged_together(widget) -> list:
     if not isinstance(widget, TabRow) or len(sidebar.marked) < 2 or not any(t is tab for t in sidebar.marked):
         return []
     marked = {id(t) for t in sidebar.marked}
-    return [r for r in sidebar.pinned.rows + sidebar.today.rows
+    return [r for r in sidebar.qt_rows()
             if id(r.tab) in marked and not getattr(r, "_pb_gone", False)]
 
 
@@ -1992,9 +1992,17 @@ class Sidebar(QWidget):
         if not same_space:
             self.marked = []  # (a selection belongs to the Space it was made in)
         self._built_space = space.id
-        self.pinned.animate_changes = self.today.animate_changes = same_space
-        self.pinned.set_tabs(space.pinned)
-        self.today.set_tabs(space.today)
+        native_shown = self.native is not None and self.native.container.isVisible()
+        if native_shown and (not same_space or getattr(self, "_rows_due", None) is not None):
+            # The hidden Qt rows (only read, never seen, while the native sidebar shows) are made when something
+            # reads them (qt_rows): made on every switch of Space, they took 20–100 ms, held up the fade to the new
+            # Space's colors, and, made a moment later instead, stalled the next swipe
+            self._rows_due = space
+        else:
+            self._rows_due = None
+            self.pinned.animate_changes = self.today.animate_changes = same_space
+            self.pinned.set_tabs(space.pinned)
+            self.today.set_tabs(space.today)
         self.clear_btn.setVisible(bool(space.today) and not self.compact)
         self._update_tidy_visibility()
         self._rebuild_switcher()
@@ -2002,6 +2010,17 @@ class Sidebar(QWidget):
         self.update_nav()
         if self.native is not None:
             self.native.schedule()
+
+    def qt_rows(self) -> list:
+        """The Qt sections' rows, pinned then Today, made now if a Space switch left them for later."""
+        space, self._rows_due = getattr(self, "_rows_due", None), None
+        if space is not None:
+            if space is self.browser.store.active_space:
+                self.pinned.animate_changes = self.today.animate_changes = False
+                self.pinned.set_tabs(space.pinned)
+                self.today.set_tabs(space.today)
+                self.update_selection()
+        return self.pinned.rows + self.today.rows
 
     def use_native(self, on: bool):
         """The Space part (its name, pinned tabs, New Tab, Today) drawn by SwiftUI (sidebar_native.py), or by
@@ -2140,7 +2159,7 @@ class Sidebar(QWidget):
         self.update_selection()
 
     def _order(self):
-        return [r.tab for r in self.pinned.rows + self.today.rows if not getattr(r, "_pb_gone", False)]
+        return [r.tab for r in self.qt_rows() if not getattr(r, "_pb_gone", False)]
 
     def _trimmed(self, marked):
         """One picked tab that's also the tab you're on is just the tab you're on, not a selection; one

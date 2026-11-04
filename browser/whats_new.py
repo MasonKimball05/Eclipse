@@ -11,11 +11,18 @@ from .shortcuts import for_here
 from .motion import FadesIn
 from .theme import quiet_scrollbars, stylesheet
 
-EDITION = 26
+EDITION = 27
 SETTING = "whats_new_seen"
 
 NOTES = """
 ## This week
+
+- **Smoother Space swipes**: swiping between Spaces no longer stutters partway through, and a quick swipe goes one
+  Space over, not two. The window takes the new Space's colors once you've stopped swiping, so swiping across
+  several in a row stays smooth too, and the Spaces either side have their pages ready, so even the first switch
+  after opening Eclipse shows the page at once.
+
+## Lately
 
 - **A better mini player**: the floating window a video keeps playing in when you leave its tab has rounded
   corners and a soft edge, like Arc's, and player controls along the bottom when you point at it: back or ahead
@@ -51,9 +58,6 @@ NOTES = """
 - **Polish**: the mini player comes back in its corner on the screen you're on, and leaves with the window when you
   close it; the web panel makes room for Ask About This Page and takes it back after; a site with no icon gets its
   name's letter (W for en.wikipedia.org); tidier Settings menus, Send Feedback box and update notes.
-
-## Lately
-
 - **Switching to or from a Space with no tab open**: the page you leave fades into the start view, and the start
   view into the page you arrive at, instead of a blank moment between.
 - **Swipes start quicker**: the first frame of a swipe between Spaces shows at once.

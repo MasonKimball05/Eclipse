@@ -2657,9 +2657,10 @@ def test_whats_new_and_the_update_window_open_natively_where_built(window, monke
     page = window._whats_new
     assert isinstance(page, whats_new.NativeWhatsNew) and page.isVisible()
     state = page.page.state()
-    assert state["page"] == "whats_new" and state["sections"][0]["heading"] == "This week"
+    first = next(line[3:].strip() for line in whats_new.NOTES.splitlines() if line.startswith("## "))
+    assert state["page"] == "whats_new" and state["sections"][0]["heading"] == first  # ("This week", or "Lately")
     assert state["dark"] == window.theme.dark and state["accent"] == window.theme.accent.name()
-    assert any("mini player" in line["text"] for line in state["sections"][0]["lines"])
+    assert state["sections"][0]["lines"]
     if shots:
         pause(0.4)
         subprocess.run(["screencapture", "-x", "-o", "-l", str(page.page.window_number()), f"{shots}/whats_new.png"])
@@ -3170,6 +3171,18 @@ def test_the_native_sidebar_shows_and_drives_the_spaces_tabs(window, site, monke
     pause(0.5)
     assert window.store.active_space is space and body.page.state()["current"] == space.id
     assert window.sidebar.space_title.text() == space.name  # (the window rebuilt for it, not for the one between)
+    # The hidden Qt rows aren't made on a switch (nor on later changes), only when something reads them
+    from browser.models import walk_tabs
+    window.switch_space(other)
+    assert wait_until(lambda: window.store.active_space is other and window.sidebar._rows_due is other, 3)
+    window.sidebar.rebuild()
+    pause(0.6)
+    assert window.sidebar._rows_due is other
+    theirs = {id(t) for t in walk_tabs(other.pinned)} | {id(t) for t in walk_tabs(other.today)}
+    assert all(id(r.tab) in theirs for r in window.sidebar.qt_rows()) and window.sidebar._rows_due is None
+    window.switch_space(space)
+    assert wait_until(lambda: window.store.active_space is space, 3)
+    assert all(r.tab in [*walk_tabs(space.pinned), *walk_tabs(space.today)] for r in window.sidebar.qt_rows())
     # Switched while it's hidden (the sidebar tucked away): it's on that Space when it's back
     went = body._go
     body.container.hide()
