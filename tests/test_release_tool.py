@@ -138,3 +138,25 @@ def test_release_notes_are_this_weeks_whats_new_then_the_commits(monkeypatch):
     # Commits about the maker's own pieces stay out
     answers["log"] = "- A commit\n- Hop integration: Send To through hop:// links\n- Homebase card\n- Hopping fix"
     assert release.release_notes() == "- A commit\n- Hopping fix"
+
+
+def test_every_pyqt_module_eclipse_imports_is_kept_in_the_app(tmp_path):
+    """26.1.3.0 and 26.1.3.1 wouldn't open: the window imported PyQt6.QtQuickWidgets (inside a function, so the
+    build's check, which only imported every module, never ran it), and the app had been trimmed of it."""
+    release = _release()
+    used = release.qt_modules_used()
+    assert "QtQuickWidgets" in used and "QtCore" in used
+    assert used <= set(release.QT_MODULES), sorted(used - set(release.QT_MODULES))
+    # and every one those bring in when loaded (QtQuickWidgets' binding imports QtQml and QtQuick: kept without
+    # them, it still wouldn't load)
+    import subprocess
+    loaded = subprocess.run([sys.executable, "-c", "import sys\n" + "".join(f"import PyQt6.{m}\n" for m in sorted(used))
+                             + "print(','.join(n.split('.')[1] for n in sys.modules if n.startswith('PyQt6.Qt')))"],
+                            capture_output=True, text=True, check=True).stdout.strip().split(",")
+    assert set(loaded) <= set(release.QT_MODULES), sorted(set(loaded) - set(release.QT_MODULES))
+    # Found wherever they're imported: at the top, in a function, either way of writing it
+    _code(tmp_path, {"a.py": "from PyQt6.QtCore import Qt\n", "b.py": "def f():\n    from PyQt6.QtQuick import X\n",
+                     "c/d.py": "import PyQt6.QtMultimedia\n", "e.py": "# from PyQt6.QtNope import nothing\n"})
+    assert release.qt_modules_used(tmp_path) == {"QtCore", "QtQuick", "QtMultimedia"}
+    # and the build's own check imports each one and opens a window
+    assert "importlib.import_module(\"PyQt6.\" + name)" in release.CHECK and "MainWindow(" in release.CHECK

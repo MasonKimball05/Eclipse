@@ -15,6 +15,12 @@ EDITION = 28
 SETTING = "whats_new_seen"
 
 NOTES = """
+## This week
+
+- **Opens again**: Eclipse 26.1.3.0 and 26.1.3.1 quit as soon as they were opened, so they couldn't update
+  themselves either. If yours won't open, download this version from the releases page and drag it over the old
+  one: your Spaces, tabs and passwords are all kept.
+
 ## Lately
 
 - **Smoother Space swipes**: swiping between Spaces no longer stutters partway through, and a quick swipe goes one

@@ -204,10 +204,15 @@ class MainWindow(QMainWindow):
         # A page is drawn by the GPU, and the first one in a window has Qt remake the window's surface for it (from
         # plain pixels to Metal): every widget in it hid and showed again, and the window jumped, on the first tab
         # you opened after a launch (which opens on no tab). A tiny Qt Quick view, there from the start, has the
-        # window made that way before it's ever shown.
-        from PyQt6.QtQuickWidgets import QQuickWidget
-        self._gpu_surface = QQuickWidget(root)
-        self._gpu_surface.hide()  # (never seen: being in the window is enough)
+        # window made that way before it's ever shown. Without Qt Quick (a build that left it out), only the jump's
+        # back: 26.1.3.0 and 26.1.3.1 shipped without it and wouldn't open at all.
+        try:
+            from PyQt6.QtQuickWidgets import QQuickWidget
+        except ImportError:
+            self._gpu_surface = None
+        else:
+            self._gpu_surface = QQuickWidget(root)
+            self._gpu_surface.hide()  # (never seen: being in the window is enough)
         self.emit("ready")  # (the features: the window's there now)
 
         store.structure_changed.connect(self._schedule_rebuild)

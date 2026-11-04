@@ -59,7 +59,11 @@ PACKAGE_FILES = ["_cffi_backend.*.so"]
 # need is picked up). The rest (Qt Quick 3D, Designer, multimedia and its FFmpeg, QML…) is about a third of
 # Qt, and never loaded by a browser built on widgets.
 QT_MODULES = ["QtCore", "QtGui", "QtWidgets", "QtNetwork", "QtPdf", "QtPrintSupport", "QtSvg", "QtWebChannel",
-              "QtWebEngineCore", "QtWebEngineWidgets"]
+              "QtWebEngineCore", "QtWebEngineWidgets",
+              "QtQuickWidgets", "QtQuick", "QtQml"]  # (the window's GPU surface, made before it's shown: window.py;
+                                                      # its binding imports the other two)
+# (every PyQt6 module Eclipse imports must be here: tests/test_release_tool.py checks, and the build's own check
+# imports each one and opens a window, since some are only imported when a window's made)
 QT_PLUGINS = ["platforms", "imageformats", "iconengines", "styles", "tls", "networkinformation", "permissions",
               "position"]  # (permissions: camera and microphone; position: a site's location)
 LEAVE_OUT_PYQT = ["bindings", "uic", "lupdate", "qsci"]  # (for building with PyQt, not running it)
@@ -293,10 +297,21 @@ app = QApplication(["eclipse-check"])
 import browser, qtawesome
 for found in pkgutil.walk_packages(browser.__path__, "browser."):
     importlib.import_module(found.name)
+for name in sys.argv[3].split(","):  # (each PyQt6 module Eclipse names, wherever it imports it: in a function too)
+    importlib.import_module("PyQt6." + name)
 qtawesome.icon("ph.key")
 assert sys.modules["PyQt6.QtCore"].__file__.startswith(sys.argv[1]), "not the app's own Qt"
 from browser import net  # (its Python trusts no certificate on its own: updates would fail to connect)
 assert net.context().cert_store_stats()["x509_ca"] > 50, "no trusted certificates for HTTPS"
+from browser import storage  # (and the window itself opens: 26.1.3.0 imported a module it left out only then)
+from browser.models import Store
+from browser.webview import build_profile
+from browser.window import MainWindow
+store = Store(storage.session_path())
+store.is_new = False
+window = MainWindow(store, build_profile(app))
+window.show()
+app.processEvents()
 view = QWebEngineView()
 view.loadFinished.connect(lambda ok: (print("loaded" if ok else "failed"), app.quit()))
 view.setHtml("<p>Eclipse</p>")
@@ -305,10 +320,18 @@ app.exec()
 """
 
 
+def qt_modules_used(source: Path = ROOT / "browser") -> set[str]:
+    """Every PyQt6 module Eclipse's code imports, anywhere in it (inside a function too)."""
+    import re
+    pattern = re.compile(r"^\s*(?:from|import)\s+PyQt6\.(Qt\w+)", re.M)
+    return {name for path in source.rglob("*.py") for name in pattern.findall(path.read_text())}
+
+
 def check_runs(contents: Path):
     with tempfile.TemporaryDirectory() as data:
         done = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", CHECK, contents / "Resources" / "lib" / "python",
-                               contents / "Resources" / "app"], capture_output=True, text=True, timeout=300,
+                               contents / "Resources" / "app", ",".join(sorted(qt_modules_used()))],
+                              capture_output=True, text=True, timeout=300,
                               env={"HOME": str(Path.home()), "PATH": "/usr/bin:/bin", "QT_QPA_PLATFORM": "offscreen",
                                    "ECLIPSE_DATA_DIR": data})
     if done.returncode != 0 or done.stdout.strip() != "loaded":
