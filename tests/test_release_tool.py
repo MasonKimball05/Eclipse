@@ -160,3 +160,18 @@ def test_every_pyqt_module_eclipse_imports_is_kept_in_the_app(tmp_path):
     assert release.qt_modules_used(tmp_path) == {"QtCore", "QtQuick", "QtMultimedia"}
     # and the build's own check imports each one and opens a window
     assert "importlib.import_module(\"PyQt6.\" + name)" in release.CHECK and "MainWindow(" in release.CHECK
+
+
+def test_a_rehearsal_puts_the_release_together_and_opens_it_without_signing_or_publishing():
+    """./run.sh --release --rehearse: what a release does up to signing (put together, every module imported and a
+    window opened on the app's own Python and Qt, then the app opened with its own launcher and left running), in
+    dist/rehearsal. The real release opens it the same way before signing it."""
+    import inspect
+    release = _release()
+    rehearse, assemble = inspect.getsource(release.rehearse), inspect.getsource(release.assemble)
+    assert "assemble(" in rehearse and "sign_all(app, identity" not in rehearse and "publish(" not in rehearse
+    assert "notarize(" not in rehearse and '"rehearsal"' in rehearse
+    assert assemble.index("check_runs(") < assemble.index('sign_all(app, "-")') < assemble.index("check_launches(")
+    assert "assemble(" in inspect.getsource(release.release)  # (the real one checks the same, then signs)
+    # Signed for this Mac only: no Apple timestamp, no team to check
+    assert release.LAUNCH_SECONDS >= 10

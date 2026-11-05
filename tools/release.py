@@ -334,8 +334,41 @@ def check_runs(contents: Path):
                               capture_output=True, text=True, timeout=300,
                               env={"HOME": str(Path.home()), "PATH": "/usr/bin:/bin", "QT_QPA_PLATFORM": "offscreen",
                                    "ECLIPSE_DATA_DIR": data})
-    if done.returncode != 0 or done.stdout.strip() != "loaded":
-        raise SystemExit(f"The app doesn't run as built:\n{(done.stderr or done.stdout)[-2000:]}")
+    said = done.stdout.strip().splitlines()
+    if done.returncode != 0 or not said or said[-1] != "loaded":  # (the window may say things first)
+        raise SystemExit(f"The app doesn't run as built (exit {done.returncode}):\n{done.stdout[-1500:]}\n"
+                         f"{done.stderr[-1500:]}")
+
+
+LAUNCH_SECONDS = 20
+
+
+def check_launches(app: Path, seconds: int = LAUNCH_SECONDS):
+    """The finished app opened with its own launcher, as people open it (offscreen, a throwaway profile): still
+    running after `seconds`, with nothing in its error log. The import check runs Eclipse's Python by itself; this is
+    the whole app, from main.py on."""
+    with tempfile.TemporaryDirectory() as data:
+        env = {"HOME": str(Path.home()), "PATH": "/usr/bin:/bin", "QT_QPA_PLATFORM": "offscreen",
+               "ECLIPSE_DATA_DIR": data, "PYTHONDONTWRITEBYTECODE": "1"}  # (nothing new in the bundle to sign)
+        opened = subprocess.Popen([app / "Contents" / "MacOS" / NAME], env=env, stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True)
+        try:
+            opened.wait(timeout=seconds)
+        except subprocess.TimeoutExpired:
+            opened.terminate()
+            try:
+                opened.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                opened.kill()
+            quit_by_itself = False
+        else:
+            quit_by_itself = True
+        errors = Path(data) / "logs" / "errors.log"
+        logged = errors.read_text().strip() if errors.exists() else ""
+        if quit_by_itself or logged:
+            said = (opened.stdout.read() if opened.stdout else "")[-1500:]
+            why = f"it quit by itself (exit {opened.returncode})" if quit_by_itself else "it logged errors"
+            raise SystemExit(f"The app doesn't open as built: {why}\n{logged[-2500:] or said}")
 
 
 def minimum_macos(contents: Path) -> str:
@@ -369,7 +402,9 @@ def py_compile_mode():
 # --- Signing -----------------------------------------------------------------------------------------------
 
 def _sign(path: Path, identity: str, entitlements: dict | None = None):
-    args = ["codesign", "--force", "--options", "runtime", "--timestamp", "--sign", identity]
+    # ("-": signed for this Mac only, with no timestamp from Apple: a build that's only opened here to check it)
+    args = ["codesign", "--force", "--sign", "-"] if identity == "-" else \
+        ["codesign", "--force", "--options", "runtime", "--timestamp", "--sign", identity]
     with tempfile.NamedTemporaryFile(suffix=".plist") as plist:
         if entitlements:
             plist.write(plistlib.dumps(entitlements))
@@ -396,6 +431,8 @@ def sign_all(app: Path, identity: str):
         if is_macho(path) and not any(h in path.parents for h in helpers) and path != contents / "MacOS" / NAME:
             _sign(path, identity)
     _sign(app, identity, ENTITLEMENTS)
+    if identity == "-":
+        return
     run("codesign", "--verify", "--deep", "--strict", app)
     unsigned = [p for p in contents.rglob("*") if is_macho(p) and f"TeamIdentifier={_team(identity)}"
                 not in subprocess.run(["codesign", "-dv", str(p)], capture_output=True, text=True).stderr]
@@ -649,17 +686,9 @@ def publish_built():
     publish(archive, info["CFBundleVersion"], info["CFBundleShortVersionString"], dmg)
 
 
-def release(identity: str, notary_profile: str | None, install: bool, publishing=False, kind="week") -> Path:
-    if identity.startswith(("-", "Apple Development")) or not identity:
-        raise SystemExit("A release needs the Developer ID Application certificate (none of the team's is here)")
-    if publishing and (why := publishable()):
-        raise SystemExit(f"Can't publish: {why}")
-    # The version people see (26.1.3.0), and the build number updates compare (the minute it was built)
-    version, build = next_version(kind, published_versions()), time.strftime("%Y%m%d%H%M")
-    print(f"{NAME} {version} (build {build})")
-    if warning := latest_tag_warning():
-        print(warning)
-    app = DIST / f"{NAME}.app"
+def assemble(app: Path, version: str, build: str) -> str:
+    """The app put together at `app`, unsigned, and checked: every module imports and a window opens on its own
+    Python and Qt, and it opens with its own launcher and stays open. Returns the oldest macOS it runs on."""
     shutil.rmtree(app, ignore_errors=True)
     contents = app / "Contents"
     for folder in ("MacOS", "Frameworks", "Resources"):
@@ -686,6 +715,41 @@ def release(identity: str, notary_profile: str | None, install: bool, publishing
     minimum = minimum_macos(contents)
     info = plistlib.loads((contents / "Info.plist").read_bytes())
     (contents / "Info.plist").write_bytes(plistlib.dumps({**info, "LSMinimumSystemVersion": minimum}))
+    print(f"Opening it as people do (offscreen, a throwaway profile, {LAUNCH_SECONDS} seconds)…")
+    sign_all(app, "-")  # (Apple silicon runs nothing unsigned: signed for this Mac, until it's really signed)
+    check_launches(app)
+    return minimum
+
+
+def rehearse(kind="week") -> Path:
+    """A release put together and checked as a real one is, in dist/rehearsal, but not signed, notarized or put on
+    GitHub: run before releasing, it finds what would stop the app opening on other Macs (26.1.3.0 left out a part of
+    Qt the window needed, and quit as soon as it was opened) on this one instead."""
+    try:
+        version = next_version(kind, published_versions())
+    except Exception:  # (offline: the version's only for show here)
+        version = "rehearsal"
+    app = DIST / "rehearsal" / f"{NAME}.app"
+    print(f"Rehearsing {NAME} {version}: nothing's signed or published")
+    minimum = assemble(app, version, time.strftime("%Y%m%d%H%M"))
+    size = sum(f.stat().st_size for f in app.rglob("*") if f.is_file() and not f.is_symlink()) // 1_000_000
+    print(f"\nThe release would open: {app} ({size} MB, macOS {minimum} or later). Release with:\n"
+          f"  ./run.sh --release --notarize eclipse-notary --publish")
+    return app
+
+
+def release(identity: str, notary_profile: str | None, install: bool, publishing=False, kind="week") -> Path:
+    if identity.startswith(("-", "Apple Development")) or not identity:
+        raise SystemExit("A release needs the Developer ID Application certificate (none of the team's is here)")
+    if publishing and (why := publishable()):
+        raise SystemExit(f"Can't publish: {why}")
+    # The version people see (26.1.3.0), and the build number updates compare (the minute it was built)
+    version, build = next_version(kind, published_versions()), time.strftime("%Y%m%d%H%M")
+    print(f"{NAME} {version} (build {build})")
+    if warning := latest_tag_warning():
+        print(warning)
+    app = DIST / f"{NAME}.app"
+    minimum = assemble(app, version, build)
     print("Signing every piece (a few minutes: each one gets Apple's timestamp)…")
     sign_all(app, identity)
     size = sum(f.stat().st_size for f in app.rglob("*") if f.is_file() and not f.is_symlink()) // 1_000_000
@@ -731,6 +795,8 @@ def main():
     bump.add_argument("--major", dest="kind", action="store_const", const="major",
                       help="a major release (26.1.3.0 → 26.2.0.0); the default is the week's (26.1.3.0 → 26.1.4.0)")
     parser.add_argument("--next-version", action="store_true", help="just say what the next version would be")
+    parser.add_argument("--rehearse", action="store_true",
+                        help="put the release together and check it opens, without signing or publishing it")
     parser.add_argument("--notes", action="store_true", help="just show the next release's notes")
     parser.set_defaults(kind="week")
     args = parser.parse_args()
@@ -746,6 +812,9 @@ def main():
         return
     if args.publish_built:
         publish_built()
+        return
+    if args.rehearse:
+        rehearse(args.kind)
         return
     if args.publish and not args.notarize:
         parser.error("--publish needs --notarize: a release has to open on other Macs")

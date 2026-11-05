@@ -39,6 +39,12 @@ This builds `/Applications/Eclipse.app`, in Finder's Applications folder, which 
 
 This builds `dist/Eclipse.app`, `dist/Eclipse.dmg` (what people download: Eclipse beside an Applications shortcut to drag it onto, over a background drawn in the icon's colors, laid out by `dmgbuild` without touching Finder) and `dist/Eclipse.zip` (what updates download). Unlike `--build-app`, everything is inside it: its own Python, Qt and Qt WebEngine, and Eclipse's code. It runs without this checkout, and doesn't change when the checkout does. It's for **Macs with Apple silicon and macOS 13 or later** (PyQt's Qt is Apple-silicon only, and macOS 13 is the oldest it supports).
 
+**Rehearse before releasing:** `./run.sh --release --rehearse` puts the release together in `dist/rehearsal/` and checks it as a release does, without signing, notarizing or publishing anything:
+- every Eclipse module and every PyQt6 module the code names imports, and a window opens, on the app's own Python and Qt;
+- the app, signed for this Mac only, opens with its own launcher (offscreen, a throwaway profile) and is still running 20 seconds later, with nothing in its error log.
+
+A real release runs the same checks before it signs. 26.1.3.0 left out a part of Qt the window needed and quit as soon as it was opened: a rehearsal fails on that.
+
 - **Built with python.org's Python:** set it up once with `tools/release_python.py`. It downloads python.org's installer (checking it's signed by the Python Software Foundation and notarized), unpacks it into `~/Library/Application Support/Eclipse Build/release-python/` without installing it, points its libraries at each other there instead of `/Library/Frameworks`, and makes a venv with Eclipse's requirements. `./run.sh --release` uses it from then on. Its OpenSSL comes with it, and its code is trimmed to Apple silicon. Without it the release is built with the development venv's Homebrew Python, which only runs on the macOS of the Mac that built it. Either way, the build works out the real minimum from the binaries and writes it into the app, so an older Mac says it needs a newer macOS rather than failing to start.
 
 - **Signed with the Developer ID** ("Developer ID Application: Mason Kimball (F4P3T9JYP2)"), found in the Keychain by itself. Every library and Qt's helper app is signed from the inside out, with the hardened runtime and Apple's secure timestamp, as notarization requires. Library validation stays on: everything the app loads is signed by the team.

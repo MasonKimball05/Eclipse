@@ -21,6 +21,8 @@ NOTES = """
   to make room where yours will go, a closed folder opens when you hold a tab over it, and you can drag a tab out
   of Pinned into Today, or past the end of an open folder. Live Folders show a small mark, and keep out tabs that
   aren't from their feed.
+- **Arc's live folders, live again**: a GitHub live folder brought over from Arc is a GitHub Live Folder here,
+  keeping itself up to date. Ones brought over before are offered the same, once.
 
 ## Lately
 

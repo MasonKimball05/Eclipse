@@ -29,7 +29,7 @@ from PyQt6.QtCore import QTimer, QUrl
 
 from . import brand, prompts, storage
 from .features import Feature
-from .models import ARCHIVE_LIMIT, DEFAULT_FAVORITES, Folder, Space, Tab, walk_tabs
+from .models import ARCHIVE_LIMIT, DEFAULT_FAVORITES, Folder, Space, Tab, walk_folders, walk_tabs
 from .webview import DEFAULT_PROFILE
 from .theme import PALETTE
 
@@ -37,6 +37,7 @@ ARC_DIR = Path.home() / "Library" / "Application Support" / "Arc"
 ARC_PREFERENCES = Path.home() / "Library" / "Preferences" / "company.thebrowser.Browser.plist"
 APPLE_EPOCH_OFFSET = 978_307_200  # seconds between 1970-01-01 and 2001-01-01 (Arc's times count from 2001)
 OFFERED = "arc_import_offered"  # (asked once, on a launch that missed the welcome: see ArcImportFeature.ready)
+LIVE_OFFERED = "arc_live_folders_offered"  # (asked once: Arc's live folders, imported plain before, made live)
 ARCHIVE_HOURS = {"twelveHours": 12, "twentyFourHours": 24, "oneDay": 24, "sevenDays": 24 * 7, "oneWeek": 24 * 7,
                  "thirtyDays": 24 * 30, "oneMonth": 24 * 30, "never": 0}
 CHROME_EPOCH_OFFSET = 11_644_473_600  # seconds between 1601-01-01 and 1970-01-01
@@ -151,7 +152,8 @@ def _read_sidebar(result: ArcImport):
             elif "list" in kind:
                 children = build(child_id, pinned)
                 if pinned:
-                    nodes.append(Folder(item.get("title") or "Folder", children, item["id"], expanded=False))
+                    nodes.append(Folder(item.get("title") or "Folder", children, item["id"], expanded=False,
+                                        live=live_from(kind["list"])))
                 else:
                     nodes.extend(walk_tabs(children))  # Today has no folders
         return nodes
@@ -171,6 +173,32 @@ def _read_sidebar(result: ArcImport):
         if isinstance(entry, str):
             result.favorites = [n for n in build(entry, pinned=True) if isinstance(n, Tab)]
             break
+
+
+def live_from(arc_list: dict) -> dict | None:
+    """What an Arc folder that fills itself (one of its live folders) is as a Live Folder here, or None. Arc's GitHub
+    one (pull requests you're in) is the GitHub folder: review requests, yours, and those assigned to you. Its name
+    is kept as Arc's (a Live Folder otherwise takes its feed's). Arc's others have no counterpart: plain folders."""
+    source = (arc_list.get("automaticLiveFolderData") or {}).get("dataSource") or {}
+    if "github" in source:
+        return {"kind": "github", "query": "overview", "named": True}
+    return None
+
+
+def arc_live_folders() -> dict[str, dict]:
+    """Arc's live folders that have a counterpart here, by their Arc id (an imported folder keeps it): {} if
+    Arc's data can't be read."""
+    try:
+        data = json.loads((ARC_DIR / "StorableSidebar.json").read_text())
+        items = _pairs(data["sidebar"]["containers"][1].get("items", []))
+    except (OSError, ValueError, KeyError, IndexError):
+        return {}
+    found = {}
+    for item_id, item in items.items():
+        live = live_from(((item or {}).get("data") or {}).get("list") or {}) if isinstance(item, dict) else None
+        if live:
+            found[item_id] = live
+    return found
 
 
 def _profile_names() -> dict[str, str]:
@@ -365,6 +393,8 @@ class ArcImportFeature(Feature):
         """A launch that missed the welcome (Eclipse had been opened before, from source say, with nothing of
         yours in it yet) still gets asked about Arc: once."""
         store = self.window.store
+        if not store.settings.get(LIVE_OFFERED) and not storage.throwaway() and arc_installed():
+            QTimer.singleShot(3000, self.offer_live_folders)
         if store.is_new or store.settings.get(OFFERED) or storage.throwaway() or not arc_installed():
             return
         if any(s.pinned or s.today for s in store.spaces) or any(s.id.startswith("arc-") for s in store.spaces):
@@ -372,6 +402,36 @@ class ArcImportFeature(Feature):
         store.settings[OFFERED] = True
         store.schedule_save()
         QTimer.singleShot(1500, self.import_from_arc)
+
+    def offer_live_folders(self):
+        """Folders brought from Arc before its live folders were (Arc's GitHub one came in as a plain folder, its pull
+        requests as they were that day): made Live Folders again, if you'd like. Asked once."""
+        store, window = self.window.store, self.window
+        arc = arc_live_folders()
+        plain = [(f, arc[f.id]) for s in store.spaces for f in walk_folders(s.pinned) if f.id in arc and not f.live]
+        store.settings[LIVE_OFFERED] = True
+        store.schedule_save()
+        if not plain or window.feature("live_folders") is None:
+            return
+        names = sorted({f.name for f, _ in plain})
+        count = f"{len(plain)} folder{'s' if len(plain) != 1 else ''}"
+        prompts.choose(window, "Folders from Arc",
+                       f"{count} ({', '.join(f'“{n}”' for n in names)}) came from Arc's GitHub live folders, but "
+                       "were brought in as plain folders, so they never update. Make them Live Folders again?",
+                       ["Make Them Live"], lambda _: self.make_live(plain),
+                       detail="They'll keep themselves up to date from GitHub, through the GitHub CLI (gh), with "
+                              "review requests, your pull requests and those assigned to you. What's in them now is "
+                              "replaced by what's on GitHub.")
+
+    def make_live(self, plain):
+        store, live_folders = self.window.store, self.window.feature("live_folders")
+        for folder, live in plain:
+            folder.live = dict(live)
+        store._changed()
+        if live_folders is not None:
+            for folder, _ in plain:
+                live_folders.folders.refresh(folder)
+        self.window.toast(f"Made {len(plain)} folder{'s' if len(plain) != 1 else ''} live: they'll update from GitHub")
 
     def commands(self):
         return [("Import from Arc", "ph.arrow-square-in", self.import_from_arc)]

@@ -10,7 +10,8 @@
 #   ./run.sh --release     the release app in dist/: everything inside it, signed with the Developer ID;
 #                          add --notarize PROFILE to send it to Apple, --install to put it in /Applications.
 #                          Built with python.org's Python once tools/release_python.py has set it up (so it
-#                          runs on macOS 13 and up), else with this venv's
+#                          runs on macOS 13 and up), else with this venv's.
+#                          --rehearse: put it together and check it opens, without signing or publishing it
 #   ./run.sh --tests       run the unit tests
 #   ./run.sh --live-tests  run the live tests too, in three groups at once (browser windows open behind yours, ~2 min)
 #   ./run.sh --core        run without the features (browser/features.py): the plain browser

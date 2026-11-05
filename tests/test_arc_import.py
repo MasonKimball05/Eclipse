@@ -161,6 +161,7 @@ def test_a_launch_that_missed_the_welcome_still_offers_arc_once(fake_arc, store,
     store.is_new = False  # (Eclipse had been opened before: no welcome)
     feature = arc_import.ArcImportFeature.__new__(arc_import.ArcImportFeature)
     feature.window = SimpleNamespace(store=store)
+    store.settings[arc_import.LIVE_OFFERED] = True  # (its live folders' own offer: test_arcs_live_folders_…)
     feature.ready()
     assert len(asked) == 1 and store.settings[arc_import.OFFERED]
     feature.ready()  # (once: not every launch)
@@ -169,5 +170,62 @@ def test_a_launch_that_missed_the_welcome_still_offers_arc_once(fake_arc, store,
     del store.settings[arc_import.OFFERED]
     from browser.models import Tab
     store.spaces[0].pinned.append(Tab("https://mine.example/", "Mine"))
+    feature.ready()
+    assert len(asked) == 1
+
+
+
+def _with_live_folder(tmp_path):
+    """The fake Arc, its Home Space's Pinned holding one of Arc's GitHub live folders too."""
+    arc = tmp_path / "Arc"
+    sidebar = json.loads((arc / "StorableSidebar.json").read_text())
+    container = sidebar["sidebar"]["containers"][1]
+    items = container["items"]
+    p1 = items[items.index("p1") + 1]
+    p1["childrenIds"].append("gh")
+    items += ["gh", {"id": "gh", "title": "Pull Requests", "childrenIds": ["pr"], "data": {"list": {
+        "automaticLiveFolderData": {"dataSource": {"github": {}}, "hiddenItems": [], "lastFetch": {}},
+        "customInfo": {}}}}]
+    items += ["pr", {"id": "pr", "parentID": "gh", "childrenIds": [],
+                     "data": {"tab": {"savedURL": "https://github.com/a/b/pull/1", "savedTitle": "A PR"}}}]
+    (arc / "StorableSidebar.json").write_text(json.dumps(sidebar))
+
+
+def test_arcs_github_live_folder_comes_in_live(fake_arc, tmp_path):
+    """Arc's GitHub live folder came in a plain folder, its pull requests as they were that day, never updating:
+    it's a GitHub Live Folder here (its name kept), and Arc's other folders stay plain."""
+    _with_live_folder(tmp_path)
+    arc = arc_import.read_arc()
+    home = arc.spaces[0]
+    live = next(n for n in home.pinned if isinstance(n, Folder) and n.name == "Pull Requests")
+    assert live.live == {"kind": "github", "query": "overview", "named": True}
+    assert [t.url for t in walk_tabs(live.children)] == ["https://github.com/a/b/pull/1"]  # (till it's fetched)
+    assert next(n for n in home.pinned if isinstance(n, Folder) and n.name == "Projects").live is None
+    assert arc_import.arc_live_folders() == {"gh": live.live}
+
+
+def test_arcs_live_folders_imported_plain_are_offered_live_once(fake_arc, store, tmp_path, monkeypatch):
+    """Folders brought from Arc before its live folders were, matched by their Arc id: made Live Folders, and
+    refreshed, if you say so. Asked once; folders of your own, or live already, are left as they are."""
+    from types import SimpleNamespace
+    from browser import prompts
+    _with_live_folder(tmp_path)
+    plain = Folder("Pull Requests", [], "gh")
+    mine = Folder("Pull Requests", [], "mine")  # (a folder of your own, by the same name)
+    store.spaces[0].pinned += [plain, mine]
+    refreshed, toasts, asked = [], [], []
+    live_folders = SimpleNamespace(folders=SimpleNamespace(refresh=refreshed.append))
+    window = SimpleNamespace(store=store, feature=lambda name: live_folders if name == "live_folders" else None,
+                             toast=toasts.append)
+    monkeypatch.setattr(prompts, "choose", lambda w, title, text, buttons, done, detail="": (asked.append(text),
+                                                                                             done(buttons[0])))
+    feature = arc_import.ArcImportFeature.__new__(arc_import.ArcImportFeature)
+    feature.window = window
+    feature.offer_live_folders()
+    assert len(asked) == 1 and "1 folder" in asked[0] and "Pull Requests" in asked[0]
+    assert plain.live == {"kind": "github", "query": "overview", "named": True} and mine.live is None
+    assert refreshed == [plain] and toasts and store.settings[arc_import.LIVE_OFFERED]
+    # Once
+    plain.live = None
     feature.ready()
     assert len(asked) == 1
