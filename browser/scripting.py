@@ -29,11 +29,12 @@ from urllib.parse import parse_qs
 
 from PyQt6.QtCore import QUrl
 
-from . import macos
+from . import macos, storage
 from .command_bar import search_url
 from .external_links import OWN_SCHEME
 from .features import Feature
 from .models import FAVORITES, Tab, TODAY
+from .notes import NOTE_SCHEME, is_note
 
 SUITE = "Eclp"
 TAB_RECORD = {"id": "ID  ", "title": "Ettl", "URL": "pURL", "space": "Espn", "section": "Esec"}
@@ -168,7 +169,7 @@ class ScriptingFeature(Feature):
         if url.scheme().lower() != OWN_SCHEME:
             return False
         action = (url.host() or url.path().strip("/")).lower()
-        if action not in ("open", "search", "space", "new-tab"):
+        if action not in ("open", "search", "space", "new-tab", "note"):
             return False  # (another feature's, perhaps: a recipe. app.py says if it's nobody's)
         query = {k: v[-1] for k, v in parse_qs(url.query(QUrl.ComponentFormattingOption.FullyEncoded)).items()}
         try:
@@ -181,6 +182,14 @@ class ScriptingFeature(Feature):
             elif action == "space" and space is not None:
                 self.window.switch_space(space)
                 self.window.bring_to_front()
+            elif action == "note" and is_note(NOTE_SCHEME + query.get("id", "")):
+                # One of your notes (Hop finds them by their text): its tab if it's open, else a new one.
+                # Only a note that exists: a link mustn't leave empty notes behind.
+                url = NOTE_SCHEME + query["id"]
+                if not (storage.data_dir() / "notes" / (query["id"] + ".md")).exists():
+                    raise macos.ScriptError("That note isn't here any more.")
+                tab = next((t for t in self.window.store.all_tabs() if t.url == url), None)
+                self._show(tab) if tab is not None else self._open(url)
             elif action == "new-tab":
                 if space is not None:
                     self.window.switch_space(space)

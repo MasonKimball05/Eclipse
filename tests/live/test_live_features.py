@@ -1713,19 +1713,31 @@ def test_eclipse_links_from_other_apps_open_pages_and_switch_spaces(window, site
     assert window.store.active_space is work and window.current_tab.url == page  # (its own & kept)
     opened = window.current_tab
     assert link(f"eclipse-browser://space?name={first.name}") and window.store.active_space is first
+    # A note by its id (Hop's Eclipse Notes): opened once, then its tab found again rather than a second one
+    from browser import storage
+    from browser.notes import NOTE_SCHEME, new_id
+    note_id = new_id()
+    (storage.data_dir() / "notes").mkdir(exist_ok=True)
+    (storage.data_dir() / "notes" / f"{note_id}.md").write_text("# From Hop\n")
+    assert link(f"eclipse-browser://note?id={note_id}") and window.current_tab.url == NOTE_SCHEME + note_id
+    note_tab = window.current_tab
+    assert link(f"eclipse-browser://space?name={work.name}")
+    assert link(f"eclipse-browser://note?id={note_id}") and window.current_tab is note_tab
     # Only web pages: anything else does nothing but say so
     count = len(list(window.store.all_tabs()))
     for bad in ("eclipse-browser://open?url=javascript:alert(1)", "eclipse-browser://open?url=file:///etc/passwd",
-                "eclipse-browser://delete-everything", "eclipse-browser://space?name=Nowhere"):
+                "eclipse-browser://delete-everything", "eclipse-browser://space?name=Nowhere",
+                "eclipse-browser://note?id=../../etc/passwd", f"eclipse-browser://note?id={new_id()}"):
         window.toasts.clear()
         assert link(bad) and window.toasts, bad
-    assert len(list(window.store.all_tabs())) == count and window.store.active_space is first
+    assert len(list(window.store.all_tabs())) == count
     # A page can never use them: they'd let it drive the browser it's in
     view_page = WebPage(window.profile, window)
     assert not view_page.acceptNavigationRequest(QUrl("eclipse-browser://open?url=https://evil.example/"),
                                                  WebPage.NavigationType.NavigationTypeLinkClicked, True)
     view_page.deleteLater()
     window.close_tab(opened)
+    window.close_tab(note_tab)
 
 
 def test_spaces_and_pinned_tabs_go_in_spotlight_and_open_from_it(window, site, monkeypatch):

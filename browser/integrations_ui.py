@@ -17,7 +17,7 @@ from . import keychain
 from . import integrations
 from .features import Feature
 from .integrations import (GENERAL, ISSUE_TEXT, SETTING, STATE_DOTS, away_task_text, base, config, daybook_url,
-                           defaults, github_issue, hop_quicklinks, job_tracker_url, live_folder_presets, local_clone,
+                           defaults, github_issue, hop_quicklinks, hop_url, job_tracker_url, live_folder_presets, local_clone,
                            matching_projects, open_external, open_in_app, search_shortcut_presets, summarize)
 from .live_folders import token_account
 from .models import display_host
@@ -145,6 +145,11 @@ class AppsUI(QObject):
         if cfg.get("daybook"):
             out.append(("Add Page to Daybook", "ph.calendar-check",
                         lambda: open_external(daybook_url(tab.label, tab.url)) and self.browser.toast("Added to Daybook")))
+        if cfg.get("hop"):
+            out.append(("Ask Claude in Hop About This Page", "ph.sparkle",
+                        lambda: open_external(hop_url("ask", page=tab.url, title=tab.label))))
+            out.append(("Due Dates to Daybook with Hop", "ph.calendar-plus",
+                        lambda: open_external(hop_url("deadlines", page=tab.url, title=tab.label))))
         if base(cfg["checkup"]):
             out.append(("Security Grade for This Site", "ph.shield-check", lambda: self.security_grade(tab.url)))
         clone = local_clone(tab.url, cfg.get("repos_root"))
@@ -469,6 +474,9 @@ class IntegrationsFeature(Feature):
         window, apps, homebase = self.window, self.apps, self.homebase
         # The current page's Send To actions, and homebase
         cmds = [(label, icon, run) for label, icon, run in apps.send_to_actions(window.current_tab)]
+        if apps.cfg.get("hop"):  # (named for the Space, so Hop logs the time to it and keeps Eclipse there)
+            cmds.append(("Start a Focus Session in Hop", "ph.timer",
+                         lambda: open_external(hop_url("focus", minutes=25, label=window.store.active_space.name))))
         if homebase.url:
             cmds += [("Homebase Dashboard", "ph.gauge", lambda: window.open_url(homebase.url + "/")),
                      ("Homebase Apps", "ph.hard-drives", lambda: apps.homebase_menu(QCursor.pos())),
