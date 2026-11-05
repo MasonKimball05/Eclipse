@@ -16,6 +16,8 @@
 // fresh, badge, audio ("playing", "muted"), selected, marked, insplit, close ("close", "unload", "" for none), tip,
 // label, hint (VoiceOver's)} or a folder {id, kind: "folder", name, icon, count, expanded, fixed (a Live Folder's
 // own), locked (nothing's dropped in), size, tip, children}.
+// "drop_test" (the tests'): {ids, x, y, width, height} drops tabs at a point as a drag would, with "hover_only" holds
+// one there, or without ids, says where every drop spot is (SidebarDrops). "dragging": the tab being carried.
 
 import AppKit
 import SwiftUI
@@ -116,12 +118,57 @@ struct SidebarBodyView: View {
             DispatchQueue.main.async { current = target }
         })
         .onChange(of: settling.settled) { _ in landed() }
+        .onChange(of: model.string("dragging").isEmpty) { idle in
+            // (the button's up, as Python sees it: however the drag ended, the room it opened closes)
+            if idle { SidebarDrops.of(model.id).ended() }
+        }
+        .onChange(of: model.state["drop_test"] as? JSON != nil) { _ in
+            // (tests/live: a tab dropped at a point, as a drag would, and where every drop spot is)
+            guard let test = model.state["drop_test"] as? JSON else { return }
+            let point = CGPoint(x: (test["x"] as? NSNumber)?.doubleValue ?? 0, y: (test["y"] as? NSNumber)?.doubleValue ?? 0)
+            let bounds = CGRect(x: 0, y: 0, width: (test["width"] as? NSNumber)?.doubleValue ?? 10_000,
+                                height: (test["height"] as? NSNumber)?.doubleValue ?? 10_000)
+            if let path = test["path"] as? [[NSNumber]], let ids = test["ids"] as? String {
+                // (a whole drag, as macOS sends it, through the sidebar view's own handlers: Embedded.swift)
+                let points = path.map { CGPoint(x: $0[0].doubleValue, y: $0[1].doubleValue) }
+                // ("stale": the drag pasteboard still holding the drag before's tab, as a quick drop could read it)
+                if test["stale"] is String { SidebarDrops.of(model.id).carrying = ids }
+                let pasted = test["stale"] as? String ?? ids
+                let result = (EmbeddedView.views[model.id]?.host as? DragTesting)?.testDrag(points, ids: pasted)
+                model.act("drop_test", result ?? ["error": "no sidebar view"])
+            } else if test["ghosts"] as? Bool == true {
+                // (another Space's spots left where it last showed, over this one's: none of them should take a drop)
+                SidebarDrops.of(model.id).haunt { section in
+                    { _, ids in
+                        model.act("move", ["id": ids, "space": "ghost", "section": section, "index": 0])
+                        return true
+                    }
+                }
+                model.act("drop_test", ["ghosts": true])
+            } else if test["room"] as? Bool == true {  // (where the rows part, if they do)
+                let room = SidebarDrops.of(model.id).room
+                model.act("drop_test", room.map { ["y": $0.y, "depth": $0.depth] } ?? ["y": -1])
+            } else if test["hover_only"] as? Bool == true {  // (held over a spot: no drop)
+                model.act("drop_test", ["over": SidebarDrops.of(model.id).over(point, in: bounds)])
+            } else if let ids = test["ids"] as? String {
+                let over = SidebarDrops.of(model.id).over(point, in: bounds)
+                let dropped = SidebarDrops.of(model.id).drop(point, in: bounds, ids: ids)
+                model.act("drop_test", ["over": over, "dropped": dropped])
+            } else {
+                model.act("drop_test", ["spots": SidebarDrops.of(model.id).places.mapValues {
+                    [$0.minX, $0.minY, $0.width, $0.height]
+                }])
+            }
+        }
         .onChange(of: settling.touched) { _ in landing = false }  // (fingers on it again: not done with after all)
         .onChange(of: position) { _ in
             if landing { landed() }
             heading()
         }
         .environment(\.sidebarScrolling, moving)
+        .environment(\.sidebarDrops, SidebarDrops.of(model.id))
+        .onAppear { SidebarDrops.of(model.id).space = model.string("current") }
+        .onChange(of: model.string("current")) { now in SidebarDrops.of(model.id).space = now }
     }
 
     /// A swipe more than halfway to another Space: said, so its tab starts loading before it's there.
@@ -289,16 +336,23 @@ private struct SpaceList: View {
                             .font(.system(size: 12))
                             .foregroundStyle(look.text.opacity(0.5))
                             .frame(maxWidth: .infinity, minHeight: rowHeight)
-                            .modifier(DropAt(model: model, look: look, space: space.str("id"), section: "pinned",
-                                             index: 0))
+                            .modifier(DropAt(model: model, look: look, space: space.str("id"), place: "hint",
+                                             section: "pinned", index: 0))
                     }
                     ForEach(Array(pinned.enumerated()), id: \.element.nodeId) { index, node in
                         NodeView(node: node, depth: 0, section: "pinned", index: index, parent: nil, locked: false,
                                  look: look, model: model, space: space.str("id"))
                             .transition(.opacity.combined(with: .move(edge: .leading)))
                     }
-                    divider(after: pinned.count)
-                    NewTabRow(look: look, model: model)
+                    // The divider and New Tab are one place to drop: first in Today, the room under New Tab (on its own
+                    // the divider was the end of Pinned, a thin strip right under the last pinned tab where a tab
+                    // dragged out of Pinned landed back where it was, the room it opened pushing New Tab down)
+                    VStack(alignment: .leading, spacing: 0) {
+                        divider()
+                        NewTabRow(look: look, model: model)
+                    }
+                    .modifier(DropAt(model: model, look: look, space: space.str("id"), place: "new tab",
+                                     section: "today", index: 0, below: true))
                     ForEach(Array(today.enumerated()), id: \.element.nodeId) { index, node in
                         NodeView(node: node, depth: 0, section: "today", index: index, parent: nil, locked: false,
                                  look: look, model: model, space: space.str("id"))
@@ -307,8 +361,8 @@ private struct SpaceList: View {
                     }
                     Color.clear.frame(height: 40)  // (room to drop a tab at the end of Today)
                         .contentShape(Rectangle())
-                        .modifier(DropAt(model: model, look: look, space: space.str("id"), section: "today",
-                                         index: today.count))
+                        .modifier(DropAt(model: model, look: look, space: space.str("id"), place: "end",
+                                         section: "today", index: today.count))
                 }
                 .padding(.top, 2)
                 // Rows grow in and shrink out, folders open and close, Clear sweeps Today away (as Qt's do)
@@ -369,7 +423,7 @@ private struct SpaceList: View {
     }
 
     /// The line between Pinned and Today, with Tidy and Clear; a tab dropped on it goes at the end of Pinned.
-    private func divider(after pinned: Int) -> some View {
+    private func divider() -> some View {
         HStack(spacing: 4) {
             Rectangle().fill(look.text.opacity(0.10)).frame(height: 1)
             let tidy = space["tidy"] as? JSON ?? [:]
@@ -387,7 +441,6 @@ private struct SpaceList: View {
         }
         .padding(.leading, 6).padding(.top, 8).padding(.bottom, 2)
         .contentShape(Rectangle())
-        .modifier(DropAt(model: model, look: look, space: space.str("id"), section: "pinned", index: pinned))
     }
 }
 
@@ -406,30 +459,54 @@ private struct NodeView: View {
     let look: SidebarLook
     @ObservedObject var model: PageModel
     let space: String
+    var outer: FolderPlace? = nil  // (the folder it's in, where that is)
+    var last = false  // (the last in its folder)
+
+    /// Being dragged (it, or the picked tabs it's one of): faded where it was, so it isn't in two places at once.
+    private var carried: Bool {
+        let dragging = model.string("dragging"), id = node.str("id")
+        guard !dragging.isEmpty else { return false }
+        let marked = model.state["marked"] as? [String] ?? []
+        return id == dragging || (marked.contains(dragging) && marked.contains(id))
+    }
 
     var body: some View {
         if node.str("kind") == "folder" {
             VStack(alignment: .leading, spacing: 0) {
                 FolderRow(folder: node, depth: depth, look: look, model: model)
-                    .modifier(RowDrop(model: model, look: look, space: space, section: section, index: index,
-                                      parent: parent, depth: depth, locked: locked, folder: node))
+                    .opacity(carried ? 0.35 : 1)
+                    .modifier(RowDrop(model: model, look: look, id: node.str("id"), space: space, section: section,
+                                      index: index, parent: parent, depth: depth, locked: locked, folder: node,
+                                      outer: outer, last: last && !node.flag("expanded")))
                 if node.flag("expanded") {
                     let children = node.list("children")
                     ForEach(Array(children.enumerated()), id: \.element.nodeId) { i, child in
                         NodeView(node: child, depth: depth + 1, section: section, index: i, parent: node.str("id"),
-                                 locked: node.flag("locked"), look: look, model: model, space: space)
+                                 locked: node.flag("locked"), look: look, model: model, space: space,
+                                 outer: FolderPlace(parent: parent, index: index, depth: depth),
+                                 last: i == children.count - 1)
                             .transition(.opacity.combined(with: .move(edge: .top)))
                     }
                 }
             }
-            .clipped()  // (its tabs slide out from under it as it opens)
+            .modifier(FolderClip())  // (its tabs slide out from under it as it opens)
         } else {
             TabRow(tab: node, depth: depth, look: look, model: model)
+                .opacity(carried ? 0.35 : 1)
+                .animation(.easeOut(duration: 0.15), value: carried)
                 .id(node.str("id"))  // (scrolled to when it's the tab you switch to)
-                .modifier(RowDrop(model: model, look: look, space: space, section: section, index: index,
-                                  parent: parent, depth: depth, locked: locked, folder: nil))
+                .modifier(RowDrop(model: model, look: look, id: node.str("id"), space: space, section: section,
+                                  index: index, parent: parent, depth: depth, locked: locked, folder: nil,
+                                  outer: outer, last: last))
         }
     }
+}
+
+/// Where a folder is: the folder it's in (nil, at the top of its section), its place there, and how deep it is.
+struct FolderPlace {
+    let parent: String?
+    let index: Int
+    let depth: Int
 }
 
 /// Where a dragged tab would go, as Qt's sidebar decides: the top half of a row is before it, the bottom half after
@@ -440,19 +517,27 @@ private enum DropMark: Equatable {
     case into
 }
 
-private struct DropLine: View {
+private let dropGap: CGFloat = rowHeight  // (the room the rows make for a dragged tab)
+
+/// The room the rows make for a dragged tab: where it'll go, shown faintly.
+private struct DropRoom: View {
     let look: SidebarLook
     let depth: Int
 
     var body: some View {
-        Capsule().fill(look.text.opacity(0.85)).frame(height: 2)
-            .padding(.leading, 8 + CGFloat(depth) * indent).padding(.trailing, 8)
+        RoundedRectangle(cornerRadius: 9, style: .continuous)
+            .fill(look.text.opacity(0.08))
+            .frame(height: dropGap - 4)
+            .padding(.vertical, 2)
+            .padding(.leading, CGFloat(depth) * indent)
+            .transition(.opacity)
     }
 }
 
 private struct RowDrop: ViewModifier {
     @ObservedObject var model: PageModel
     let look: SidebarLook
+    let id: String
     let space: String
     let section: String
     let index: Int
@@ -460,63 +545,89 @@ private struct RowDrop: ViewModifier {
     let depth: Int
     let locked: Bool
     let folder: JSON?
-    @State private var mark: DropMark?
+    var outer: FolderPlace? = nil  // (the folder it's in, where that is: the last row in it can drop after it)
+    var last = false  // (the last row in its folder)
+    @State private var into = false  // (a tab held over its middle: dropped into it, outlined)
+    @State private var opening: Task<Void, Never>?  // (a closed folder held over a moment: it opens)
 
     func body(content: Content) -> some View {
+        let into = $into
         content
-            .overlay(alignment: .top) { if mark == .above { DropLine(look: look, depth: depth).offset(y: -1) } }
-            .overlay(alignment: .bottom) {
-                if case .below(let d) = mark { DropLine(look: look, depth: d).offset(y: 1) }
-            }
             .overlay {
-                if mark == .into {
+                if self.into {
                     RoundedRectangle(cornerRadius: 9, style: .continuous).stroke(look.text.opacity(0.7), lineWidth: 1.5)
                         .padding(1)
                 }
             }
-            .onDrop(of: TabDrag.types, delegate: Delegate(row: self, mark: $mark))
+            .modifier(DropSpotPlace(key: "row \(space) \(id)", look: look, spot: DropSpot(
+                section: section,
+                over: { at in
+                    // (the tab being carried, faded where it was, isn't somewhere to put it: before or after itself
+                    // changes nothing)
+                    guard model.string("dragging") != id, let target = target(at) else {
+                        into.wrappedValue = false
+                        return nil
+                    }
+                    into.wrappedValue = target.mark == .into
+                    springOpen(target.mark == .into)
+                    switch target.mark {
+                    case .into: return .outline
+                    case .above: return .room(top: true, depth: depth)
+                    case .below(let d): return .room(top: false, depth: d)
+                    }
+                },
+                left: {
+                    into.wrappedValue = false
+                    springOpen(false)
+                },
+                drop: { at, ids in
+                    into.wrappedValue = false
+                    springOpen(false)
+                    let carried = model.string("dragging") == id
+                    model.merge(["dragging": ""])
+                    guard !carried, let target = target(at) else { return false }
+                    var event: [String: Any] = ["id": ids, "space": space, "section": section, "index": target.index]
+                    if let folder = target.folder { event["folder"] = folder }
+                    model.act("move", event)
+                    return true
+                })))
     }
 
-    /// The mark, folder and index for a drop `y` points down the row; nil where it can't go (a Live Folder).
-    func target(_ y: CGFloat) -> (mark: DropMark, folder: String?, index: Int)? {
-        if let folder {
-            let third = rowHeight / 3
-            if y >= third && y <= rowHeight - third {
-                return folder.flag("locked") ? nil : (.into, folder.str("id"), folder.int("size") ?? 0)
-            }
+    /// A closed folder with a tab held over its middle opens after a moment (as Arc's do), to drop it among what's in
+    /// it; anything else held over, or the tab moved on, and it doesn't.
+    private func springOpen(_ held: Bool) {
+        guard held, let folder, !folder.flag("expanded"), !folder.flag("locked") else {
+            opening?.cancel()
+            opening = nil
+            return
+        }
+        guard opening == nil else { return }
+        let id = folder.str("id")
+        opening = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            if !Task.isCancelled { model.act("folder", ["id": id]) }
+        }
+    }
+
+    /// The mark, folder and index for a drop at `at` in the row (from its top-left); nil where it can't go. A folder's
+    /// middle half is into it (a third, it was too thin a band to find), its top and bottom quarters beside it; a Live
+    /// Folder (its feed's) takes nothing, its bottom half after it even when it's open. The bottom of the last row in a
+    /// folder, to the left of where its indent starts, is after that folder: past an open folder, as in Arc (there
+    /// was otherwise nowhere that meant after it).
+    func target(_ at: CGPoint) -> (mark: DropMark, folder: String?, index: Int)? {
+        let y = at.y, live = folder?.flag("locked") ?? false
+        if let folder, !live {
+            let quarter = rowHeight / 4
+            if y >= quarter && y <= rowHeight - quarter { return (.into, folder.str("id"), folder.int("size") ?? 0) }
+        }
+        if y >= rowHeight / 2, last, let outer, at.x < 10 + CGFloat(depth) * indent {
+            return (.below(depth: outer.depth), outer.parent, outer.index + 1)
         }
         if y < rowHeight / 2 { return locked ? nil : (.above, parent, index) }
-        if let folder, folder.flag("expanded") {
-            return folder.flag("locked") ? nil : (.below(depth: depth + 1), folder.str("id"), 0)
+        if let folder, folder.flag("expanded"), !live {
+            return (.below(depth: depth + 1), folder.str("id"), 0)
         }
         return locked ? nil : (.below(depth: depth), parent, index + 1)
-    }
-
-    struct Delegate: DropDelegate {
-        let row: RowDrop
-        @Binding var mark: DropMark?
-
-        func validateDrop(info: DropInfo) -> Bool { info.hasItemsConforming(to: TabDrag.types) }
-
-        func dropUpdated(info: DropInfo) -> DropProposal? {
-            let target = row.target(info.location.y)
-            mark = target?.mark
-            return DropProposal(operation: target == nil ? .forbidden : .move)
-        }
-
-        func dropExited(info: DropInfo) { mark = nil }
-
-        func performDrop(info: DropInfo) -> Bool {
-            let target = row.target(info.location.y)
-            mark = nil
-            guard let target else { return false }
-            let model = row.model, space = row.space, section = row.section
-            return TabDrag.take(info.itemProviders(for: TabDrag.types)) { id in
-                var event: [String: Any] = ["id": id, "space": space, "section": section, "index": target.index]
-                if let folder = target.folder { event["folder"] = folder }
-                model.act("move", event)
-            }
-        }
     }
 }
 
@@ -526,18 +637,292 @@ private struct DropAt: ViewModifier {
     @ObservedObject var model: PageModel
     let look: SidebarLook
     let space: String
+    let place: String  // (which it is: its spot's own name, two of them can drop at the same place)
     let section: String
     let index: Int
-    @State private var over = false
+    var below = false  // (the room opens under it: New Tab, which Today's tabs come after)
 
     func body(content: Content) -> some View {
         content
-            .overlay(alignment: .top) { if over { DropLine(look: look, depth: 0).offset(y: -1) } }
-            .onDrop(of: TabDrag.types, isTargeted: $over) { providers in
-                TabDrag.take(providers) { id in
-                    model.act("move", ["id": id, "space": space, "section": section, "index": index])
+            .modifier(DropSpotPlace(key: "at \(space) \(place)", look: look, spot: DropSpot(
+                section: section,
+                over: { _ in .room(top: !below, depth: 0) },
+                left: {},
+                drop: { _, ids in
+                    model.merge(["dragging": ""])
+                    model.act("move", ["id": ids, "space": space, "section": section, "index": index])
+                    return true
+                })))
+    }
+}
+
+/// What a spot shows for a tab held over it: room made for it (above the spot, or below), or an outline (into a folder).
+enum DropShow: Equatable {
+    case room(top: Bool, depth: Int)
+    case outline
+}
+
+/// Where a dragged tab can be dropped, and what it does there: `over` with where in it the pointer is, from its
+/// top-left (what it shows, or nil if it can't go there), `left` when it's gone elsewhere, and `drop` with the tabs'
+/// ids (comma-separated).
+struct DropSpot {
+    let section: String  // ("pinned" or "today": which side of the divider it drops on)
+    let over: (CGPoint) -> DropShow?
+    let left: () -> Void
+    let drop: (CGPoint, String) -> Bool
+}
+
+/// A sidebar's drop spots, by where they're laid out (in the sidebar view's own coordinates), for the view to hand a
+/// dragged tab to the one it's over (Embedded.swift: PassThroughHostingView); SwiftUI's own drops (onDrop) never
+/// reach a row in a view inside Qt's window. The rows make room where it'd go by sliding down on screen (RoomShift),
+/// not by moving in the layout: places stay as they were laid out while a tab's carried, so what's under the pointer
+/// never shifts with the room it opens (opened in the layout, the room had the spot under the pointer change and the
+/// room jump about, and a drop in it land nowhere).
+@MainActor
+final class SidebarDrops: ObservableObject {
+    struct Room: Equatable {
+        let y: CGFloat  // (where the rows part: those laid out from here down slide down)
+        let depth: Int
+    }
+
+    static let none = SidebarDrops()  // (outside a sidebar: nothing to drop on)
+    private static var pages: [Int32: SidebarDrops] = [:]
+
+    /// The drop spots of the sidebar that's page `page` (one a window: a closed window's rows mustn't take a drop).
+    static func of(_ page: Int32) -> SidebarDrops {
+        if let drops = pages[page] { return drops }
+        let drops = SidebarDrops()
+        pages[page] = drops
+        return drops
+    }
+
+    static func forget(_ page: Int32) { pages[page] = nil }
+
+    @Published private(set) var room: Room?
+    var carrying: String?  // (the tabs being dragged from this sidebar, their ids comma-separated)
+    var space = ""  // (the Space showing: only its spots take a drop)
+    private var spots: [String: (rect: CGRect, spot: DropSpot)] = [:]
+    private var current: String?  // (the spot the pointer's over, showing what a drop there does)
+    private var roomFor: (key: String, at: CGPoint)?  // (the spot that made the room: a drop in it goes where it says)
+
+    func place(_ key: String, _ rect: CGRect, _ spot: DropSpot) {
+        // (while room's made, rows that slid keep where they were laid out)
+        spots[key] = (room == nil ? rect : spots[key]?.rect ?? rect, spot)
+    }
+
+    func remove(_ key: String) {
+        spots[key] = nil
+        if current == key { current = nil }
+        if roomFor?.key == key { roomFor = nil }
+    }
+
+    /// Whether the spot `key` slides down out of the way (laid out where the rows part, or below).
+    func shifts(_ key: String) -> Bool {
+        guard let room, let rect = spots[key]?.rect else { return false }
+        return rect.minY >= room.y - 0.5
+    }
+
+    /// Whether the room opens just above the spot `key` (it shows the room, faintly).
+    func opensAbove(_ key: String) -> Bool {
+        guard let room, let rect = spots[key]?.rect else { return false }
+        return abs(rect.minY - room.y) < 0.5
+    }
+
+    /// Whether the spot `key` ("row <space> <id>", "at <space> <place>") is the showing Space's. The other Spaces'
+    /// pages, scrolled away, keep the places they had when they last showed (just where this one's are): a drop
+    /// could be taken for one of theirs, and Python, rightly, wouldn't move a tab into a Space that isn't showing.
+    private func shows(_ key: String) -> Bool {
+        space.isEmpty || key.split(separator: " ").dropFirst().first.map(String.init) == space
+    }
+
+    /// The tests': a copy of every spot of the Space showing, as another Space's ("ghost"), a little smaller (so it
+    /// would be the one a drop's taken for, were it looked at), dropping as `drop` says.
+    func haunt(_ drop: (String) -> (CGPoint, String) -> Bool) {
+        for (key, held) in spots where shows(key) {
+            let ghost = key.split(separator: " ").enumerated().map { $0.offset == 1 ? "ghost" : String($0.element) }
+            spots[ghost.joined(separator: " ")] = (held.rect.insetBy(dx: 1, dy: 1),
+                                                   DropSpot(section: held.spot.section, over: held.spot.over, left: {},
+                                                            drop: drop(held.spot.section)))
+        }
+    }
+
+    /// Every spot's place, for the tests ("drop_spots").
+    var places: [String: CGRect] { spots.mapValues(\.rect) }
+
+    /// The spot at `point` (the smallest, should two overlap), among those in `bounds` (the Space showing); below
+    /// them all, the lowest (the end of Today: a tab dragged out of Pinned into the empty sidebar under it goes there,
+    /// as in Arc, where it had nowhere to go).
+    private func spot(at point: CGPoint, in bounds: CGRect) -> (key: String, rect: CGRect, spot: DropSpot)? {
+        let showing = spots.filter { shows($0.key) && bounds.intersects($0.value.rect) }
+        let found = showing.filter { $0.value.rect.contains(point) }
+            .min { $0.value.rect.width * $0.value.rect.height < $1.value.rect.width * $1.value.rect.height }
+            ?? showing.max { $0.value.rect.maxY < $1.value.rect.maxY }.flatMap { $0.value.rect.maxY <= point.y ? $0 : nil }
+        return found.map { ($0.key, $0.value.rect, $0.value.spot) }
+    }
+
+    /// Where `point` (on screen) is in the layout: below the room, the rows are drawn a room lower than they're laid
+    /// out; in the room's top half, nil (it's where the tab will go already); in its bottom half, the top of what
+    /// comes after it. Judged by the layout alone, the row drawn just below the room was taken for the one after it:
+    /// the room jumped a row further down than the pointer, and back, flickering. Between two rows both halves are
+    /// the same place; where Pinned ends, the top half is the end of Pinned and the bottom half Today (a tab dragged
+    /// out of Pinned quickly and let go past the room just opened after the last pinned tab went back into Pinned).
+    private func laidOut(_ point: CGPoint) -> CGPoint? {
+        guard let room, point.y >= room.y else { return point }
+        if point.y < room.y + dropGap / 2 { return nil }
+        return CGPoint(x: point.x, y: point.y < room.y + dropGap ? room.y + 1 : point.y - dropGap)
+    }
+
+    /// What a drop at `point` (on screen) is on: the spot, and where in it. Which side of the divider is decided by
+    /// where the divider's laid out, which never moves while a tab's carried; where on that side, by what's drawn
+    /// (the room taken into account: laidOut). In a quick drag the rows are always still sliding to a room just
+    /// opened, drawn a room lower than they'll look a moment later: let go just past the last pinned tab, a tab was
+    /// judged against them and went back into Pinned.
+    private func target(_ point: CGPoint, in bounds: CGRect) -> (key: String, rect: CGRect, spot: DropSpot, at: CGPoint)? {
+        var drawn: (key: String, rect: CGRect, spot: DropSpot, at: CGPoint)?
+        if let laid = laidOut(point) {
+            drawn = spot(at: laid, in: bounds).map { ($0.key, $0.rect, $0.spot, CGPoint(x: laid.x - $0.rect.minX, y: laid.y - $0.rect.minY)) }
+        } else if let roomFor, let held = spots[roomFor.key] {  // (in the room: where it said)
+            drawn = (roomFor.key, held.rect, held.spot, roomFor.at)
+        }
+        guard let divider = spots.first(where: { $0.key.hasSuffix(" new tab") && shows($0.key) })?
+            .value.rect.minY else { return drawn }
+        let side = point.y >= divider ? "today" : "pinned"
+        if let drawn, drawn.spot.section == side { return drawn }
+        let under = spot(at: point, in: bounds)  // (the other side: what's laid out under the pointer, on this one)
+        guard let under, under.spot.section == side else { return drawn }
+        return (under.key, under.rect, under.spot, CGPoint(x: point.x - under.rect.minX, y: point.y - under.rect.minY))
+    }
+
+    /// A tab dragged to `point`: whether it can be dropped there (room's made for it, or its folder outlined). A
+    /// folder outlined to take it leaves any room as it is: closed, the rows moved back up and the folder slid out
+    /// from under the pointer, the pointer was beside it again, the room opened again, and so on (it flickered).
+    func over(_ point: CGPoint, in bounds: CGRect) -> Bool {
+        let found = target(point, in: bounds)
+        if found?.key != current {
+            if let current { spots[current]?.spot.left() }
+            current = found?.key
+        }
+        guard let found, let show = found.spot.over(found.at) else {
+            closeRoom()
+            return false
+        }
+        if case .room(let top, let depth) = show {
+            let made = Room(y: top ? found.rect.minY : found.rect.maxY, depth: depth)
+            if room != made { room = made }
+            roomFor = (found.key, found.at)
+        }
+        return true
+    }
+
+    private func closeRoom() {
+        if room != nil { room = nil }
+        roomFor = nil
+    }
+
+    func left() {
+        if let current { spots[current]?.spot.left() }
+        current = nil
+        closeRoom()
+    }
+
+    /// The drag's over, however it ended.
+    func ended() {
+        left()
+        carrying = nil
+    }
+
+
+    /// Tabs (`ids`, comma-separated) dropped at `point`: moved there, if they can go.
+    func drop(_ point: CGPoint, in bounds: CGRect, ids: String) -> Bool {
+        defer { left() }
+        guard let found = target(point, in: bounds) else { return false }
+        return found.spot.drop(found.at, ids)
+    }
+
+    /// The tab ids a drag carries (several picked, or one), from Eclipse's own or Qt's sidebar.
+    static func ids(on pasteboard: NSPasteboard) -> String? {
+        for type in [TabDrag.qtManyType, TabDrag.qtType] {
+            if let data = pasteboard.data(forType: NSPasteboard.PasteboardType(type)),
+               let ids = String(data: data, encoding: .utf8), !ids.isEmpty {
+                return ids
+            }
+        }
+        return nil
+    }
+}
+
+/// Puts a drop spot in its sidebar's SidebarDrops, where it's laid out in the sidebar view (kept up to date as it
+/// moves), and slides it down out of the way when room's made above it for a dragged tab.
+private struct DropSpotPlace: ViewModifier {
+    let key: String
+    let look: SidebarLook
+    let spot: DropSpot
+    @Environment(\.sidebarDrops) private var drops
+
+    func body(content: Content) -> some View {
+        content
+            .background(GeometryReader { geometry in
+                let _ = drops?.place(key, geometry.frame(in: .named("sidebarBody")), spot)
+                Color.clear
+            })
+            .modifier(RoomShift(drops: drops ?? SidebarDrops.none, key: key, look: look))
+            .onDisappear { drops?.remove(key) }
+    }
+}
+
+/// A folder's tabs, clipped to it (they slide out from under it as it opens), but not while room's made for a dragged
+/// tab: its rows that slid down out of the way would go out of sight.
+private struct FolderClip: ViewModifier {
+    @Environment(\.sidebarDrops) private var drops
+
+    func body(content: Content) -> some View {
+        Clipped(drops: drops ?? SidebarDrops.none) { content }
+    }
+
+    private struct Clipped<Inner: View>: View {
+        @ObservedObject var drops: SidebarDrops
+        @ViewBuilder let inner: () -> Inner
+
+        var body: some View {
+            inner().clipShape(Bounds(open: drops.room != nil))  // (one view either way: its rows stay where they are)
+        }
+    }
+
+    private struct Bounds: Shape {
+        let open: Bool
+
+        func path(in rect: CGRect) -> Path { Path(open ? rect.insetBy(dx: -2000, dy: -2000) : rect) }
+    }
+}
+
+/// A spot below where the rows part for a dragged tab: slid down a row's room (the one just below shows the room).
+private struct RoomShift: ViewModifier {
+    @ObservedObject var drops: SidebarDrops
+    let key: String
+    let look: SidebarLook
+
+    func body(content: Content) -> some View {
+        let shifted = drops.shifts(key)
+        content
+            .background(alignment: .top) {
+                if drops.opensAbove(key), let room = drops.room {
+                    DropRoom(look: look, depth: room.depth).offset(y: -dropGap)
                 }
             }
+            .offset(y: shifted ? dropGap : 0)
+            .animation(.snappy(duration: 0.18), value: shifted)
+    }
+}
+
+private struct SidebarDropsKey: EnvironmentKey {
+    static let defaultValue: SidebarDrops? = nil
+}
+
+extension EnvironmentValues {
+    /// The sidebar's drop spots, for its rows to put themselves in.
+    var sidebarDrops: SidebarDrops? {
+        get { self[SidebarDropsKey.self] }
+        set { self[SidebarDropsKey.self] = newValue }
     }
 }
 
@@ -556,7 +941,7 @@ private struct TabRow: View {
 
     /// The pointer on the row or off it: its highlight and its tab preview (none while the Spaces scroll past it).
     private func hovered(_ now: Bool) {
-        guard now != hovering, !(now && scrolling) else { return }
+        guard now != hovering, !(now && (scrolling || !model.string("dragging").isEmpty)) else { return }
         hovering = now
         model.act("hover", now ? ["id": id, "y": frame.rect.minY, "height": frame.rect.height] : ["id": ""])
     }
@@ -577,6 +962,7 @@ private struct TabRow: View {
             .contentShape(Rectangle())
             .onHover(perform: hovered)
             .onChange(of: scrolling) { now in if now { hovered(false) } }
+            .onChange(of: model.string("dragging").isEmpty) { idle in if !idle { hovered(false) } }
             .background(GeometryReader { geometry in
                 let _ = frame.rect = geometry.frame(in: .named("sidebarBody"))
                 Color.clear
@@ -648,6 +1034,7 @@ private struct TabRow: View {
         })
         .onHover(perform: hovered)
         .onChange(of: scrolling) { now in if now { hovered(false) } }
+        .onChange(of: model.string("dragging").isEmpty) { idle in if !idle { hovered(false) } }
         .animation(.easeOut(duration: 0.12), value: hovering)
         .gesture(TapGesture().modifiers(.command).onEnded { model.act("activate", ["id": id, "mark": "add"]) })
         .gesture(TapGesture().modifiers(.shift).onEnded { model.act("activate", ["id": id, "mark": "extend"]) })
@@ -725,6 +1112,12 @@ private struct FolderRow: View {
             }
             if !compact {
                 Text(folder.str("name")).font(.system(size: 13, weight: .medium)).foregroundStyle(look.text).lineLimit(1)
+                if folder.flag("live") {  // (a Live Folder: fills itself from its feed)
+                    Image(systemName: "dot.radiowaves.left.and.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(look.text.opacity(0.5))
+                        .help(folder.str("live_tip"))
+                }
             }
             Spacer(minLength: 0)
             if !compact && !folder.str("count").isEmpty {
@@ -738,14 +1131,14 @@ private struct FolderRow: View {
         .frame(height: rowHeight)
         .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(hovering ? look.hover : .clear))
         .contentShape(Rectangle())
-        .onHover { hovering = $0 && !scrolling }
+        .onHover { hovering = $0 && !scrolling && model.string("dragging").isEmpty }
         .onChange(of: scrolling) { now in if now { hovering = false } }
         .animation(.easeOut(duration: 0.12), value: hovering)
         .onTapGesture { model.act("folder", ["id": folder.str("id")]) }
         .overlay(RightClick { model.act("menu", ["id": folder.str("id"), "kind": "folder"]) } middle: {})
         .modifier(DraggableUnless(model: model, fixed: folder.flag("fixed"), id: folder.str("id"), title: folder.str("name")))
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(folder.str("name")), folder, \(folder.flag("expanded") ? "open" : "closed")")
+        .accessibilityLabel("\(folder.str("name")), \(folder.flag("live") ? "Live Folder" : "folder"), \(folder.flag("expanded") ? "open" : "closed")")
     }
 }
 
@@ -785,7 +1178,7 @@ private struct NewTabRow: View {
         .frame(height: rowHeight)
         .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(hovering ? look.hover : .clear))
         .contentShape(Rectangle())
-        .onHover { hovering = $0 && !scrolling }
+        .onHover { hovering = $0 && !scrolling && model.string("dragging").isEmpty }
         .onChange(of: scrolling) { now in if now { hovering = false } }
         .onTapGesture { model.act("new_tab") }
         .accessibilityAddTraits(.isButton)
@@ -855,12 +1248,15 @@ enum TabDrag {
     @MainActor
     static func provider(_ id: String, model: PageModel) -> NSItemProvider {
         model.act("drag", ["id": id])
+        model.merge(["dragging": id])  // (its row fades while it's carried: Python clears it when the button's up)
+        let marked = model.state["marked"] as? [String] ?? []
+        // (what's carried, known here too: a quick drop could come before the drag's own data is there to read)
+        SidebarDrops.of(model.id).carrying = marked.count > 1 && marked.contains(id) ? marked.joined(separator: ",") : id
         let provider = NSItemProvider()
         provider.registerDataRepresentation(forTypeIdentifier: qtType, visibility: .ownProcess) { done in
             done(Data(id.utf8), nil)
             return nil
         }
-        let marked = model.state["marked"] as? [String] ?? []
         if marked.count > 1 && marked.contains(id) {  // (one of several picked: they all go)
             provider.registerDataRepresentation(forTypeIdentifier: qtManyType, visibility: .ownProcess) { done in
                 done(Data(marked.joined(separator: ",").utf8), nil)
@@ -868,18 +1264,6 @@ enum TabDrag {
             }
         }
         return provider
-    }
-
-    /// The dropped tab's id, to `then` (on the main thread); false if it isn't one.
-    static func take(_ providers: [NSItemProvider], then: @escaping @MainActor (String) -> Void) -> Bool {
-        guard let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(qtType) }) else { return false }
-        // Several dragged together: their ids, comma-separated, as one (Python moves them all, in order)
-        let type = provider.hasItemConformingToTypeIdentifier(qtManyType) ? qtManyType : qtType
-        provider.loadDataRepresentation(forTypeIdentifier: type) { data, _ in
-            guard let data, let id = String(data: data, encoding: .utf8) else { return }
-            DispatchQueue.main.async { MainActor.assumeIsolated { then(id) } }
-        }
-        return true
     }
 }
 

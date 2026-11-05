@@ -34,17 +34,26 @@ def _quartz():
 
 
 def _scroll_view(view):
-    """The first NSScrollView in `view` (the Spaces' sideways one: each Space's own list is inside it)."""
+    """The Spaces' sideways NSScrollView in `view`: the one whose content is wider than it is (each Space's own list
+    has a scroll view too, inside it; the first found could be one of those, and the swipes went nowhere)."""
     from browser import macos
-    if macos._send(view, "isKindOfClass:", macos._objc.objc_getClass(b"NSScrollView"), restype=ctypes.c_bool,
-                   argtypes=(ctypes.c_void_p,)):
-        return view
-    subviews = macos._send(view, "subviews")
-    for i in range(macos._send(subviews, "count", restype=ctypes.c_ulong)):
-        found = _scroll_view(macos._send(subviews, "objectAtIndex:", i, argtypes=(ctypes.c_ulong,)))
-        if found:
-            return found
-    return None
+
+    class Rect(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_double), ("y", ctypes.c_double), ("w", ctypes.c_double), ("h", ctypes.c_double)]
+    found = []
+
+    def walk(v):
+        if macos._send(v, "isKindOfClass:", macos._objc.objc_getClass(b"NSScrollView"), restype=ctypes.c_bool,
+                       argtypes=(ctypes.c_void_p,)):
+            content = macos._send(macos._send(v, "documentView"), "frame", restype=Rect)
+            frame = macos._send(v, "frame", restype=Rect)
+            found.append((content.w / max(frame.w, 1), v))
+        subviews = macos._send(v, "subviews")
+        for i in range(macos._send(subviews, "count", restype=ctypes.c_ulong)):
+            walk(macos._send(subviews, "objectAtIndex:", i, argtypes=(ctypes.c_ulong,)))
+    walk(view)
+    wide = [v for ratio, v in found if ratio > 1.5]
+    return wide[0] if wide else (found[0][1] if found else None)
 
 
 def _swipe(target, at, dx, gaps, then=900, coast_ms=240, frame=None):

@@ -85,6 +85,14 @@ final class EmbeddedView: NSObject, NSPopoverDelegate {
         if let dark = model.state["dark"] as? Bool {
             host.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         }
+        if model.state["page"] as? String == "sidebar_body" {
+            // A tab dragged over it: offered to it, for its rows to take. SwiftUI's own view does the taking but,
+            // in Qt's window, never asked for them: dragged tabs went past it to Qt's view beneath, and no row
+            // could be dropped on (they lifted, and nothing showed where they'd go)
+            host.registerForDraggedTypes([NSPasteboard.PasteboardType(TabDrag.qtType),
+                                          NSPasteboard.PasteboardType(TabDrag.qtManyType)])
+            host.drops = SidebarDrops.of(model.id)
+        }
     }
 
     func applyLook() {
@@ -99,6 +107,7 @@ final class EmbeddedView: NSObject, NSPopoverDelegate {
             return
         }
         host.removeFromSuperview()
+        SidebarDrops.forget(model.id)
         EmbeddedView.views[model.id] = nil
         send(["page": Int(model.id), "event": "closed"])
     }
@@ -109,4 +118,102 @@ final class EmbeddedView: NSObject, NSPopoverDelegate {
 final class PassThroughHostingView<Content: View>: NSHostingView<Content> {
     override var isOpaque: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    var drops: SidebarDrops?  // (the sidebar's: where a dragged tab can go)
+
+    // A dragged tab, over the sidebar (only it asks for them): handed to the drop spot it's over (SidebarDrops),
+    // SwiftUI's own drops never reaching a row in a view inside Qt's window
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { draggingUpdated(sender) }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        drops?.over(dropPoint(sender), in: bounds) == true ? .move : []
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) { drops?.left() }
+
+    // Ready to take it wherever there's a spot under it: SwiftUI's answer (it knows none of them) could be no, and
+    // the drop was called off, the tab flying back and the room left open
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        drops?.over(dropPoint(sender), in: bounds) == true
+    }
+
+    // However it ends (dropped elsewhere, called off): the room closes, and the rows' places follow the layout again
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) { drops?.left() }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) { drops?.ended() }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        // What this sidebar knows it's carrying, if the drag started here; the drag's own data only for one from
+        // elsewhere (Favorites, Qt's sidebar). The drag pasteboard is every drag's, filled when it's read: read at a
+        // quick drop, it could still hold the drag before's tab, which was moved instead (as often as not, nowhere)
+        guard let drops, let ids = drops.carrying ?? SidebarDrops.ids(on: sender.draggingPasteboard) else {
+            drops?.left()
+            return false
+        }
+        return drops.drop(dropPoint(sender), in: bounds, ids: ids)
+    }
+
+    /// Where the drag is, measured from the view's top-left (as SwiftUI lays the rows out).
+    private func dropPoint(_ sender: NSDraggingInfo) -> CGPoint {
+        let point = convert(sender.draggingLocation, from: nil)
+        return isFlipped ? point : CGPoint(x: point.x, y: bounds.height - point.y)
+    }
+}
+
+/// The tests' (tests/live/test_native_drag.py, through SidebarBody's "drop_test"): a whole drag of tabs `ids` along
+/// `path` (points from the view's top-left), as macOS sends one, through the view's own handlers: in, along, asked if
+/// it's ready, dropped, done, over. What each said comes back.
+@MainActor
+protocol DragTesting {
+    func testDrag(_ path: [CGPoint], ids: String) -> [String: Any]
+}
+
+extension PassThroughHostingView: DragTesting {
+    func testDrag(_ path: [CGPoint], ids: String) -> [String: Any] {
+        guard let first = path.first, let last = path.last else { return ["error": "no path"] }
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("eclipse.test.drag"))
+        pasteboard.clearContents()
+        pasteboard.setData(Data(ids.utf8), forType: NSPasteboard.PasteboardType(TabDrag.qtType))
+        func at(_ point: CGPoint) -> TestDraggingInfo {
+            let local = isFlipped ? point : CGPoint(x: point.x, y: bounds.height - point.y)
+            return TestDraggingInfo(location: convert(local, to: nil), pasteboard: pasteboard, window: window)
+        }
+        var result: [String: Any] = ["entered": draggingEntered(at(first)).rawValue]
+        result["updated"] = path.map { draggingUpdated(at($0)).rawValue }
+        let ready = prepareForDragOperation(at(last))
+        result["ready"] = ready
+        if ready {
+            result["performed"] = performDragOperation(at(last))
+            concludeDragOperation(at(last))
+        }
+        draggingEnded(at(last))
+        return result
+    }
+}
+
+/// What macOS hands a view about a drag, for testDrag.
+final class TestDraggingInfo: NSObject, NSDraggingInfo {
+    let draggingLocation: NSPoint
+    let draggingPasteboard: NSPasteboard
+    let draggingDestinationWindow: NSWindow?
+    var draggingFormation: NSDraggingFormation = .default
+    var animatesToDestination = false
+    var numberOfValidItemsForDrop = 1
+
+    init(location: NSPoint, pasteboard: NSPasteboard, window: NSWindow?) {
+        draggingLocation = location
+        draggingPasteboard = pasteboard
+        draggingDestinationWindow = window
+    }
+
+    var draggingSourceOperationMask: NSDragOperation { [.move, .copy, .generic] }
+    var draggedImageLocation: NSPoint { draggingLocation }
+    var draggedImage: NSImage? { nil }
+    var draggingSource: Any? { nil }
+    var draggingSequenceNumber: Int { 1 }
+    var springLoadingHighlight: NSSpringLoadingHighlight { .none }
+    func slideDraggedImage(to screenPoint: NSPoint) {}
+    func resetSpringLoading() {}
+    func enumerateDraggingItems(options enumOpts: NSDraggingItemEnumerationOptions = [], for view: NSView?,
+                                classes classArray: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [:],
+                                using block: (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
 }

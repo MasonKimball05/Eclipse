@@ -34,6 +34,18 @@ def wanted(store) -> bool:
     return bool(store.settings.get(SETTING, True)) and available()  # (on unless turned off in Settings)
 
 
+LIVE_SOURCES = {"github": "GitHub", "repos": "your repositories", "calendar": "a calendar", "json": "a feed",
+                "page": "a page"}
+
+
+def _live_tip(folder) -> str:
+    """What a Live Folder's mark says: that it fills itself, and from where."""
+    if not folder.live:
+        return ""
+    source = LIVE_SOURCES.get(folder.live.get("kind", ""), "a feed")
+    return f"Live Folder: keeps itself up to date from {source}"
+
+
 def _rgba(color) -> list[float]:
     c = QColor(color)
     return [round(c.redF(), 4), round(c.greenF(), 4), round(c.blueF(), 4), round(c.alphaF(), 4)]
@@ -162,6 +174,7 @@ class NativeSidebarBody(QObject):
                     "expanded": node.expanded, "fixed": b.store.live_folder_of(node) is not None,
                     # (a Live Folder's contents are its feed's: nothing's dropped in)
                     "locked": bool(node.live or b.store.live_folder_of(node)), "size": len(node.children),
+                    "live": bool(node.live), "live_tip": _live_tip(node),
                     "tip": "" if node.expanded else f"{tabs} tab{'s' if tabs != 1 else ''}",
                     "children": [self._node(c, kind, theme) for c in node.children] if node.expanded else []}
         from .sidebar import is_away, tab_icon
@@ -340,6 +353,7 @@ class NativeSidebarBody(QObject):
         if event is None or not macos._send(event, "pressedMouseButtons", restype=ctypes.c_ulong):
             self._dragging.stop()
             self.browser.content.split_drop.activate(False)
+            self.page.update({"dragging": ""})  # (the row it came from, faded while it was carried, back)
 
     def _wake(self):
         if self._resting is not None and self.browser.store.locate(self._resting):

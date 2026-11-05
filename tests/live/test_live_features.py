@@ -3072,6 +3072,16 @@ def test_the_native_sidebar_shows_and_drives_the_spaces_tabs(window, site, monke
     window.sidebar.use_native(True)
     body = window.sidebar.native
     assert body is not None and body.container.isVisible() and not window.sidebar.scroll.isVisible()
+    # Dragged tabs are offered to it (SwiftUI's view never asked for them in Qt's window: they went past it to Qt's,
+    # and no row could be dropped on)
+    import ctypes
+    from browser import macos
+    types = macos._send(ctypes.c_void_p(body.page.view()), "registeredDraggedTypes")
+    registered = {ctypes.string_at(macos._send(macos._send(types, "objectAtIndex:", i, argtypes=(ctypes.c_ulong,)),
+                                               "UTF8String")).decode()
+                  for i in range(macos._send(types, "count", restype=ctypes.c_ulong))}
+    assert {"com.trolltech.anymime.application--x-eclipse-tab",
+            "com.trolltech.anymime.application--x-eclipse-tabs"} <= registered, registered
     # A Space slide's pictures (a swipe on the page, say) leave Qt's hidden list hidden: shown again, it took half
     # the sidebar under the native one
     from browser import space_slide

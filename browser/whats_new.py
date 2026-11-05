@@ -11,18 +11,22 @@ from .shortcuts import for_here
 from .motion import FadesIn
 from .theme import quiet_scrollbars, stylesheet
 
-EDITION = 28
+EDITION = 29
 SETTING = "whats_new_seen"
 
 NOTES = """
 ## This week
 
-- **Opens again**: Eclipse 26.1.3.0 and 26.1.3.1 quit as soon as they were opened, so they couldn't update
-  themselves either. If yours won't open, download this version from the releases page and drag it over the old
-  one: your Spaces, tabs and passwords are all kept.
+- **Drag tabs in the sidebar**: rearranging tabs by dragging them works again, and feels like Arc's. The tabs part
+  to make room where yours will go, a closed folder opens when you hold a tab over it, and you can drag a tab out
+  of Pinned into Today, or past the end of an open folder. Live Folders show a small mark, and keep out tabs that
+  aren't from their feed.
 
 ## Lately
 
+- **Opens again**: Eclipse 26.1.3.0 and 26.1.3.1 quit as soon as they were opened, so they couldn't update
+  themselves either. If yours won't open, download this version from the releases page and drag it over the old
+  one: your Spaces, tabs and passwords are all kept.
 - **Smoother Space swipes**: swiping between Spaces no longer stutters partway through, and a quick swipe goes one
   Space over, not two. The window takes the new Space's colors once you've stopped swiping, so swiping across
   several in a row stays smooth too, and the Spaces either side have their pages ready, so even the first switch
