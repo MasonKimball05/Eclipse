@@ -11,6 +11,8 @@
 #   Send to    the current page to Job Tracker (a new job from a posting), to Daybook (as a task), to
 #              Sentinel's checkup (a security grade for the site), or a GitHub repo to Loom
 #   Presets    Live Folders and search shortcuts for Parliament, Job Tracker, gradtrack and homebase's Away queue
+#   Hop        the maker's launcher, through hop:// links: Ask Claude in Hop about the page (Hop attaches its
+#              text from pages.db), its due dates to Daybook, and a focus session for the Space you're in
 #
 # Addresses are in Settings → My Apps (the desktop's by its Tailscale name). Nothing here is needed for anything else to work: an app that
 # isn't reachable (Tailscale off, say) just shows as offline, and one with no address isn't there at all.
@@ -31,7 +33,7 @@ DESKTOP = "arkans-pc1.tailc02d63.ts.net"
 # What anyone's copy starts with: the general parts, and none of the maker's own apps
 GENERAL = {
     "homebase": "", "parliament": "", "jobtracker": "", "gradtrack": "", "checkup": "", "sentinel": "",
-    "portfolio": "", "daybook": "",
+    "portfolio": "", "daybook": "", "hop": "",
     "github_user": "",
     "repos_root": "",
     "editor": "",  # the app Open Repo opens a clone in ("" for none: Show in Finder is always there)
@@ -50,6 +52,7 @@ DEFAULTS = {
     "sentinel": f"http://{DESKTOP}:8484",
     "portfolio": "https://masonkimball.dev",
     "daybook": "yes",  # (an app on the Mac: Add Page to Daybook)
+    "hop": "yes",  # (an app on the Mac: Ask Claude in Hop, due dates, focus sessions)
     "github_user": "MasonKimball05",
     "repos_root": "~/projects/GitHub",
     "editor": "Loom",
@@ -549,6 +552,15 @@ def away_task_text(owner, repo, number, title, body, url) -> str:
 
 def job_tracker_url(cfg, page_url) -> str:
     return base(cfg["jobtracker"]) + "/new?url=" + QUrl.toPercentEncoding(page_url).data().decode()
+
+
+def hop_url(action: str, **values) -> QUrl:
+    """A hop:// link (hop/Sources/HopCore/HopLink.swift): "ask" (page=, title=) attaches the page to Hop's
+    Ask Claude, "deadlines" (page=, title=) reads its due dates into Daybook, "focus" (minutes=, label=)
+    starts a focus session. Hop sends nothing to Claude until you press Return there."""
+    query = "&".join(f"{key}={QUrl.toPercentEncoding(str(value)).data().decode()}" for key, value in values.items()
+                     if value not in (None, ""))
+    return QUrl(f"hop://{action}" + (f"?{query}" if query else ""))
 
 
 def daybook_url(title, page_url) -> QUrl:

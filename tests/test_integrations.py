@@ -3,8 +3,9 @@ import os
 import subprocess
 
 import pytest
+from PyQt6.QtCore import QUrl
 
-from browser.integrations import (DEFAULTS, config, daybook_url, job_tracker_url, live_folder_presets, local_clone,
+from browser.integrations import (DEFAULTS, config, daybook_url, hop_url, job_tracker_url, live_folder_presets, local_clone,
                                   search_shortcut_presets, summarize, without_thinking)
 from browser.live_folders import parse_json_items, repo_state, scan_repos, upcoming_events, web_url
 
@@ -81,6 +82,14 @@ def test_send_to_links():
     assert job_tracker_url(config({}), "https://jobs.example/p?id=1&x=2") == \
         DEFAULTS["jobtracker"] + "/new?url=https%3A%2F%2Fjobs.example%2Fp%3Fid%3D1%26x%3D2"
     assert daybook_url("Read this", "https://a.example/").toString().startswith("daybook://add-task?text=Read")
+    # Hop: the page and its title survive the trip (Hop reads them with URLComponents), and empty values are left out
+    ask = hop_url("ask", page="https://a.example/x?b=1&c=d+e", title="R&D: 100% done", q=None)
+    assert ask.scheme() == "hop" and ask.host() == "ask"
+    from urllib.parse import parse_qs
+    values = {k: v[0] for k, v in parse_qs(ask.query(QUrl.ComponentFormattingOption.FullyEncoded)).items()}
+    assert values == {"page": "https://a.example/x?b=1&c=d+e", "title": "R&D: 100% done"}
+    assert hop_url("focus", minutes=25, label="School").toString() == "hop://focus?minutes=25&label=School"
+    assert hop_url("brief").toString() == "hop://brief"
 
 
 def test_repo_radar(tmp_path):
