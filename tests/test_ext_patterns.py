@@ -63,3 +63,13 @@ def test_parse_userscript():
 def test_script_without_match_runs_everywhere_and_grant_none_is_page_world():
     s = from_source("// ==UserScript==\n// @name A\n// ==/UserScript==\nalert(1)")
     assert not s.uses_gm and matches("https://anything.org/", s.include_regexes)
+
+
+def test_extensions_never_reach_the_files_on_your_mac():
+    """Chrome keeps file:// behind a switch of its own, off by default ("Allow access to file URLs"); here <all_urls>
+    took them in, so an extension could open ~/.ssh/id_rsa in a tab and read it with its content script."""
+    import re
+    from browser.ext.patterns import match_pattern
+    everything = match_pattern("<all_urls>")
+    assert re.match(everything, "https://example.com/") and not re.match(everything, "file:///Users/me/.ssh/id_rsa")
+    assert match_pattern("file:///*") is None

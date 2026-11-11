@@ -137,7 +137,7 @@ class UpdateWindow(FadesIn, QWidget):
         self.skip.setEnabled(False)
         self.state.setText("Getting it ready…")
         self.state.show()
-        self.updater.update_and_restart()
+        self.updater.update_and_restart(self.found)
 
     def _status(self):
         if sip.isdeleted(self):
@@ -179,7 +179,7 @@ class NativeUpdateWindow(QObject):
             self.close()
         elif name == "update":
             self.page.update({"busy": True, "status": "Getting it ready…"})
-            self.updater.update_and_restart()
+            self.updater.update_and_restart(self.found)
 
     def _status(self):
         if not sip.isdeleted(self) and (view := status_view(self.updater.status)):

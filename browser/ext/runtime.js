@@ -536,6 +536,8 @@
   // --- GM_* (userscripts) ---------------------------------------------------------------------
   window.__pbGM = (scriptId, info, values) => {
     const call = (method, ...args) => pb.call(method, scriptId, ...args);
+    // (kept current: another tab of this script saving a value says so, host.py _tell_values)
+    pb.on('gm.value:' + scriptId, ({ key, value, deleted }) => { if (deleted) delete values[key]; else values[key] = value; });
     const GM_getValue = (key, fallback) => (key in values ? values[key] : fallback);
     const GM_setValue = (key, value) => { values[key] = value; call('gm.setValue', key, value); };
     const GM_deleteValue = (key) => { delete values[key]; call('gm.deleteValue', key); };

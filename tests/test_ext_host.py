@@ -327,3 +327,60 @@ def test_tabs_on_removed_fires_once_per_tab(store):
     host.tab_removed(tab)
     host.tab_removed(tab)  # (closed, then its folder deleted, say)
     assert removed == [number] and host._number(tab) != number
+
+
+def test_an_extension_only_knows_where_the_tabs_it_may_see_are(store):
+    """As in Chrome, a tab's address and title are only an extension's with the tabs permission or host access to
+    its page: every extension had every tab's, across all Spaces, and each page as you went."""
+    from browser.models import Tab
+    host = _host(store, [("plain", {}), ("site", {"host_permissions": ["https://allowed.example/*"]}),
+                         ("tabs", {"permissions": ["tabs"]})])
+    for url in ("https://allowed.example/a", "https://bank.example/statement"):
+        store.add_tab(Tab(url, "Title of " + url))
+    caller = PageBridge(host, FakePage("pbext://plain/bg.html"))
+
+    def seen(ext_id, query=None):
+        return sorted(t.get("url", "-") for t in host._m_tabs_query(caller, ext_id, query or {})
+                      if t["id"] in {host._number(x) for x in store.all_tabs() if x.url.endswith(("/a", "/statement"))})
+    assert seen("plain") == ["-", "-"]  # (the tabs are there; where they are isn't its to know)
+    assert seen("site") == ["-", "https://allowed.example/a"]
+    assert seen("tabs") == ["https://allowed.example/a", "https://bank.example/statement"]
+    assert seen("plain", {"url": "https://bank.example/*"}) == []  # (nor found by searching for it)
+    assert all("title" not in t or "allowed" in t["title"] for t in host._m_tabs_query(caller, "site", {})
+               if t.get("title", "").startswith("Title of"))
+
+
+def test_an_extension_only_fetches_across_sites_it_has_access_to(store):
+    """Chrome lets an extension skip CORS for its hosts only: here any extension page could read any site through
+    Python (your router's admin page, a server on this Mac)."""
+    import pytest
+    host = _host(store, [("site", {"host_permissions": ["https://api.allowed.example/*"]}), ("plain", {})])
+    fetched = []
+    host._m_gm_xhr = lambda bridge, ext_id, details: fetched.append(details["url"]) or 1
+    for ext_id in ("site", "plain"):
+        caller = PageBridge(host, FakePage(f"pbext://{ext_id}/bg.html"))
+        for url in ("https://api.allowed.example/v1", "http://192.168.1.1/admin"):
+            try:
+                host._m_net_fetch(caller, ext_id, {"url": url})
+            except PermissionError:
+                pass
+    assert fetched == ["https://api.allowed.example/v1"]
+
+
+def test_a_removed_or_turned_off_extensions_open_pages_can_do_nothing(store):
+    """Its options tab, or a page its content scripts were in, kept every API after it was removed, and a removed
+    one's storage came back from its next save."""
+    import pytest
+    host = _host(store, [("demo", {})])
+    caller = PageBridge(host, FakePage("pbext://demo/options.html"))
+    host.dispatch(caller, "storage.set", ["demo", "local", {"a": 1}])
+    host.extensions["demo"].enabled = False
+    with pytest.raises(PermissionError):
+        host.dispatch(caller, "storage.set", ["demo", "local", {"b": 2}])
+    host.extensions["demo"].enabled = True
+    import tempfile
+    from pathlib import Path
+    host.extensions["demo"].path = Path(tempfile.mkdtemp())
+    host.remove_extension("demo")
+    with pytest.raises(PermissionError):
+        host.dispatch(caller, "storage.get", ["demo", "local", None])

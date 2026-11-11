@@ -44,10 +44,19 @@ SOURCE = r"""
     const box = el.getBoundingClientRect();
     if (box.width < 4 || box.height < 4) return false;
     if (box.right + scrollX <= 0 || box.bottom + scrollY <= 0) return false;
+    // (nor off to the right: a form doesn't scroll sideways, so a field out past the page's edge is put there)
+    if (box.left >= document.documentElement.clientWidth) return false;
     for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
       const style = getComputedStyle(node);
       if (style.visibility === 'hidden' || style.display === 'none' || parseFloat(style.opacity) < 0.1) return false;
       if (style.clipPath && style.clipPath !== 'none' && node === el) return false;
+      // (nor cut off by what it's in: a box that clips what overflows it, no taller than nothing, say)
+      if (node !== el && /(hidden|clip|scroll|auto)/.test(style.overflow + style.overflowX + style.overflowY)) {
+        const around = node.getBoundingClientRect();
+        const across = Math.min(box.right, around.right) - Math.max(box.left, around.left);
+        const down = Math.min(box.bottom, around.bottom) - Math.max(box.top, around.top);
+        if (across < 4 || down < 4) return false;
+      }
     }
     return true;
   };

@@ -1,12 +1,17 @@
 import re
 import traceback
 
-from PyQt6.QtCore import QStandardPaths, Qt, pyqtSignal
+from PyQt6.QtCore import QEvent, QObject, QStandardPaths, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QContextMenuEvent, QMouseEvent
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineScript, QWebEngineSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
+from PyQt6.QtWidgets import QApplication
 
 from . import storage
 from .external_links import OWN_SCHEME, is_external
+from .theme import held_open
+
+
 
 
 DEFAULT_PROFILE = "default"
@@ -16,6 +21,7 @@ def build_profile(parent, name=DEFAULT_PROFILE) -> QWebEngineProfile:
     # A named profile keeps cookies, logins and cache on disk between launches.
     # Spaces can each use their own profile, so they're signed in to different accounts.
     folder = storage.profile_dir(name)
+    storage.clear_site_data_if_asked(folder)  # (Clear Cookies & Site Data: what Chromium had open last time)
     profile = QWebEngineProfile(name, parent)
     profile.setPersistentStoragePath(str(folder))
     profile.setCachePath(str(folder / "cache"))
@@ -64,6 +70,40 @@ def harden(profile):
         painted.setWorldId(QWebEngineScript.ScriptWorldId.ApplicationWorld)
         painted.setRunsOnSubFrames(False)
         profile.scripts().insert(painted)
+    if not profile.scripts().find("eclipse-link-menu"):
+        link_menu = QWebEngineScript()  # (a right-clicked link isn't selected: LINK_MENU_SCRIPT)
+        link_menu.setName("eclipse-link-menu")
+        link_menu.setSourceCode(LINK_MENU_SCRIPT)
+        link_menu.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+        link_menu.setWorldId(QWebEngineScript.ScriptWorldId.ApplicationWorld)
+        link_menu.setRunsOnSubFrames(True)
+        profile.scripts().insert(link_menu)
+
+
+# A Mac's editing ways select what's right-clicked, before the menu: on a link (a search result, say) that's all its
+# text, left highlighted. On a link, the selection goes back to what it was before the click (none, mostly), and the
+# menu offers the link's own things; on plain text the word's still picked, as everywhere on a Mac
+LINK_MENU_SCRIPT = """
+(() => {
+  let before = [];
+  addEventListener("mousedown", e => {
+    if (e.button !== 2 && !(e.button === 0 && e.ctrlKey)) return;
+    const s = getSelection();
+    before = Array.from({length: s.rangeCount}, (_, i) => s.getRangeAt(i).cloneRange());
+  }, true);
+  addEventListener("contextmenu", e => {
+    const link = e.target instanceof Element ? e.target.closest("a[href]") : null;
+    if (!link) return;
+    const kept = before;
+    setTimeout(() => {  // (the click selects as the event's done)
+      const s = getSelection();
+      if (s.isCollapsed || !link.contains(s.anchorNode)) return;  // (nothing selected there by the click)
+      s.removeAllRanges();
+      kept.forEach(r => s.addRange(r));
+    });
+  }, true);
+})();
+"""
 
 
 # Content scripts and userscripts call the extension runtime with console messages starting with
@@ -162,4 +202,43 @@ class WebView(QWebEngineView):
         if self.context_menu_hook is not None:
             self.context_menu_hook(self, menu, self.lastContextMenuRequest())
         menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        menu.popup(event.globalPos())
+        at = event.globalPos()
+        if event.reason() == QContextMenuEvent.Reason.Mouse and QApplication.mouseButtons() & Qt.MouseButton.RightButton:
+            # A Mac asks for the menu as the button goes down. Shown then, the menu takes the mouse and the page never
+            # sees the button come up: its drawing (Qt Quick) took the press as held and closed the menu at its
+            # press-and-hold time (800 ms). Telling the page the button came up closed it straight away. So it opens
+            # as the button comes up, the page having seen it
+            self._menu_on_release = _OnRelease(menu, at)  # (kept: Python would let it go, and its watch with it)
+        else:
+            menu.popup(at)
+
+
+class _OnRelease(QObject):
+    """Shows `menu` at `at` once the right button comes up (or after WAIT_S, if that's missed)."""
+
+    WAIT_S = 2.0
+
+    def __init__(self, menu, at):
+        super().__init__(menu)
+        self.menu, self.at, self.done, self.released = menu, at, False, False
+        QApplication.instance().installEventFilter(self)
+        self.timer = QTimer(self, singleShot=True, interval=int(self.WAIT_S * 1000))
+        self.timer.timeout.connect(lambda: self.show(late=not self.released))
+        self.timer.start()
+
+    def eventFilter(self, obj, event):
+        if (event.type() == QEvent.Type.MouseButtonRelease and isinstance(event, QMouseEvent)
+                and event.button() == Qt.MouseButton.RightButton):
+            self.released = True
+            self.timer.start(0)  # (once the page has had the release too)
+        return False
+
+    def show(self, late=False):
+        if self.done:
+            return
+        self.done = True
+        self.timer.stop()
+        QApplication.instance().removeEventFilter(self)
+        if late:
+            held_open(self.menu)  # (the button may still be down: letting it go picks nothing)
+        self.menu.popup(self.at)

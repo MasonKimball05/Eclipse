@@ -461,8 +461,8 @@ class PageWatchFeature(Feature):
 
     def selection_menu(self, menu, view, text):
         from PyQt6.QtGui import QAction
-        if not self._watchable(view.url().toString()):
-            return []
+        if not self._watchable(view.url().toString()) or view.page().profile().isOffTheRecord():
+            return []  # (nor a private window's page: watched, it was kept for good, and looked at with your logins)
         tab = next((t for t in self.window.store.all_tabs() if t.view is view), None)
         action = QAction("Watch This", menu)
         action.triggered.connect(lambda: self.watch_selection(view, tab))

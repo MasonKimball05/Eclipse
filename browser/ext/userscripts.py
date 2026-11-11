@@ -20,6 +20,7 @@ RUN_AT = {
     "document-idle": QWebEngineScript.InjectionPoint.Deferred,
 }
 # Grants we provide. Anything else is listed as unsupported in the install dialog.
+PAGE_GRANTS = {"none", "", "unsafeWindow", "GM_info", "GM.info", "window.close", "window.focus", "window.onurlchange"}
 SUPPORTED_GRANTS = {
     "none", "GM_info", "GM.info", "GM_getValue", "GM.getValue", "GM_setValue", "GM.setValue",
     "GM_deleteValue", "GM.deleteValue", "GM_listValues", "GM.listValues", "GM_addStyle", "GM.addStyle",
@@ -60,7 +61,10 @@ class Userscript:
 
     @property
     def uses_gm(self) -> bool:
-        return any(g not in ("none", "") for g in self.grants)
+        """Whether it needs the GM_* functions that do what a page can't (read other sites, keep values): those run
+        it in its own isolated world, out of the page's reach. Asking only for what a page has anyway
+        (unsafeWindow, GM_info…), it runs in the page itself, where unsafeWindow is the page's own window."""
+        return any(g not in PAGE_GRANTS for g in self.grants)
 
     @property
     def unsupported_grants(self) -> list[str]:
@@ -71,7 +75,7 @@ class Userscript:
         out = []
         for pattern in self.matches:
             out.append(match_pattern(pattern) or glob_pattern(pattern))
-        return out or [r"^(https?|file)://.*$"]  # no @match/@include: every page
+        return out or [r"^https?://.*$"]  # no @match/@include: every page (but your files: see build_script)
 
     @property
     def exclude_regexes(self) -> list[str]:
@@ -118,10 +122,16 @@ def build_script(script: Userscript, required_code: str, values: dict, world: in
         setup = (f"const {{GM, GM_info, GM_getValue, GM_setValue, GM_deleteValue, GM_listValues, GM_addStyle, "
                  f"GM_xmlhttpRequest, GM_openInTab, GM_setClipboard, GM_notification, unsafeWindow}} = "
                  f"window.__pbGM({json.dumps(script.id)}, {json.dumps(info)}, {json.dumps(values)});")
+        if "unsafeWindow" in script.grants:
+            # (here it can't be the page's: in the page, the GM_* functions that read other sites would be the
+            # page's to call too)
+            setup += (f" console.warn({json.dumps('[' + script.name + '] unsafeWindow is this script’s own window, ')}"
+                      " + 'not the page’s: a script with @grant GM_* functions runs apart from the page in Eclipse');")
     else:
-        setup = f"const GM_info = {json.dumps(info)}; const GM = {{info: GM_info}};"
+        setup = f"const GM_info = {json.dumps(info)}; const GM = {{info: GM_info}}; const unsafeWindow = window;"
     source = f"""(() => {{
   const href = location.href;
+  if (location.protocol === 'file:') return;  // (your own files: Chrome's off-by-default "Allow access to file URLs", which there's no switch for here)
   const includes = {json.dumps(script.include_regexes)}, excludes = {json.dumps(script.exclude_regexes)};
   const test = (r) => {{ try {{ return new RegExp(r).test(href); }} catch (e) {{ return false; }} }};
   if (!includes.some(test) || excludes.some(test)) return;

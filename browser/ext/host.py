@@ -297,6 +297,7 @@ class ExtensionHost(QObject):
                 self.scripts[record["id"]] = userscripts.Userscript(**record, source=source_file.read_text())
 
         self.extensions: dict[str, ChromeExtension] = {}
+        self._removed: set[str] = set()  # (removed while Eclipse runs: their pages still open can do nothing)
         for record in self.store.settings.get("extensions", []):
             folder = chrome.extensions_dir() / record["id"]
             try:
@@ -650,6 +651,10 @@ class ExtensionHost(QObject):
         kind = bridge.kind
         if kind is None or bridge.owner is None or owner != bridge.owner:
             raise PermissionError("this page can't act for that extension")
+        if kind == EXT and (owner in self._removed or not getattr(self.extensions.get(owner), "enabled", True)):
+            # Removed or turned off, its pages still open (an options tab, a page its scripts were in): they kept
+            # every API, and a removed one's storage came back from its next save
+            raise PermissionError("that extension is turned off or removed")
         if method != "hello":
             if kind == USERSCRIPT and not method.startswith("gm."):
                 raise PermissionError("userscripts can only use GM_* functions")
@@ -953,7 +958,28 @@ class ExtensionHost(QObject):
         return next((t for t in self.store.all_tabs()
                      if t.view is not None and getattr(t.view, "page", None) and t.view.page() is page), None)
 
-    def tab_info(self, tab) -> dict:
+    PRIVATE_TAB_FIELDS = ("url", "title", "favIconUrl", "pendingUrl")
+
+    def _sees_tab(self, ext_id, tab) -> bool:
+        """Whether this extension may know where a tab is and what it's called: as in Chrome, with the tabs
+        permission, host access to its page, or activeTab on the tab you're on. Without, every extension had every
+        tab's address and title, and each page you went to, as you went."""
+        ext = self.extensions.get(ext_id)
+        if ext is None:
+            return False
+        if ext.has_permission("tabs") or (ext.has_permission("activeTab") and tab is self.browser.current_tab):
+            return True
+        return (tab.url or "").startswith(("http://", "https://")) and ext.has_host_access(tab.url)
+
+    def tab_info(self, tab, ext_id=None) -> dict:
+        """A tab as chrome.tabs has it; for `ext_id`, without where it is unless it may know (_sees_tab)."""
+        info = self._tab_info(tab)
+        if ext_id is not None and not self._sees_tab(ext_id, tab):
+            for key in self.PRIVATE_TAB_FIELDS:
+                info.pop(key, None)
+        return info
+
+    def _tab_info(self, tab) -> dict:
         page = tab.view.page() if tab.view is not None and hasattr(tab.view, "page") else None
         discarded = page is not None and page.lifecycleState() == QWebEnginePage.LifecycleState.Discarded
         return {"id": self._number(tab), "index": 0, "windowId": 1, "active": tab is self.browser.current_tab,
@@ -966,35 +992,39 @@ class ExtensionHost(QObject):
         tabs = [t for t in self.store.all_tabs() if not t.url.startswith("note:")]
         if info.get("active") or info.get("highlighted"):
             tabs = [t for t in tabs if t is self.browser.current_tab]
+        if "url" in info or info.get("title"):
+            tabs = [t for t in tabs if self._sees_tab(ext_id, t)]  # (a search by where they are: only those it may know)
         if "url" in info:
             includes = [match_pattern(p) for p in ([info["url"]] if isinstance(info["url"], str) else info["url"])]
             tabs = [t for t in tabs if matches(t.url, [r for r in includes if r])]
         if info.get("title"):
             needle = info["title"].replace("*", "").lower()
             tabs = [t for t in tabs if needle in (t.title or "").lower()]
-        return [dict(self.tab_info(t), index=i) for i, t in enumerate(tabs)]
+        return [dict(self.tab_info(t, ext_id), index=i) for i, t in enumerate(tabs)]
 
     def _m_tabs_get(self, bridge, ext_id, number):
         tab = self._tab_by_number(number)
         if tab is None:
             raise LookupError(f"No tab with id: {number}")
-        return self.tab_info(tab)
+        return self.tab_info(tab, ext_id)
 
     def _m_tabs_current(self, bridge, ext_id):
         tab = self._tab_of(bridge.page)
-        return self.tab_info(tab) if tab else None
+        return self.tab_info(tab, ext_id) if tab else None
 
     def _not_another_extension(self, url: QUrl, ext_id):
         if url.scheme() == "pbext" and url.host() != ext_id:
             raise PermissionError("can't open another extension's pages")
         if url.scheme() == "javascript":  # would run in that page without its host permission
             raise PermissionError("can't open javascript: URLs")
+        if url.scheme() == "file":  # (then read it with its content script: a file of yours, ~/.ssh say)
+            raise PermissionError("can't open files on this Mac")
 
     def _m_tabs_create(self, bridge, ext_id, props):
         url = bridge.page.url().resolved(QUrl(props.get("url") or "")) if props.get("url") else QUrl()
         self._not_another_extension(url, ext_id)
         tab = self.browser.open_url(url.toString() or "about:blank", background=props.get("active") is False)
-        return self.tab_info(tab)
+        return self.tab_info(tab, ext_id)
 
     def _m_tabs_update(self, bridge, ext_id, number, props):
         tab = self._tab_by_number(number)
@@ -1009,7 +1039,7 @@ class ExtensionHost(QObject):
             tab.view.reload()
         if props.get("active") or props.get("highlighted"):
             self.browser.activate_tab(tab)
-        return self.tab_info(tab)
+        return self.tab_info(tab, ext_id)
 
     def _m_tabs_remove(self, bridge, ext_id, numbers):
         for number in numbers:
@@ -1019,8 +1049,13 @@ class ExtensionHost(QObject):
 
     # Called by the window as tabs change
     def tab_updated(self, tab, **changes):
-        if self._has_extension_pages():
-            self.broadcast("tabs.updated", [self._number(tab), changes, self.tab_info(tab)])
+        # Each extension told only what it may know of the tab (_sees_tab)
+        for ext_id in {b.extension_id for b in self.bridges if b.extension_id}:
+            told = changes if self._sees_tab(ext_id, tab) else \
+                {k: v for k, v in changes.items() if k not in self.PRIVATE_TAB_FIELDS}
+            if told:
+                self.broadcast("tabs.updated", [self._number(tab), told, self.tab_info(tab, ext_id)],
+                               only_extension=ext_id)
 
     def tab_activated(self, tab):
         if self._has_extension_pages():
@@ -1291,10 +1326,20 @@ class ExtensionHost(QObject):
     def _m_gm_setValue(self, bridge, script_id, key, value):
         self._values(script_id)[key] = value
         self._save_values(script_id)
+        self._tell_values(bridge, script_id, {"key": key, "value": value})
 
     def _m_gm_deleteValue(self, bridge, script_id, key):
         if self._values(script_id).pop(key, None) is not None:
             self._save_values(script_id)
+            self._tell_values(bridge, script_id, {"key": key, "deleted": True})
+
+    def _tell_values(self, changed_by, script_id, change):
+        """The script's other open pages told of a value it saved: each kept the values its page started with, so
+        two tabs of one script saved over each other's (one appending to a list the other had already added to).
+        Not the page that saved it: told after a quicker second save, it'd go back to the first."""
+        for bridge in list(self.bridges):
+            if bridge is not changed_by:
+                bridge.send("gm.value:" + script_id, change)
 
     def _m_gm_openInTab(self, bridge, script_id, url, background):
         self.browser.open_url(url, background=bool(background))
@@ -1328,9 +1373,14 @@ class ExtensionHost(QObject):
         return request_id
 
     def _m_net_fetch(self, bridge, ext_id, details):
-        # Extension pages may fetch any site (Chrome lets extensions skip CORS for their hosts)
+        # Extension pages may skip CORS for the sites they have host access to, as in Chrome. (Any site before: one
+        # with no permissions at all could read your router's pages, or a server on this Mac, across origins)
         if bridge.extension_id is None:
             raise PermissionError("only extension pages can fetch across sites")
+        ext = self.extensions.get(ext_id)
+        url = str(details.get("url", ""))
+        if ext is None or not ext.has_host_access(url):
+            raise PermissionError(f"no host permission for {QUrl(url).host() or url}")
         return self._m_gm_xhr(bridge, ext_id, details)
 
     def _xhr_done(self, bridge, request_id, reply):
@@ -1371,6 +1421,7 @@ class ExtensionHost(QObject):
 
     def add_extension(self, ext_id, enabled=True):
         """Load an extension that's just been copied into the extensions folder (new, or an update)."""
+        self._removed.discard(ext_id)  # (installed again)
         self.stop_background(ext_id)
         previous = self.extensions.get(ext_id)
         ext = ChromeExtension.load(ext_id, chrome.extensions_dir() / ext_id, enabled)
@@ -1392,6 +1443,7 @@ class ExtensionHost(QObject):
             self.stop_background(ext_id)
 
     def remove_extension(self, ext_id):
+        self._removed.add(ext_id)
         self.stop_background(ext_id)
         ext = self.extensions.pop(ext_id, None)
         self._save_records()

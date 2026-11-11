@@ -232,3 +232,18 @@ def test_a_breached_password_is_flagged_first():
     assert pw.health(entries, found) == {"a": ["breached"], "b": ["breached", "weak"]}
     entries[0]["password"] = "Changed-Since-1"  # (changed after the check: not flagged any more)
     assert pw.health(entries, found) == {"b": ["breached", "weak"]}
+
+
+def test_a_key_that_isnt_the_files_is_treated_as_none(no_real_keychain):
+    """Another Mac's folder copied over this one's, which already had a key: the error from opening it with the wrong
+    key wasn't caught, so filling stopped without a word, Settings → Passwords couldn't open, and no Recover button
+    showed, since a key was there. Now it's locked, and the recovery PIN brings the right key back."""
+    import os
+    pw.add("https://example.com", "me", "s3cret")
+    assert recovery.set_pin("correct horse battery")
+    no_real_keychain[pw.KEY_ACCOUNT] = os.urandom(32)  # (this Mac's own key, not the file's)
+    assert pw.needs_recovery() and pw.for_page("https://example.com") == []
+    with pytest.raises(pw.Locked):
+        pw.logins()
+    assert recovery.unlock("correct horse battery") == 1
+    assert pw.logins()[0]["password"] == "s3cret" and not pw.needs_recovery()

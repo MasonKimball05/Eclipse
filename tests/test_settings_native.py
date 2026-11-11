@@ -64,3 +64,21 @@ def test_native_settings_turn_typed_keys_into_qt_shortcuts():
     assert mac_keys({"key": "left", "alt": True, "ctrl": True}) == "Meta+Alt+Left"
     assert mac_keys({"key": "F5"}) == "F5"
     assert mac_keys({"key": "t"}) is None and mac_keys({"key": "t", "shift": True}) is None  # (plain typing)
+
+
+def test_a_field_typed_in_is_saved_when_the_window_closes(qapp):
+    """Typed into (a GitHub name, a server address) and the window closed before Return or a click elsewhere: those
+    fields only save once you're done with them, so nothing was kept."""
+    from types import SimpleNamespace
+    from PyQt6.QtWidgets import QLineEdit
+    from browser.settings_native import NativeSettings
+    edit = QLineEdit()
+    saved = []
+    edit.editingFinished.connect(lambda: saved.append(edit.text()))
+    settings = NativeSettings.__new__(NativeSettings)
+    settings._widgets, settings._poll = {7: edit}, SimpleNamespace(stop=lambda: None)
+    settings.qt, settings.page = SimpleNamespace(nav=None, setGeometry=lambda r: None), SimpleNamespace(frame=lambda: None)
+    NativeSettings._act(settings, "text", {"id": 7, "value": "octocat", "finished": False})
+    assert saved == []  # (still typing)
+    NativeSettings._closed(settings)
+    assert saved == ["octocat"]

@@ -212,6 +212,15 @@ class Claude(QObject):
         QTimer.singleShot(0, self.warm_up)  # have the next one ready
         return request
 
+    def drop_warm(self):
+        """Let the waiting process go (it was started for a model no longer chosen): answers being written by the
+        others carry on. Shut down instead, they all stopped, "Claude stopped unexpectedly", and the window froze
+        a second for each."""
+        worker, self._warm = self._warm, None
+        if worker is not None:
+            self._workers.discard(worker)
+            worker.kill()
+
     def shutdown(self):
         for worker in list(self._workers):
             worker.kill()

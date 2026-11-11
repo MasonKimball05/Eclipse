@@ -59,15 +59,23 @@ def test_signing_in_verifies_with_the_public_key_the_site_got():
     assert ps.for_site("example.com")[0]["last_used"]
 
 
-def test_one_passkey_per_account_and_deleting_one():
+def test_a_new_passkey_replaces_the_old_once_the_site_shows_it_has_it_and_deleting_one():
+    """Replaced the moment it was saved, a site that then didn't register the new one (an error, the tab closed)
+    left the account with an old passkey whose key was gone, and no passkey that worked."""
     first = _new()
-    second = _new()  # (the same account again: it replaces the first)
+    second = _new()  # (the same account again: the first is kept for now)
     _new(user="b3RoZXI", name="other@example.com")
+    ids = lambda: {p["id"] for p in ps.all_passkeys()}  # noqa: E731
+    mine = [p["id"] for p in ps.for_site("example.com") if p["user_name"] == "arkan@example.com"]
+    assert first["id"] in ids() and mine == [second["id"], first["id"]]  # (the newest offered first)
+    ps.sign_in(second["id"], "Y2hhbGxlbmdl", "https://example.com", True)  # (the site didn't say it has it)
+    assert first["id"] in ids()
+    ps.sign_in(first["id"], "Y2hhbGxlbmdl", "https://example.com", True, [first["id"]])  # (it has the old one)
+    assert first["id"] in ids() and second["id"] in ids()  # (not proof the new one's unwanted: both kept)
+    ps.sign_in(second["id"], "Y2hhbGxlbmdl", "https://example.com", True, [second["id"]])  # (it names the new one)
+    assert first["id"] not in ids()
     site = ps.for_site("example.com")
-    assert len(site) == 2 and second["id"] in {p["id"] for p in site}
     assert {p["user_name"] for p in site} == {"arkan@example.com", "other@example.com"}
-    assert first["id"] not in {p["id"] for p in ps.all_passkeys()}
-    assert ps.for_site("example.com", allowed=[second["id"]])[0]["id"] == second["id"]
     ps.delete(second["id"])
     assert [p["user_name"] for p in ps.for_site("example.com")] == ["other@example.com"]
 

@@ -55,6 +55,8 @@ struct SidebarBodyView: View {
     @State private var current: String?
     @State private var going = false  // (a switch from Python under way: its scroll isn't a swipe)
     @StateObject private var settling = Settling()  // (when a swipe's done with: said then)
+    @State private var leash = FingerLeash()  // (a hard swipe's fingers drag the Spaces most of one over, no further)
+    @State private var chosen = SwipeChoice()  // (the Space a swipe chose as your fingers left: OneSpaceAtATime)
     @State private var moving = false  // (the Spaces scrolling: rows passing under the pointer aren't pointed at)
     @State private var position = 0.0  // (which Space it's scrolled to, from its offset: 1.5 is halfway to the second)
     @State private var headingFor: String?  // (the Space a swipe's been said to be on its way to)
@@ -74,15 +76,16 @@ struct SidebarBodyView: View {
                 }
             }
             .scrollTargetLayout()
+            .background(ScrollViewProbe { leash.scrollView = $0 })
         }
-        .scrollTargetBehavior(OneSpaceAtATime())
+        .scrollTargetBehavior(OneSpaceAtATime(chosen: chosen))
         .scrollPosition(id: $current)
         .scrollIndicators(.never)
         .scrollClipDisabled(false)
         .coordinateSpace(.named("sidebarBody"))
         .background(MeterView(meter: meter).frame(width: 1, height: 1))
-        .onAppear { current = model.string("current"); settling.start() }
-        .onDisappear { meter.stop(); settling.stop() }
+        .onAppear { current = model.string("current"); settling.start(); leash.start() }
+        .onDisappear { meter.stop(); settling.stop(); leash.stop() }
         .onChange(of: model.state["go"] as? Int) { _ in
             let target = model.string("current")
             settling.cancel()  // (a switch from Python has the last word over a swipe not yet told)
@@ -107,10 +110,12 @@ struct SidebarBodyView: View {
                 position = Double(page)  // (no scroll geometry: the scroll position's id, which can lag)
             }
         }
-        .modifier(AtRest(moving: $moving, position: $position) { page in
+        .modifier(AtRest(moving: $moving, position: $position, touched: { here in chosen.from = here.rounded() },
+                             stopped: { if settling.waiting { settling.poke(after: 0) } }) { page in
             // A switch from Python come to rest: on its Space (switches interrupting each other could leave it on
             // another, the window on one Space and the sidebar showing the next, and `going` set for good)
             going = false
+            chosen.from = Double(page)  // (where the next swipe starts)
             let target = model.string("current")
             guard spaces.indices.contains(page), spaces[page].spaceId != target,
                   spaces.contains(where: { $0.spaceId == target }) else { return }
@@ -118,6 +123,7 @@ struct SidebarBodyView: View {
             DispatchQueue.main.async { current = target }
         })
         .onChange(of: settling.settled) { _ in landed() }
+        .onChange(of: position) { now in chosen.position = now }
         .onChange(of: model.string("dragging").isEmpty) { idle in
             // (the button's up, as Python sees it: however the drag ended, the room it opened closes)
             if idle { SidebarDrops.of(model.id).ended() }
@@ -188,7 +194,10 @@ struct SidebarBodyView: View {
     private func landed() {
         going = false  // (it's your fingers' scroll: a switch from Python it interrupted has given way)
         let page = position.rounded()
-        guard abs(position - page) < 0.02 else {
+        let heading = chosen.page.flatMap { ProcessInfo.processInfo.systemUptime - chosen.at < SwipeChoice.lasts ? $0 : nil }
+        guard abs(position - page) < 0.02, heading.map({ $0 == CGFloat(page) }) ?? true else {
+            // (or passing another Space on its way to the one the swipe chose: said there, the window went to the one
+            // passed, and pulled the sidebar back from the one it was going to)
             // Its spring's still taking it into place: told the moment it's there (waiting another moment and
             // looking again had it told up to a quarter of a second after it had arrived)
             landing = true
@@ -196,6 +205,7 @@ struct SidebarBodyView: View {
         }
         landing = false
         settling.waiting = false
+        chosen.from = Double(page)  // (where the next swipe starts, should its fingers going down not be told)
         headingFor = nil
         let index = Int(page)
         guard spaces.indices.contains(index) else { return }
@@ -244,11 +254,13 @@ private final class Settling: ObservableObject {
         cancel()
     }
 
-    /// Wait a moment (again) before it's settled.
-    func poke() {
+    /// Wait a moment (again) before it's settled: `after` nanoseconds, the quiet moment if not given. (0: the
+    /// Spaces have stopped, a swipe's done with now. Waited for the moment after the last scroll from the fingers,
+    /// only told late of it, the window changed Space up to two seconds after the sidebar)
+    func poke(after: UInt64? = nil) {
         task?.cancel()
         task = Task { @MainActor [weak self, quiet] in
-            try? await Task.sleep(nanoseconds: quiet)
+            try? await Task.sleep(nanoseconds: after ?? quiet)
             if !Task.isCancelled { self?.settled += 1 }
         }
     }
@@ -264,6 +276,8 @@ private final class Settling: ObservableObject {
 private struct AtRest: ViewModifier {
     @Binding var moving: Bool
     @Binding var position: Double
+    var touched: (Double) -> Void = { _ in }  // (fingers down on the trackpad: where the Spaces are scrolled to then)
+    var stopped: () -> Void = {}  // (the Spaces at rest again, however they moved)
     let animated: (Int) -> Void
 
     func body(content: Content) -> some View {
@@ -277,6 +291,12 @@ private struct AtRest: ViewModifier {
                 .onScrollPhaseChange { old, phase, context in
                     moving = phase != .idle
                     let width = context.geometry.containerSize.width
+                    if phase == .interacting, old != .interacting, width > 0 {
+                        touched(context.geometry.contentOffset.x / width)
+                    }
+                    if phase == .idle, old != .idle {
+                        stopped()
+                    }
                     if old == .animating, phase == .idle, width > 0 {
                         animated(Int((context.geometry.contentOffset.x / width).rounded()))
                     }
@@ -290,17 +310,201 @@ private struct AtRest: ViewModifier {
 /// Paging, a Space at a time: on a Mac, the system's paging let a quick swipe's momentum carry it past the next Space
 /// to the one after. Wherever the swipe would have ended, it lands on the next Space over (or back where it started,
 /// for a swipe that hardly went anywhere).
+///
+/// It's asked as your fingers leave the trackpad, and asked again as the momentum after ends, with the scroll mid-way
+/// as its "original target" (0.3 of the way from the Space two over, say): measured from there, a hard flick now and
+/// then landed two Spaces over. So what was chosen as your fingers left stands.
 @available(macOS 14, *)
 private struct OneSpaceAtATime: ScrollTargetBehavior {
+    let chosen: SwipeChoice
+
     func updateTarget(_ target: inout ScrollTarget, context: TargetContext) {
         let width = context.containerSize.width
         guard width > 0 else { return }
-        let start = (context.originalTarget.rect.minX / width).rounded()
+        let event = MainActor.assumeIsolated { NSApp?.currentEvent.flatMap { $0.type == .scrollWheel ? $0 : nil } }
+        // A switch from Python (a click, a shortcut), not a swipe: its own Space, however far. (Asked at every step
+        // of its animation, it was held to a Space at a time and taken for a swipe's choice)
+        guard let event else { return }
+        let momentum = !event.momentumPhase.isEmpty  // (phases are only a scroll's to ask: another event's raise)
+        let now = ProcessInfo.processInfo.systemUptime
+        if momentum, let page = chosen.page, now - chosen.at < SwipeChoice.lasts {
+            target.rect.origin.x = page * width
+            return
+        }
+        // From the Space your fingers went down on (mid-way through a swipe before, the one it was nearest), or where
+        // it last came to rest, if that wasn't told. Not the "original target", which is only the last target asked
+        // for: Space 0 on a launch on Space 1, say, and a hard swipe measured from there was a Space short, then
+        // pulled back one. Nor where it is now, rounded: a swipe's fingers take it past halfway
+        var start = CGFloat(chosen.from ?? chosen.position.rounded())
+        if abs(CGFloat(chosen.position) - start) > 1, let page = chosen.page, now - chosen.at < SwipeChoice.lasts {
+            start = page  // (more than a Space from there: swipes in a row, the fingers not said to go down again)
+        }
         let travel = target.rect.minX - start * width
         let step: CGFloat = abs(travel) >= width * 0.3 ? (travel > 0 ? 1 : -1) : 0
         let last = max(0, (context.contentSize.width / width).rounded() - 1)
         target.rect.origin.x = min(max(start + step, 0), last) * width
+        if !momentum {
+            chosen.page = target.rect.origin.x / width
+            chosen.at = now
+        }
     }
+}
+
+/// How far your fingers can drag the Spaces: most of a Space from the one the swipe started on. The sidebar's narrow, and
+/// a hard swipe's fingers dragged it three or four Spaces along before they let go, for it to fly back to the next one
+/// (OneSpaceAtATime). Your fingers move it as they go for half a Space, then it eases towards three quarters (a wall
+/// felt like a snag, and easing from the start like pushing against something), and letting go glides it the rest of
+/// the way. The momentum after is dropped: the swipe's chosen its Space by then.
+@MainActor
+final class FingerLeash {
+    static let free: CGFloat = 0.55  // (of a Space: as far as the Spaces go just as your fingers do)
+    static let most: CGFloat = 0.75  // (and the most, held there: the rest is the glide onto it as your fingers let go)
+
+    /// How far fingers that have gone `fingers` move the Spaces: just as far, to `free` of a Space, then easing towards
+    /// `most`. Short of the next Space, so letting go glides onto it: brought all the way there under your fingers,
+    /// there was nothing left to happen as they let go, and a hard swipe didn't feel like one.
+    static func shown(_ fingers: CGFloat, width: CGFloat) -> CGFloat {
+        let free = Self.free * width, ease = (Self.most - Self.free) * width
+        let along = abs(fingers)
+        let moved = along <= free ? along : free + ease * tanh((along - free) / ease)
+        return fingers < 0 ? -moved : moved
+    }
+    weak var scrollView: NSScrollView? {
+        didSet {
+            guard let scrollView else { return }
+            Self.leashes[ObjectIdentifier(scrollView)] = Weak(self)
+            Self.intercept(type(of: scrollView))
+        }
+    }
+    private var active = false
+    private var fingers: CGFloat = 0  // (how far your fingers have gone this swipe, in points)
+    private var shown: CGFloat = 0  // (and how far they've been let move the Spaces)
+    private var dragging = false
+    private var sideways = false  // (this swipe went sideways: its momentum's dropped)
+
+    func start() { active = true }
+    func stop() { active = false }
+
+    // Scrolls are taken at the scroll view itself: in Eclipse they don't all go through the app's event queue (a
+    // monitor there dropped them, and the Spaces moved anyway), but every one goes through its scrollWheel(with:)
+    private final class Weak {
+        weak var leash: FingerLeash?
+        init(_ leash: FingerLeash) { self.leash = leash }
+    }
+    private static var leashes: [ObjectIdentifier: Weak] = [:]
+    private static var intercepted: Set<ObjectIdentifier> = []
+
+    private static func intercept(_ kind: AnyClass) {
+        guard intercepted.insert(ObjectIdentifier(kind)).inserted else { return }
+        let selector = #selector(NSResponder.scrollWheel(with:))
+        guard let method = class_getInstanceMethod(kind, selector) else { return }
+        typealias Original = @convention(c) (AnyObject, Selector, NSEvent) -> Void
+        let original = unsafeBitCast(method_getImplementation(method), to: Original.self)
+        let replacement: @convention(block) (AnyObject, NSEvent) -> Void = { view, event in
+            let leash = MainActor.assumeIsolated { leashes[ObjectIdentifier(view)]?.leash }
+            guard let leash else { return original(view, selector, event) }
+            if let let_through = MainActor.assumeIsolated({ leash.leash(event) }) {
+                original(view, selector, let_through)
+            }
+        }
+        class_replaceMethod(kind, selector, imp_implementationWithBlock(replacement), method_getTypeEncoding(method))
+    }
+
+    /// The scroll to give the scroll view in place of `event`: itself, a shorter one, or none.
+    private func leash(_ event: NSEvent) -> NSEvent? {
+        guard active, let view = scrollView else { return event }
+        if !event.momentumPhase.isEmpty {
+            // A sideways swipe's momentum: it's chosen its Space, and is on its way there. Let through, the momentum
+            // kept pushing the Spaces about as they went, and had the Space asked for again and again: a stutter as
+            // your fingers let go. (An up-and-down scroll's, in a Space's tabs, is its own)
+            guard sideways, abs(event.scrollingDeltaX) >= abs(event.scrollingDeltaY) else { return event }
+            return nil
+        }
+        guard !event.phase.isEmpty else { return event }
+        let width = view.contentView.bounds.width
+        guard width > 0 else { return event }
+        if event.phase.contains(.began) || event.phase.contains(.mayBegin) {
+            fingers = 0
+            shown = 0
+            dragging = true
+            sideways = false
+        }
+        if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
+            dragging = false
+            return event
+        }
+        let dx = event.scrollingDeltaX
+        guard dragging, dx != 0, abs(dx) >= abs(event.scrollingDeltaY) else { return event }
+        sideways = true
+        // Counted here, not read from the scroll view: its offset's told late, the same for several scrolls in a row,
+        // and measured against that, the Spaces were pushed back against your fingers at the limit
+        fingers += dx
+        let now = Self.shown(fingers, width: width)
+        let allowed = now - shown
+        shown = now
+        if abs(allowed - dx) < 0.01 { return event }
+        if abs(allowed) < 0.05, !event.phase.contains(.began) { return nil }
+        return Self.scaled(event, by: allowed / dx)
+    }
+
+    /// The same scroll, its sideways part `factor` as far: a new one, not a copy (a trackpad's scroll carries its
+    /// fingers' own movement too, and a copy with smaller numbers still scrolled the whole way).
+    static func scaled(_ event: NSEvent, by factor: CGFloat) -> NSEvent {
+        guard let source = event.cgEvent else { return event }
+        // (in points: the fixed-point fields are lines, a tenth as much)
+        let dx = Double(source.getIntegerValueField(.scrollWheelEventPointDeltaAxis2)) * factor
+        let dy = Double(source.getIntegerValueField(.scrollWheelEventPointDeltaAxis1))
+        let lines = source.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2) * factor
+        let linesY = source.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1)
+        guard let fresh = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
+                                  wheel1: Int32(dy.rounded()), wheel2: Int32(dx.rounded()), wheel3: 0) else { return event }
+        fresh.location = source.location
+        fresh.flags = source.flags
+        fresh.timestamp = source.timestamp
+        for raw: UInt32 in [88, 99, 123, 91, 92] {  // (continuous, its phase, momentum's phase, the windows it's for)
+            if let field = CGEventField(rawValue: raw) {
+                fresh.setIntegerValueField(field, value: source.getIntegerValueField(field))
+            }
+        }
+        fresh.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: Int64(dy.rounded()))
+        fresh.setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: Int64(dx.rounded()))
+        fresh.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: linesY)
+        fresh.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: lines)
+        guard let made = NSEvent(cgEvent: fresh) else { return event }
+        return made
+    }
+}
+
+/// Hands over the scroll view it's inside, once it's in one.
+private struct ScrollViewProbe: NSViewRepresentable {
+    let found: (NSScrollView) -> Void
+
+    func makeNSView(context: Context) -> NSView { Probe(found: found) }
+    func updateNSView(_ view: NSView, context: Context) {}
+
+    final class Probe: NSView {
+        let found: (NSScrollView) -> Void
+        init(found: @escaping (NSScrollView) -> Void) {
+            self.found = found
+            super.init(frame: .zero)
+        }
+        required init?(coder: NSCoder) { nil }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let scroll = enclosingScrollView { found(scroll) }
+        }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }  // (never in the way of a click)
+    }
+}
+
+/// What a swipe chose as your fingers left the trackpad, kept for its momentum, and where the Spaces are scrolled to
+/// (OneSpaceAtATime).
+final class SwipeChoice {
+    static let lasts: TimeInterval = 3  // (a trackpad's momentum runs a second or two: after that it's no swipe's)
+    var page: CGFloat?
+    var at: TimeInterval = 0
+    var position = 0.0  // (the Spaces' scroll, in Spaces, as it is: kept up to date by the sidebar)
+    var from: Double?  // (the Space your fingers last went down on, or the sidebar last came to rest on)
 }
 
 private struct SidebarScrolling: EnvironmentKey {

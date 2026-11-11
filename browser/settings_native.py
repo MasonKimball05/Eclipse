@@ -113,6 +113,11 @@ class NativeSettings(QObject):
 
     def _closed(self):
         self._poll.stop()
+        # A field typed in and the window closed (⌘W) before Return or a click elsewhere: what's typed is saved, as
+        # it is when you leave the field. Only done with then, those fields (a GitHub name, a server) kept nothing
+        for widget in self.__dict__.pop("_unfinished", []):
+            if not sip.isdeleted(widget):
+                widget.editingFinished.emit()
         self.page = None
 
     def isVisible(self) -> bool:
@@ -329,8 +334,13 @@ class NativeSettings(QObject):
             if value != widget.text():
                 widget.setText(value)
                 widget.textEdited.emit(value)
+            unfinished = self.__dict__.setdefault("_unfinished", [])
             if event.get("finished", True):
+                if widget in unfinished:
+                    unfinished.remove(widget)
                 widget.editingFinished.emit()
+            elif widget not in unfinished:
+                unfinished.append(widget)  # (typed, not yet done with: finished as the window closes, if not before)
             if event.get("submit"):
                 widget.returnPressed.emit()
         elif name == "text" and isinstance(widget, QPlainTextEdit) and isinstance(value, str):

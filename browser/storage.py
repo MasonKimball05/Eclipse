@@ -61,8 +61,12 @@ def read_json(path: Path) -> dict | None:
     except FileNotFoundError:
         return None
     except (OSError, ValueError):
-        # Keep the broken file around so nothing is silently lost, then start fresh
-        path.replace(path.with_suffix(".corrupt.json"))
+        # Keep the broken file around so nothing is silently lost, then start fresh (beside any kept before: a
+        # second one went over the first)
+        aside, n = path.with_suffix(".corrupt.json"), 2
+        while aside.exists():
+            aside, n = path.with_suffix(f".corrupt-{n}.json"), n + 1
+        path.replace(aside)
         return None
 
 
@@ -76,6 +80,29 @@ def private_folder(folder: Path) -> Path:
     return folder
 
 
+# A profile's site data that Chromium keeps open while it runs: cleared before the profile next opens
+SITE_DATA_FOLDERS = ("Local Storage", "Session Storage", "IndexedDB", "Service Worker", "databases", "File System",
+                     "WebStorage", "shared_proto_db")
+CLEAR_SITE_DATA = "clear-site-data"  # (the mark asking for it)
+
+
+def ask_to_clear_site_data(folder: Path) -> None:
+    """Clear a profile's site data (logins kept in a page's storage, offline copies…) the next time it opens."""
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / CLEAR_SITE_DATA).write_text("")
+
+
+def clear_site_data_if_asked(folder: Path) -> bool:
+    """Before the profile opens: its site data gone, if that was asked for. Whether it was."""
+    mark = folder / CLEAR_SITE_DATA
+    if not mark.exists():
+        return False
+    for name in SITE_DATA_FOLDERS:
+        shutil.rmtree(folder / name, ignore_errors=True)
+    mark.unlink(missing_ok=True)
+    return True
+
+
 def previous_copy(path: Path) -> Path:
     return path.with_suffix(".prev.json")
 
@@ -86,13 +113,15 @@ def write_json(path: Path, data: dict, keep_previous=False, private=False) -> No
     # private: only your account can read it (passwords, passkeys: encrypted anyway, but nobody else's business)
     tmp = path.with_suffix(".tmp")
     text = json.dumps(data, indent=1)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600 if private else 0o644)
     if private:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         os.fchmod(fd, 0o600)  # (whatever it was before, and whatever the umask says)
-        with os.fdopen(fd, "w") as f:
-            f.write(text)
-    else:
-        tmp.write_text(text)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+        f.flush()
+        # On the disk before it's swapped in: left to the system, a power cut soon after a save could leave both
+        # this and the copy before it empty (the copy's only one save older)
+        os.fsync(f.fileno())
     if keep_previous and path.exists():
         os.replace(path, previous_copy(path))
     os.replace(tmp, path)

@@ -118,25 +118,33 @@ def test_a_swipe_goes_one_space_over_and_says_so_once_its_at_rest(window, monkey
     told = []
     body.page.action.connect(lambda name, event: told.append((name, body.page.state()["current"]))
                              if name in ("swiped", "hover", "heading") else None)
+    from PyQt6.QtCore import QRect
+    from PyQt6.QtGui import QCursor
+    sidebar = QRect(body.container.mapToGlobal(body.container.rect().topLeft()), body.container.size())
     for flick in (-12, -45, 45, 12):  # (a gentle swipe and a hard flick, each way)
         before = spaces.index(window.store.active_space)
         told.clear()
-        _swipe(target, at, flick, [])
+        yours = []  # (your own pointer over where the sidebar is, behind your windows: its hover's real)
+        _swipe(target, at, flick, [], frame=lambda: yours.append(sidebar.contains(QCursor.pos())))
         after = spaces.index(window.store.active_space)
         # One Space over, however hard (the system's paging let a flick's momentum carry it two)
         assert after == before + (1 if flick < 0 else -1), (flick, before, after)
         # Said once, when it's settled (said as soon as it was halfway over, the window's change of Space stopped
         # the scroll), and nothing pointed at on the way
         names = [name for name, _ in told]
-        assert names[-1] == "swiped" and names.count("swiped") == 1 and "hover" not in names, names
-        assert names[0] == "heading"  # (where it's going said on the way, for its page to start loading)
+        # (a hover before it's heading anywhere is the pointer arriving where the test swipes, never moved there)
+        assert names.count("swiped") == 1 and set(names[names.index("swiped"):]) <= {"swiped", "hover"}, names
+        assert "heading" in names and set(names[:names.index("heading")]) <= {"hover"}, names  # (where it's going said on the way, for its page to start loading)
+        assert "hover" not in names[names.index("heading"):names.index("swiped")] or any(yours), names  # (after: what's under it now)
     # Several quick swipes in a row: the window changes Space once, at the end (after each, it stalled the next)
     window.switch_space(spaces[0])
     wait_until(lambda: False, 0.8)
     told.clear()
     gaps = []
     for _ in range(3):
-        _swipe(target, at, -30, gaps, then=60)
+        # (each one's momentum cut short by the next, as fingers put down again stop it: a full coast and a pause after
+        # is longer than the settling wait, and was a race with the spring snapping into place)
+        _swipe(target, at, -30, gaps, then=40, coast_ms=48)
     assert wait_until(lambda: window.store.active_space is spaces[3], 2)
     assert [t for t in told if t[0] == "swiped"] == [("swiped", spaces[3].id)]  # (none for the Spaces passed)
     assert max(gaps) < 60, max(gaps)  # (no Space change in the middle of it)

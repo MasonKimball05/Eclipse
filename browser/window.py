@@ -1299,6 +1299,8 @@ class MainWindow(QMainWindow):
         if space is not None and space.id != self.store.active_space_id:
             self._set_active_space(space)
         previous = self.current_tab
+        if previous is not tab:
+            self.content.find_bar.dismiss()  # (while the page you're leaving is still the current one)
         if previous is not tab and previous is not None:
             self._note_scroll(previous)  # (to put it back if it sleeps, or after a restart)
         wanted = self.store.settings.get("tab_previews", True) or self.store.settings.get("ctrl_tab", "recent") == "recent"
@@ -1327,7 +1329,6 @@ class MainWindow(QMainWindow):
             self._mru.remove(tab.id)
         self._mru.insert(0, tab.id)
 
-        self.content.find_bar.hide()
         split = self.store.split_of(tab)
         for shown in split or [tab]:
             self.mini_player.release(shown)  # a split partner floating in the mini player comes back too
@@ -1566,6 +1567,12 @@ class MainWindow(QMainWindow):
                 folder.live["named"] = True  # (a feed's own title mustn't put the old name back)
             self.store._changed()
 
+    def ungroup_folder(self, folder):
+        """Its tabs kept, the folder itself gone: a Live Folder's setup (a token in the Keychain) with it."""
+        self.store.ungroup_folder(folder)
+        if folder.live:
+            self.emit("folder_deleted", folder)
+
     def delete_folder(self, folder, asked=False):
         tabs = list(walk_tabs(folder.children))
         if tabs and not asked:
@@ -1573,7 +1580,8 @@ class MainWindow(QMainWindow):
                             lambda: self.delete_folder(folder, asked=True) if self.store.locate(folder) else None,
                             action="Delete", destructive=True)
             return
-        self.emit("folder_deleted", folder)
+        for gone in [folder, *walk_folders(folder.children)]:  # (a Live Folder inside it goes too: its token with it)
+            self.emit("folder_deleted", gone)
         current_inside = self.current_tab in tabs
         for tab in tabs:
             self._remove_view(tab)
@@ -1613,7 +1621,7 @@ class MainWindow(QMainWindow):
             icons.addAction(qta.icon("ph.folder", color=tint), "Folder", lambda: self.style_folder(folder, icon=None))
         self.emit("folder_menu", menu, folder)  # (a Live Folder's Refresh Now, Mark All as Seen…)
         menu.addSeparator()
-        self._act(menu, "ph.folder-minus", "Ungroup (Keep Tabs)", lambda: self.store.ungroup_folder(folder))
+        self._act(menu, "ph.folder-minus", "Ungroup (Keep Tabs)", lambda: self.ungroup_folder(folder))
         self._act(menu, "ph.trash", "Delete Folder…", lambda: self.delete_folder(folder))
         menu.exec(pos)
 
@@ -1712,6 +1720,9 @@ class MainWindow(QMainWindow):
 
     def _undo_clear(self, space, shape, archived, current):
         """Clear, taken back: Today as it was (anything opened since stays on top), out of the archive."""
+        if space not in self.store.spaces:  # (put back into a Space that's gone, they'd be nowhere you could see)
+            self.toast(f"“{space.name}” was deleted, so its tabs stay in the archive")
+            return
         self.store.restore_today(space, shape, archived)
         if current is not None and space is self.store.active_space:
             self.activate_tab(current)
@@ -1958,12 +1969,16 @@ class MainWindow(QMainWindow):
         remember_zoom(self.store.settings, view.url(), factor)
         view.zoom_site = zoom_key(view.url())
         self.store.schedule_save()
+        if view is not self._current_view():
+            return  # (a Little window's page: said in this window, it was said behind it, about a page not here)
         self.sidebar.update_zoom()
         site = zoom_key(view.url())
         self.toast(f"Zoom {round(factor * 100)}%" + (f" for {site.split(':')[0]}" if site else ""))
 
     def _apply_site_zoom(self, view):
         """A page arrived at a (new) site: use that site's remembered zoom."""
+        if view.page().profile().isOffTheRecord():
+            return  # (a private window keeps its zoom as you set it, and remembers none: PrivateWindow.zoom)
         site = zoom_key(view.url())
         target = zoom_for(self.store.settings, view.url())
         if abs(view.zoomFactor() - target) > 0.001:  # Qt keeps a view's zoom across sites; we don't

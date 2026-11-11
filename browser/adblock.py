@@ -339,14 +339,15 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
 
 
 class OffTheRecord(AdBlocker):
-    """Private windows' blocker: blocks just as the main one does (its lists, settings and extensions' rules), but
-    reports nothing, so nothing of private browsing reaches the privacy report. Its blocks still count towards
-    the shield's number, which is only kept while Eclipse runs."""
+    """Private windows' blocker: blocks just as the main one does (its lists and settings), but reports nothing, so
+    nothing of private browsing reaches the privacy report. Its blocks still count towards the shield's number,
+    which is only kept while Eclipse runs. Extensions' rules aren't applied: extensions don't run here, and with
+    them, their webRequest listeners were told every address you went to."""
 
     reports = False
     domains = property(lambda self: self.main.domains)
     counts = property(lambda self: self.main.counts)
-    extension_rules = property(lambda self: self.main.extension_rules)
+    extension_rules = None
 
     def __init__(self, main):
         QWebEngineUrlRequestInterceptor.__init__(self, main)

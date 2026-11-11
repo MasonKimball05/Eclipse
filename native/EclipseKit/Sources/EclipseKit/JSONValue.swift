@@ -112,9 +112,28 @@ public enum JSONValue: Equatable, Sendable {
     }
 }
 
-/// sync.digest: the first 24 hex digits of the SHA-256 of the canonical text.
+/// sync.digest: the first 24 hex digits of the SHA-256 of the canonical text, without its tabs' page titles (they
+/// change as the pages do, an inbox's unread count, each device its own: counted, two devices sent a Space back and
+/// forth every look).
 public func digest(_ value: JSONValue) -> String {
-    SHA256.hash(data: Data(value.canonical.utf8)).map { String(format: "%02x", $0) }.joined().prefix(24).description
+    SHA256.hash(data: Data(withoutTitles(value).canonical.utf8)).map { String(format: "%02x", $0) }.joined()
+        .prefix(24).description
+}
+
+/// sync._without_titles: every "title" of an object that has a "url" (a tab) left out.
+func withoutTitles(_ value: JSONValue) -> JSONValue {
+    switch value {
+    case .array(let items):
+        return .array(items.map(withoutTitles))
+    case .object(let o):
+        var kept: [String: JSONValue] = [:]
+        for (key, item) in o where !(key == "title" && o["url"] != nil) {
+            kept[key] = withoutTitles(item)
+        }
+        return .object(kept)
+    default:
+        return value
+    }
 }
 
 /// A string as Python's json writes it with ensure_ascii=False: quotes, backslashes and control characters escaped,

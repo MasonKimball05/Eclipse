@@ -26,7 +26,7 @@ def test_userscript_unsupported_grant_and_defaults():
     assert script.unsupported_grants == ["GM_cookie"]
     plain = userscripts.from_source("// ==UserScript==\n// @name Y\n// ==/UserScript==\n")
     assert plain.grants == ["none"] and not plain.uses_gm
-    assert plain.include_regexes == [r"^(https?|file)://.*$"]
+    assert plain.include_regexes == [r"^https?://.*$"]  # (every page, but not your files)
 
 
 def test_userscript_build_worlds():

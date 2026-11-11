@@ -6,9 +6,9 @@
 import sys
 
 import qtawesome as qta
-from PyQt6.QtCore import QObject, QSize, Qt, QTimer, QUrl
+from PyQt6.QtCore import QEvent, QObject, QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import QGuiApplication, QKeySequence, QShortcut
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
 from . import clean_links, macos, motion, storage
 from .command_bar import search_url, to_url
@@ -28,9 +28,29 @@ class DragArea(QWidget):
             self.window().windowHandle().startSystemMove()
 
 
+class _Quitting(QObject):
+    """Notes that Eclipse is quitting: the app's told so (⌘Q, the Dock's Quit, quit() after restoring a backup) just
+    before every window's asked to close, and any window that won't closes nothing, the quit given up."""
+    now = False
+
+    def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Quit and obj is QApplication.instance():
+            _Quitting.now = True
+            QTimer.singleShot(0, lambda: setattr(_Quitting, "now", False))  # (and if it's given up, not any more)
+        return False
+
+
+def _watch_for_quitting():
+    app = QApplication.instance()
+    if app is not None and not getattr(app, "_eclipse_quit_watch", None):
+        app._eclipse_quit_watch = _Quitting(app)
+        app.installEventFilter(app._eclipse_quit_watch)
+
+
 class LittleWindow(QWidget):
     def __init__(self, browser, url=None, request=None, profile=None):
         super().__init__(None, Qt.WindowType.Window)
+        _watch_for_quitting()
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         if MAC:
             self.setWindowFlag(Qt.WindowType.ExpandedClientAreaHint, True)
@@ -129,8 +149,8 @@ class LittleWindow(QWidget):
 
         for keys, slot in (("Ctrl+O", self.promote), ("Ctrl+L", self.edit_url), ("Ctrl+W", self.close),
                            ("Ctrl+Shift+C", self.copy_link), ("Ctrl+R", view.reload), ("Ctrl+[", view.back),
-                           ("Ctrl+=", lambda: browser.zoom(1, view)), ("Ctrl+-", lambda: browser.zoom(-1, view)),
-                           ("Ctrl+0", lambda: browser.zoom(0, view))):
+                           ("Ctrl+=", lambda: self._zoom(1)), ("Ctrl+-", lambda: self._zoom(-1)),
+                           ("Ctrl+0", lambda: self._zoom(0))):
             QShortcut(QKeySequence(keys), self).activated.connect(slot)
 
         self._place()
@@ -172,7 +192,8 @@ class LittleWindow(QWidget):
                 self.header.layout().setContentsMargins(round(right + 12), 0, 2, 0)
 
     def closeEvent(self, event):
-        if self._closing or motion.reduced() or not self.isVisible():
+        # (quitting, it closes at once: kept open to fade, it called the quit off, and Eclipse stayed open)
+        if self._closing or motion.reduced() or not self.isVisible() or _Quitting.now:
             super().closeEvent(event)
             return
         event.ignore()  # a quick fade out first, then closed for real
@@ -256,13 +277,21 @@ class LittleWindow(QWidget):
         if self.view is not None and not self.view.url().isEmpty():
             QGuiApplication.clipboard().setText(clean_links.for_copy(self.view.url().toString(),
                                                                     self.browser.store.settings))
-            self.toast.setText("Copied link")
-            self.toast.adjustSize()
-            self.toast.move((self.card.width() - self.toast.width()) // 2,
-                            self.card.height() - self.toast.height() - 16)
-            self.toast.show()
-            self.toast.raise_()
-            QTimer.singleShot(1400, self.toast.hide)
+            self._say("Copied link")
+
+    def _zoom(self, direction):
+        if self.view is None:
+            return
+        self.browser.zoom(direction, self.view)  # (remembered for the site, as in the main window)
+        self._say(f"Zoom {round(self.view.zoomFactor() * 100)}%")  # (said here: the main window said it, behind)
+
+    def _say(self, text):
+        self.toast.setText(text)
+        self.toast.adjustSize()
+        self.toast.move((self.card.width() - self.toast.width()) // 2, self.card.height() - self.toast.height() - 16)
+        self.toast.show()
+        self.toast.raise_()
+        QTimer.singleShot(1400, self.toast.hide)
 
     def promote(self):
         view, self.view = self.view, None

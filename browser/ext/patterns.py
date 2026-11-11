@@ -18,11 +18,13 @@ def _escape(text: str) -> str:
 def match_pattern(pattern: str) -> str | None:
     """Chrome match pattern → regex source, or None if it isn't a valid pattern."""
     if pattern == "<all_urls>":
-        return r"^(https?|file|ftp)://.*$"
+        return r"^(https?|ftp)://.*$"  # (not your files: in Chrome, a switch of their own, off unless you turn it on)
     m = _MATCH.match(pattern)
     if not m:
         return None
     scheme, host, path = m.groups()
+    if scheme == "file":
+        return None  # (as for <all_urls>: an extension never reaches the files on your Mac)
     scheme_re = "https?" if scheme == "*" else _escape(scheme)
     if host == "*":
         host_re = r"[^/]*"

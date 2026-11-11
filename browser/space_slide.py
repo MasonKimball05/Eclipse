@@ -43,6 +43,11 @@ class SpaceSlide(QWidget):
         self.interrupted = False  # (another was still under way: the window may be between two Spaces)
         for old in window.findChildren(SpaceSlide):
             self.interrupted = self.interrupted or old.isVisible()
+            unfinished = getattr(old, "pending_change", None)
+            if unfinished is not None:
+                # Its switch finished now (stopped, its animation never says it's done: the Space was chosen, but
+                # the window kept the colors, tabs and page of the one before)
+                unfinished()
             animation = getattr(old, "_pb_animation", None)
             if animation is not None:
                 animation.stop()
@@ -279,8 +284,16 @@ def slide_region(window, widget, change, direction, target=None, choose=None):
         if choose is not None:
             choose()
 
+        def finish():
+            if slide.pending_change is None:
+                return
+            slide.pending_change = None
+            if window.store.active_space is target:  # (a tab clicked meanwhile in the Space before: you're there)
+                change()
+        slide.pending_change = finish
+
         def landed():
-            change()
+            finish()
             QTimer.singleShot(0, slide.lift)  # (once the sidebar has caught up)
         slide.run(slide.side.width(), NORMAL + 60, landed)
         return
@@ -349,9 +362,14 @@ class SpacePictures(QObject):
     def _quiet(self) -> bool:
         from .motion import reduced
         w = self.window
+        preview = getattr(w, "tab_preview", None)
+        # (nor while you've tabs picked out, or a tab's preview is up: picturing a neighbour rebuilds the sidebar for
+        # it, which let go of the one and put the other away, unasked)
         return (w.isVisible() and w.sidebar.isVisible() and not reduced()
                 and QApplication.mouseButtons() == Qt.MouseButton.NoButton
-                and not any(c.isVisible() for c in w.findChildren(SpaceSlide)))
+                and not any(c.isVisible() for c in w.findChildren(SpaceSlide))
+                and not getattr(w.sidebar, "marked", None)
+                and not (preview is not None and preview.isVisible()))
 
     def prepare(self):
         """Keep only the neighbours' pictures, and make any of theirs that's missing (together, when nothing else is

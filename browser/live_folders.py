@@ -387,6 +387,11 @@ class LiveFolders(QObject):
 
     def _finish(self, folder, items, title, error, on_done):
         self._busy.discard(folder.id)
+        if self.browser.store.locate(folder) is None:
+            # Ungrouped (or deleted) while it was refreshing: its tabs, if kept, are ordinary ones now. Applied to
+            # it anyway, the refresh closed the pages of the ones gone from its feed, out of your sidebar. (Nor a
+            # toast about a folder that isn't there)
+            return
         if error is None:
             if title and not folder.live.get("named"):
                 folder.name = title[:40]

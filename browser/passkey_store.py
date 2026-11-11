@@ -182,12 +182,10 @@ def create(rp_id: str, rp_name: str, user_id: str, user_name: str, display_name:
                                 serialization.NoEncryption())
     if not secure_store.store(KEY_ACCOUNT.format(passkey["id"]), der):
         raise OSError("Couldn't save the passkey in the Keychain")
-    # A site saving a second passkey for the same account replaces the first (as Chrome and Safari do)
-    kept = [p for p in all_passkeys() if not (p["rp_id"] == rp_id and p["user_id"] == user_id)]
-    for old in all_passkeys():
-        if old not in kept:
-            secure_store.delete(KEY_ACCOUNT.format(old["id"]))
-    _save_list(kept + [passkey])
+    # A site saving a second passkey for the same account: the first is kept until the site shows it has this one
+    # (sign_in). Replaced at once, as before, a site that then didn't register the new one (an error, the tab
+    # closed) left the account with a passkey whose key was gone, and none that worked
+    _save_list(all_passkeys() + [passkey])
     backed_up = add_to_vault(passkey["id"], b64url(der))
     flags = UP | (UV if verified else 0) | BE | (BS if backed_up else 0) | AT
     auth = (hashlib.sha256(rp_id.encode()).digest() + bytes([flags]) + struct.pack(">I", 0) + AAGUID +
@@ -199,9 +197,10 @@ def create(rp_id: str, rp_name: str, user_id: str, user_name: str, display_name:
             "authenticatorData": b64url(auth), "publicKey": b64url(spki)}
 
 
-def sign_in(passkey_id: str, challenge: str, origin: str, verified: bool) -> dict:
+def sign_in(passkey_id: str, challenge: str, origin: str, verified: bool, allowed: list[str] | None = None) -> dict:
     """A signature from one of the site's passkeys, and what the site gets back (all base64url):
-    {id, clientDataJSON, authenticatorData, signature, userHandle}."""
+    {id, clientDataJSON, authenticatorData, signature, userHandle}. `allowed`: the passkeys the site said it
+    knows (allowCredentials): naming this one, it has it, so older ones for the same account go."""
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import ec
     passkeys = all_passkeys()
@@ -216,8 +215,18 @@ def sign_in(passkey_id: str, challenge: str, origin: str, verified: bool) -> dic
     signature = private.sign(auth + hashlib.sha256(data).digest(), ec.ECDSA(hashes.SHA256()))
     passkey["last_used"] = time.time()
     _save_list(passkeys)
+    if allowed and passkey_id in allowed:
+        replaced(passkey)
     return {"id": passkey_id, "clientDataJSON": b64url(data), "authenticatorData": b64url(auth),
             "signature": b64url(signature), "userHandle": passkey["user_id"]}
+
+
+def replaced(passkey: dict):
+    """The site has `passkey` (it asked for it by name): older ones for the same account are let go."""
+    for old in all_passkeys():
+        if (old["rp_id"], old["user_id"]) == (passkey["rp_id"], passkey["user_id"]) and old["id"] != passkey["id"] \
+                and old.get("created", 0) < passkey.get("created", 0):
+            delete(old["id"])
 
 
 def delete(passkey_id: str):

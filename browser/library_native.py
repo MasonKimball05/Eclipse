@@ -64,7 +64,13 @@ class NativeLibrary(QObject):
         qt = self.qt
         self._entries = qt.matching(self.query)[:SHOW_AT_MOST]
         entries, icons = [], {}
-        for i, entry in enumerate(self._entries):
+        # Each entry keeps its number while it's listed: numbered by where it was, a page loading while a row's
+        # menu was open (a new entry at the top) had Remove take a different page out of your history
+        ids = self.__dict__.setdefault("_ids", {})
+        self._by_id = {}
+        for entry in self._entries:
+            i = ids.setdefault((qt.section, entry["url"], entry.get("ts"), entry.get("path")), len(ids) + 1)
+            self._by_id[i] = entry
             key = self._icon_key(entry["url"])
             if key not in self._icons:
                 self._icons[key] = native.png(qt._icon(entry["url"]).pixmap(32, 32))
@@ -105,9 +111,8 @@ class NativeLibrary(QObject):
         elif name == "clear":
             self._place_dialogs()
             self.qt._clear_all()
-        elif name in ("open", "little", "copy", "remove") and isinstance(event.get("id"), int) \
-                and 0 <= event["id"] < len(self._entries):
-            entry = self._entries[event["id"]]
+        elif name in ("open", "little", "copy", "remove") and event.get("id") in getattr(self, "_by_id", {}):
+            entry = self._by_id[event["id"]]
             if name == "copy":
                 self.qt.copy_link(entry)
                 return

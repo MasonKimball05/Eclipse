@@ -244,6 +244,12 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
         # Coalesce bursts of changes (e.g. a page updating its title repeatedly) into one write
         self._save_timer.start()
 
+    def flush(self):
+        """Save now if a save is waiting (quitting: the window's own save is only made when it's closed, and a
+        window put away, hidden while Eclipse keeps running, isn't closed by quitting)."""
+        if self._save_timer.isActive():
+            self.save()
+
     def save(self):
         self._save_timer.stop()
         storage.write_json(self.path, {
@@ -351,12 +357,17 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
             return  # a Live Folder's contents come from its feed; refreshing would drop anything added
         if isinstance(node, Folder) and self.live_folder_of(node):
             return  # (one of its sub-folders: the next refresh would only make it again)
+        if isinstance(node, Folder) and node.live and kind != PINNED:
+            # (a Live Folder stays in Pinned: in Today it was never refreshed, its tabs lost the feed links they're
+            # matched by, and archiving or Clear threw it and its setup away)
+            return
         space = space or self.active_space
         if isinstance(node, Folder):
             # Folders live in Pinned or Today (not Favorites), and never inside themselves
             if kind == FAVORITES or (folder is not None and (folder is node or folder in walk_folders(node.children))):
                 return
         dest = folder.children if folder is not None and kind != FAVORITES else self.tab_list(kind, space)
+        from_live = isinstance(node, Tab) and self.live_folder_of(node) is not None
         found = self._parent(node)
         holder = self.folder_of(node)  # (the folder it leaves: a Today one goes when it's emptied)
         if found:
@@ -367,6 +378,8 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
                 index -= 1
         index = len(dest) if index is None else max(0, min(index, len(dest)))
         dest.insert(index, node)
+        if from_live:
+            node.fresh = False  # (taken out of its Live Folder, it's your tab: its "new" dot stayed for good)
         if isinstance(node, Tab):
             converted = [node]
         elif found and found[1] != kind:  # a folder changing section: its tabs change with it
@@ -379,10 +392,13 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
                 tab.custom_title = None
             elif tab.home_url is None:
                 tab.home_url = tab.url
-        if holder is not None and holder is not folder and not holder.children and \
+        # A Today folder it emptied goes (closing its last tab does the same), and so does a folder that held only
+        # that one (left behind, it showed "0 tabs")
+        while holder is not None and holder is not folder and not holder.children and \
                 (self.locate(holder) or (None,))[0] == TODAY:
-            parent = self._parent(holder)
-            parent[0][:] = [n for n in parent[0] if n is not holder]  # (closing its last tab does the same)
+            above, parent = self.folder_of(holder), self._parent(holder)
+            parent[0][:] = [n for n in parent[0] if n is not holder]
+            holder = above
         if folder is not None:
             folder.expanded = True
         self._changed()
@@ -429,15 +445,20 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
     def restore_today(self, space, shape, archived=()):
         """Put Today back the way today_shape() saw it, keeping anything added since (on top), and take
         those tabs out of the archive again."""
+        keep = {id(n) for n, _ in shape}
+        # (one reopened from the archive since is there already, as a new tab: brought back too, it was there twice)
+        there = {t.url for t in walk_tabs([n for n in space.today if id(n) not in keep])}
+
         def rebuild(saved):
             nodes = []
             for node, children in saved:
                 if isinstance(node, Folder):
                     node.children = rebuild(children)
+                elif node.url in there:
+                    continue
                 nodes.append(node)
             return nodes
         restored = rebuild(shape)
-        keep = {id(n) for n, _ in shape}
         space.today[:] = [n for n in space.today if id(n) not in keep] + restored
         gone = {id(entry) for entry in archived}
         self.archive[:] = [entry for entry in self.archive if id(entry) not in gone]

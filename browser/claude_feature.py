@@ -80,7 +80,7 @@ class ClaudeFeature(Feature):
         window = self.window
         window.store.settings["claude_model"] = model
         window.store.schedule_save()
-        self.claude.shutdown()  # the warm process was started with the old model
+        self.claude.drop_warm()  # the waiting process was started with the old model (the busy ones finish)
         self.claude.model = model
         self.claude.warm_up()
         window.toast(f"Claude features now use {model.capitalize()}")
@@ -325,7 +325,9 @@ class ClaudeFeature(Feature):
         self._tidy_undo = (space, before)
         window.store._changed()
         window.sidebar.set_tidy_state("undo")
-        QTimer.singleShot(15_000, self._expire_undo)
+        undo = self._tidy_undo
+        # (this tidy's own: an earlier one's timer, still running, took a later tidy's Undo away early)
+        QTimer.singleShot(15_000, lambda: self._expire_undo() if self._tidy_undo is undo else None)
         window.toast(f"Tidied {len(grouped)} tabs into {len(groups)} folders")
 
     def undo_tidy(self):

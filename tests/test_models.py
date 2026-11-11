@@ -305,3 +305,73 @@ def test_nothing_can_be_moved_into_a_live_folder(store):
     store.add_tab(tab)
     store.move_tab(tab, PINNED, folder=folder)
     assert tab not in folder.children
+
+
+def test_a_live_folder_stays_in_pinned(store):
+    """In Today a Live Folder was never refreshed, its tabs lost the feed links they're matched by, and archiving or
+    Clear threw it and its setup away."""
+    space = store.active_space
+    feed = store.add_folder(space, "Feed", kind=PINNED)
+    feed.live = {"kind": "rss", "url": "https://example.com/feed.xml"}
+    item = Tab("https://example.com/post")
+    store.add_tab(item, kind=PINNED)
+    feed.children.append(space.pinned.pop(space.pinned.index(item)))
+    store.move_tab(feed, TODAY)
+    assert feed in space.pinned and feed not in space.today
+    assert item.home_url == "https://example.com/post"
+    store.move_tab(feed, PINNED, index=0)  # (moving it about within Pinned is still fine)
+    assert space.pinned[0] is feed
+
+
+def test_moving_the_last_tab_out_of_a_nested_today_folder_takes_both_folders_away(store):
+    space = store.active_space
+    space.today[:] = []
+    a = Tab("https://a.com")
+    store.add_tab(a)
+    outer = store.add_folder(space, "Outer", kind=TODAY)
+    inner = Folder("Inner")
+    outer.children.append(inner)
+    store.move_tab(a, TODAY, folder=inner)
+    store.move_tab(a, TODAY, index=0)
+    assert space.today == [a]  # (the outer one, empty now too, didn't stay behind as "0 tabs")
+    empty = store.add_folder(space, "Mine", kind=TODAY)  # (one you made empty yourself is left alone)
+    b = Tab("https://b.com")
+    store.add_tab(b)
+    store.move_tab(b, PINNED)
+    assert empty in space.today
+
+
+def test_a_waiting_save_is_made_when_flushed(store):
+    """Quitting with the window put away (Eclipse kept running), nothing saved what changed in the last half second."""
+    store.add_tab(Tab("https://flushed.example/"))  # (a save now waits half a second)
+    assert store._save_timer.isActive()
+    store.flush()
+    assert not store._save_timer.isActive()
+    again = Store(store.path)
+    assert any(t.url == "https://flushed.example/" for t in again.all_tabs())
+
+
+def test_a_new_item_taken_out_of_its_live_folder_loses_its_dot(store):
+    """Opening a Live Folder item clears its dot only while it's in the folder: one dragged out first stayed bold."""
+    space = store.active_space
+    feed = store.add_folder(space, "Feed", kind=PINNED)
+    feed.live = {"kind": "rss", "url": "https://example.com/feed.xml"}
+    item = Tab("https://example.com/new-post")
+    item.fresh = True
+    item.home_url = item.url
+    feed.children.append(item)
+    store.move_tab(item, TODAY, index=0)
+    assert not item.fresh
+
+
+def test_undoing_a_clear_doesnt_bring_back_a_tab_reopened_since(store):
+    space = store.active_space
+    space.today[:] = []
+    a, b = Tab("https://a.com"), Tab("https://b.com")
+    store.add_tab(a)
+    store.add_tab(b)
+    shape = store.today_shape(space)
+    space.today[:] = []  # (cleared)
+    store.add_tab(Tab("https://a.com"))  # (a reopened from the archive: a new tab for it)
+    store.restore_today(space, shape)
+    assert sorted(t.url for t in walk_tabs(space.today)) == ["https://a.com", "https://b.com"]

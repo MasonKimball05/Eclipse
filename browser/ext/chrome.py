@@ -215,6 +215,7 @@ class ChromeExtension:
             main_world = entry.get("world") == "MAIN"
             source = f"""(() => {{
   const href = location.href;
+  if (location.protocol === 'file:') return;  // (your own files: Chrome's off-by-default "Allow access to file URLs", which there's no switch for here)
   const test = (r) => {{ try {{ return new RegExp(r).test(href); }} catch (e) {{ return false; }} }};
   if (!{json.dumps(includes)}.some(test) || {json.dumps(excludes)}.some(test)) return;
   {"" if entry.get("all_frames") else "if (window.top !== window) return;"}

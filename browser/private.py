@@ -262,6 +262,9 @@ class PrivateWindow(QWidget):
             return
         self.current = view
         self.stack.setCurrentWidget(view)
+        # (a tab's permission card only over that tab, and what it asked for while in the background asked now:
+        # the main window does the same as you switch tabs)
+        self.browser.permissions.flush(view)
         for v in self.views:
             self.rows[id(v)].set_current(v is view)
         self._show_url()

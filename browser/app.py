@@ -164,6 +164,7 @@ def run() -> int:
 
     code = app.exec()
     receiver.stop()
+    window.store.flush()  # (what changed in the last half second: quit with the window put away, it was lost)
     window.shutdown()
     crash.clean_exit()
     features.after_app()

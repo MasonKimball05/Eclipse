@@ -146,3 +146,17 @@ def test_strong_passwords():
         assert re.fullmatch(r"[a-zA-Z2-9]{6}-[a-zA-Z2-9]{6}-[a-zA-Z2-9]{6}", password)
         assert any(c.isupper() for c in password) and any(c.isdigit() for c in password)
         assert not set(password) & set("l01O")
+
+
+def test_a_copied_password_is_marked_concealed(qapp, monkeypatch):
+    """Copied plain, clipboard history apps (Maccy, Raycast, Alfred…) kept passwords for good."""
+    from PyQt6.QtWidgets import QApplication
+    from browser import passwords
+    put = []
+
+    class Clipboard:  # (a stand-in: your real clipboard is never touched)
+        def setMimeData(self, data):
+            put.append((data.text(), data.hasFormat(passwords.CONCEALED)))
+    monkeypatch.setattr(QApplication, "clipboard", staticmethod(lambda: Clipboard()))
+    passwords.copy_secret("correct horse")
+    assert put == [("correct horse", True)]

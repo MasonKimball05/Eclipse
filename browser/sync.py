@@ -81,7 +81,17 @@ def snapshot(store) -> dict:
 
 
 def digest(data) -> str:
-    return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:24]
+    """What an item is, for telling whether it changed. Not its tabs' page titles: they change as the pages do
+    (an inbox's unread count), each Mac's its own, and counted, two Macs sent a Space back and forth every look."""
+    return hashlib.sha256(json.dumps(_without_titles(data), sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:24]
+
+
+def _without_titles(data):
+    if isinstance(data, list):
+        return [_without_titles(d) for d in data]
+    if isinstance(data, dict):
+        return {k: _without_titles(v) for k, v in data.items() if not (k == "title" and "url" in data)}
+    return data
 
 
 def new_state() -> dict:
@@ -321,6 +331,25 @@ class Sync(QObject):
         return {"name": latest["name"] or "your other computer",
                 "spaces": [i["data"]["name"] for k, i in latest["items"].items() if k.startswith("space:")]}
 
+    def combine(self):
+        """Keep Both: the other devices' Favorites taken in with these before the first look. That
+        stamps everything here as just changed, so it wins everywhere: one Mac's Favorites, a single item, replaced
+        the other's (theirs closed), though Keep Both was asked for. Spaces each sync on their own: both kept."""
+        remotes = self.others()
+        if not remotes:
+            return
+        latest = max(remotes, key=lambda r: r.get("written") or 0)
+        items = latest.get("items") or {}
+        self._back_up()
+        theirs = clean_item(FAVORITES, (items.get(FAVORITES) or {}).get("data"))
+        if theirs:
+            have = {t.url for t in self.store.favorites}
+            used = {t.id for t in self.store.all_tabs()}
+            came = build_nodes([d for d in theirs if d["url"] not in have], {}, {}, used)
+            self.store.favorites = list(self.store.favorites) + came
+        self.store._changed()
+        self.window.apply_theme()
+
     def adopt(self):
         """Use the other devices' Spaces here in place of these (kept in a backup first)."""
         remotes = self.others()
@@ -372,7 +401,8 @@ class Sync(QObject):
                 pool.pop(t.id, None)
         for key, data in plan["apply"].items():
             if key == FAVORITES:
-                store.favorites = build_nodes(data, pool, live_children, avoid)
+                kept = local_only(store.favorites)
+                store.favorites = put_back(build_nodes(data, pool, live_children, avoid), kept, pool)
             elif key.startswith("space:"):
                 space_id = key.removeprefix("space:")
                 space = store.space(space_id)
@@ -381,7 +411,8 @@ class Sync(QObject):
                     store.spaces.append(space)
                 space.name, space.color, space.icon = data["name"], data["color"], data["icon"]
                 space.theme = data.get("theme") or {}
-                space.pinned = build_nodes(data["pinned"], pool, live_children, avoid)
+                kept = local_only(space.pinned)
+                space.pinned = put_back(build_nodes(data["pinned"], pool, live_children, avoid), kept, pool)
         # (after what came is in: so a Space can go even when it was the last one here, replaced)
         for key in plan["delete"]:
             space = store.space(key.removeprefix("space:")) if key.startswith("space:") else None
@@ -409,6 +440,33 @@ class Sync(QObject):
             window._restore_space_tab()  # (the Space you were in went: you're in another now, with its tab)
         elif current is not None and current in gone:
             window._activate_fallback()
+
+
+def local_only(nodes) -> list:
+    """This Mac's tabs synced data can't carry (a note, an easel, a file: only web addresses go), as (tab, the folder
+    it's in or None, where), to be kept here when what came replaces the rest. Rebuilt from another Mac's copy
+    alone, they were taken away as gone, from every Mac but none."""
+    found = []
+
+    def walk(items, folder_id):
+        for i, node in enumerate(items):
+            if isinstance(node, Folder):
+                if not node.live:
+                    walk(node.children, node.id)
+            elif _url(node.url) is None:
+                found.append((node, folder_id, i))
+    walk(nodes, None)
+    return found
+
+
+def put_back(nodes: list, kept: list, pool: dict) -> list:
+    """`nodes` with local_only()'s tabs back where they were (their folder, if it's still there), and not gone."""
+    folders = {f.id: f for f in _folders(nodes)}
+    for tab, folder_id, index in kept:
+        target = folders[folder_id].children if folder_id in folders else nodes
+        target.insert(min(index, len(target)), tab)
+        pool.pop(tab.id, None)
+    return nodes
 
 
 def _folders(nodes):

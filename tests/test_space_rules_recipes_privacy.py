@@ -85,6 +85,8 @@ def test_private_windows_blocker_blocks_but_never_reports(qapp, data_dir):
     reported = []
     main.tracker_blocked.connect(lambda *a: reported.append(a))
     private.tracker_blocked.connect(lambda *a: reported.append(a))
+    extensions_saw = []  # (extensions' rules and webRequest listeners: not told of private browsing)
+    main.extension_rules = lambda info: extensions_saw.append(info.requestUrl().toString()) and False
     there, here = Request("https://doubleclick.net/ad.js", "https://news.example/"), \
         Request("https://doubleclick.net/ad.js", "https://secret.example/")
     main.interceptRequest(there)
@@ -92,4 +94,5 @@ def test_private_windows_blocker_blocks_but_never_reports(qapp, data_dir):
     qapp.processEvents()
     assert there.blocked and here.blocked
     assert reported == [("news.example", "doubleclick.net")]  # (nothing of secret.example)
+    assert extensions_saw == ["https://doubleclick.net/ad.js"]  # (the main window's request only)
     assert main.count_for("https://secret.example/") == 1  # (the shield still counts it, while Eclipse runs)

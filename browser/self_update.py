@@ -193,8 +193,8 @@ class SelfUpdater(QObject):
         self.status_changed.emit()
 
     def check(self, manual=False):
-        if self._busy:
-            return
+        if self._busy or getattr(self, "_preparing", False):
+            return  # (nor while an update's coming down: its status would be lost, and a second could start)
         self._busy, self._manual = True, manual
         self._set_status({"state": "checking"})
         self.settings["app_update_checked_at"] = time.time()
@@ -240,17 +240,21 @@ class SelfUpdater(QObject):
         self.window.show()
         self.window.raise_()
 
-    def update_and_restart(self):
+    def update_and_restart(self, found=None):
+        """Install `found`, the update the window shows (or the last one found). Read from the last check instead,
+        a check since (hourly, or one that failed offline) changed what was installed, or found nothing to."""
+        found = found or self._found
         self.browser.toast(f"Updating {brand.NAME}…")
-        if (bundle := release_bundle()) is not None and "build" in self._found:
-            if self.status.get("state") == "downloading":
+        if (bundle := release_bundle()) is not None and "build" in found:
+            if getattr(self, "_preparing", False):
                 return  # (already on its way)
-            self._set_status({**self._found, "state": "downloading", "percent": 0})
-            threading.Thread(target=lambda: self._prepare(bundle), daemon=True).start()  # (a few hundred MB)
+            self._preparing = True
+            self._set_status({**found, "state": "downloading", "percent": 0})
+            threading.Thread(target=lambda: self._prepare(bundle, found), daemon=True).start()  # (a few hundred MB)
             return
         threading.Thread(target=lambda: self.applied.emit(*apply_update()), daemon=True).start()  # pip can be slow
 
-    def _prepare(self, bundle):
+    def _prepare(self, bundle, found):
         shown = [-1]
 
         def progress(fraction):
@@ -258,10 +262,11 @@ class SelfUpdater(QObject):
             if percent != shown[0]:
                 shown[0] = percent
                 self.progressed.emit(percent)
-        self._staged, why = release_update.prepare(self._found, bundle, progress)
+        self._staged, why = release_update.prepare(found, bundle, progress)
         self.applied.emit(self._staged is not None, why or "Updated")
 
     def _applied(self, ok, message):
+        self._preparing = False
         if not ok:
             self._set_status({"state": "failed", "reason": message})
             if self.window is None or sip.isdeleted(self.window):  # (the update window says so itself)

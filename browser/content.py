@@ -141,6 +141,19 @@ class FindBar(QFrame):
         motion.animate(self, self.y(), -self.height() - 4, lambda y: self.move(self.x(), round(y)), motion.FAST, gone)
         self.count.setText("")
 
+    def dismiss(self):
+        """Gone at once, for the page you're leaving: its highlights cleared, and Ask on Page's answer (and the
+        request still writing it) with it. Only hidden, the answer came back on the next page's find bar, still
+        being written."""
+        if not self.isVisible():
+            return
+        self._cancel()
+        self.browser.find_in_page("")
+        self._closing = False
+        self.answer.hide()
+        self.count.setText("")
+        self.hide()
+
     def find(self, backward=False):
         self.browser.find_in_page(self.input.text(), backward)
 

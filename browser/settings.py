@@ -5,6 +5,7 @@
 
 import sys
 import time
+from pathlib import Path
 
 import qtawesome as qta
 from PyQt6.QtCore import QRect, QSize, Qt, QTimer, QUrl
@@ -15,7 +16,7 @@ from PyQt6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QDialo
                              QWidget)
 
 from . import (brand, clean_links, dark_pages, macos, passwords, prompts, shortcuts, sidebar_native, spelling,
-               tab_titles, verified)
+               storage, tab_titles, verified)
 from .command_bar import CUSTOM_SETTING, SEARCH_ENGINES, use_custom_sites
 from .downloads import DownloadSettingsForm, find_tool, install_hint
 from .external_links import all_rules as external_rules, set_allowed as set_external
@@ -269,6 +270,23 @@ class SettingsWindow(FadesIn, QWidget):
         self.store.settings[key] = value
         self.store.schedule_save()
 
+    def _mirror(self, widget, read):
+        """`widget` shows what `read()` says each time this window shows: its setting's also changed from menus and
+        the command bar (Do Not Disturb, say), and a control built once went stale, its next click undoing it."""
+        self.__dict__.setdefault("_mirrors", []).append((widget, read))
+        return widget
+
+    def _sync_mirrors(self):
+        for widget, read in self.__dict__.get("_mirrors", []):
+            widget.blockSignals(True)  # (showing it isn't a change)
+            try:
+                if isinstance(widget, QComboBox):
+                    widget.setCurrentIndex(max(0, widget.findData(read())))
+                else:
+                    widget.setChecked(bool(read()))
+            finally:
+                widget.blockSignals(False)
+
     def _native_sidebar_switch(self):
         box = QCheckBox()
         box.setChecked(bool(self.store.settings.get(sidebar_native.SETTING, True)))
@@ -375,7 +393,7 @@ class SettingsWindow(FadesIn, QWidget):
         bar.setTextVisible(False)
         install = QPushButton("Update && Restart")
         install.setObjectName("PermissionAllow")
-        install.clicked.connect(updater.update_and_restart)
+        install.clicked.connect(lambda: updater.update_and_restart())
         below = QWidget()
         b = QHBoxLayout(below)
         b.setContentsMargins(0, 6, 0, 0)
@@ -455,6 +473,7 @@ class SettingsWindow(FadesIn, QWidget):
         links = _combo([("little", "Little Window"), ("tab", "New Tab")],
                        self.store.settings.get("external_links", "little"))
         links.currentIndexChanged.connect(lambda: self._setting("external_links", links.currentData()))
+        self._mirror(links, lambda: self.store.settings.get("external_links", "little"))
         engine = _combo([(k, name) for k, (name, _) in SEARCH_ENGINES.items()],
                         self.store.settings.get("search_engine", "google"))
         engine.currentIndexChanged.connect(lambda: self._setting("search_engine", engine.currentData()))
@@ -576,11 +595,13 @@ class SettingsWindow(FadesIn, QWidget):
     def _tabs(self):
         archive = _combo(ARCHIVE_CHOICES, self.store.settings.get("archive_after_hours", 12))
         archive.currentIndexChanged.connect(lambda: self._setting("archive_after_hours", archive.currentData()))
+        self._mirror(archive, lambda: self.store.settings.get("archive_after_hours", 12))
         sleep = _combo(SLEEP_CHOICES, self.store.settings.get("sleep_after_minutes", DEFAULT_SLEEP_MINUTES))
         sleep.currentIndexChanged.connect(lambda: self._setting("sleep_after_minutes", sleep.currentData()))
         peek = QCheckBox()
         peek.setChecked(self.store.settings.get("peek_enabled", True))
         peek.toggled.connect(lambda on: self._setting("peek_enabled", on))
+        self._mirror(peek, lambda: self.store.settings.get("peek_enabled", True))
         tidy = QCheckBox()
         tidy.setChecked(self.store.settings.get(tab_titles.SETTING, True))
         tidy.toggled.connect(lambda on: (self._setting(tab_titles.SETTING, on), self.browser.sidebar.rebuild()))
@@ -606,6 +627,7 @@ class SettingsWindow(FadesIn, QWidget):
         banners = QCheckBox()
         banners.setChecked(not self.store.settings.get("notifications_dnd", False))
         banners.toggled.connect(lambda on: self._setting("notifications_dnd", not on))
+        self._mirror(banners, lambda: not self.store.settings.get("notifications_dnd", False))
         return self._stack(self._card([
             self._row("Archive Today tabs after", "Unpinned tabs you haven't used for this long move to the "
                                                   "archive (the box icon at the bottom of the sidebar).", archive),
@@ -910,6 +932,9 @@ class SettingsWindow(FadesIn, QWidget):
             widget.setVisible(bool(sites))
         self.allowed_empty.setVisible(not sites)
 
+        self._sync_mirrors()
+        if getattr(self, "_download_form", None) is not None:
+            self._download_form.load()  # (changed in the Download Video window since)
         self.browser.emit("settings_shown", self)  # (the features' pages: Claude's status…)
 
         self.profile_list.clear()
@@ -1089,7 +1114,13 @@ class SettingsWindow(FadesIn, QWidget):
             profile.cookieStore().deleteAllCookies()
             profile.clearHttpCache()
             profile.clearAllVisitedLinks()
-            self.browser.toast(f"Cleared the “{name}” profile")
+            for permission in profile.listAllPermissions():  # (camera, location, notifications you'd allowed)
+                permission.reset()
+            # Pages' own storage (a login kept there, offline copies) is open while Chromium runs: it goes the next
+            # time the profile opens. Only cookies went before, so some sites stayed signed in
+            storage.ask_to_clear_site_data(Path(profile.persistentStoragePath()))
+            self.browser.toast(f"Cleared the “{name}” profile · the rest of its site data goes when you next "
+                               "open " + brand.NAME)
         prompts.confirm(self, "Clear Cookies & Site Data", f"Sign out of every site in the “{name}” profile and "
                         "delete its cookies, cache and site data?", clear, action="Clear", destructive=True)
 
@@ -1223,6 +1254,8 @@ class SettingsWindow(FadesIn, QWidget):
                 def chosen(index):
                     if index == 1:
                         feature.sync.adopt()
+                    else:
+                        feature.sync.combine()  # (their Favorites and order with these, not replaced by them)
                     self.sync_box.blockSignals(True)
                     self.sync_box.setChecked(True)
                     self.sync_box.blockSignals(False)
@@ -1246,6 +1279,7 @@ class SettingsWindow(FadesIn, QWidget):
         box = QCheckBox()
         box.setChecked(self.store.settings.get(name, True))
         box.toggled.connect(lambda on: self._toggle_feature(name, on))
+        self._mirror(box, lambda: self.store.settings.get(name, True))
         row = self._row(title, hint, box)
         if sys.platform not in platforms or self.browser.feature(name) is None:
             row.hide()

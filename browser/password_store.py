@@ -74,7 +74,19 @@ def _key(create=False) -> bytes | None:
 
 
 def needs_recovery() -> bool:
-    return _logins_path().exists() and secure_store.load(KEY_ACCOUNT) is None
+    return _logins_path().exists() and not _opens(secure_store.load(KEY_ACCOUNT))
+
+
+def _opens(key: bytes | None) -> bool:
+    """Whether `key` opens the saved logins (another Mac's folder copied over this one's: a key, but not theirs)."""
+    saved = storage.read_json(_logins_path())
+    if key is None or not saved:
+        return key is not None
+    try:
+        recovery.unseal(key, saved, SEAL)
+        return True
+    except Exception:
+        return False
 
 
 def logins() -> list[dict]:
@@ -84,7 +96,12 @@ def logins() -> list[dict]:
     key = _key()
     if key is None:
         raise Locked()
-    return json.loads(recovery.unseal(key, saved, SEAL))["logins"]
+    try:
+        return json.loads(recovery.unseal(key, saved, SEAL))["logins"]
+    except Exception as error:
+        # A key that isn't theirs: the same as none (the recovery PIN brings theirs back). Raised as it was,
+        # nothing caught it: filling stopped without a word, and Settings → Passwords couldn't open
+        raise Locked() from error
 
 
 def _save(entries: list[dict]):
@@ -314,8 +331,8 @@ def _reseal(new: bytes, old: bytes | None, key: bytes | None = None):
 
 
 def _restore(recovery_key: bytes) -> int:
-    if secure_store.load(KEY_ACCOUNT) is not None:
-        return 0
+    if _opens(secure_store.load(KEY_ACCOUNT)):
+        return 0  # (the key that's here works: nothing to bring back)
     saved = storage.read_json(storage.data_dir() / "passwords" / "recovery.json")
     if not saved:
         return 0

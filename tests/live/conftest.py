@@ -50,6 +50,9 @@ def _keep_out_of_the_way(widget=None):
             return  # (closed again already)
         window = macos._send(ctypes.c_void_p(int(widget.winId())), "window")
         if window:
+            # (a window that floats, like the mini player, stays above every app's windows whatever orderBack says:
+            # normal level first, then behind)
+            macos._send(window, "setLevel:", 0, restype=None, argtypes=(ctypes.c_long,))
             macos._send(window, "orderBack:", None, restype=None, argtypes=(ctypes.c_void_p,))
 
 
@@ -103,9 +106,14 @@ def no_slot_errors():
 def in_the_background(qapp):
     from PyQt6.QtCore import QEvent, QObject, QTimer
 
+    from PyQt6.QtWidgets import QMenu
+
     class Behind(QObject):  # every window the tests open (private windows, Settings…) goes to the back too
         def eventFilter(self, obj, event):
-            if event.type() == QEvent.Type.Show and getattr(obj, "isWindow", lambda: False)() and obj.isWindow():
+            if event.type() == QEvent.Type.Show and isinstance(obj, QMenu):
+                obj.setWindowOpacity(0.0)  # (a menu sits above every window, behind or not: open, but unseen)
+            elif event.type() == QEvent.Type.Show and getattr(obj, "isWindow", lambda: False)() and obj.isWindow():
+                _keep_out_of_the_way(obj)  # (straight away, and again once it's on screen: no flash in front)
                 QTimer.singleShot(0, lambda w=obj: _keep_out_of_the_way(w))
             return False
     _keep_out_of_the_way()

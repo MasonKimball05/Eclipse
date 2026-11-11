@@ -123,3 +123,33 @@ def test_whats_synced_from_a_store(data_dir):
     assert pinned[0] == {"type": "folder", "id": pinned[0]["id"], "name": "Feed", "live": {"kind": "feed", "url": "https://n/rss"}}
     assert pinned[1]["url"] == "https://x.example/" and pinned[1]["custom_title"] == "Ex"
     assert "today.example" not in json.dumps(items)
+
+
+def test_tabs_sync_cant_carry_stay_when_another_macs_copy_comes(qapp):
+    """Only web addresses sync: a pinned note, easel or file: tab never reaches the other Mac, and when its copy of
+    the Space came back newer, it was rebuilt without them, and they were taken away as gone."""
+    from browser.models import Folder, Tab
+    note, easel = Tab("note:abc", "My note"), Tab("easel:xyz", "Sketch")
+    web = Tab("https://mail.example/", "Mail", tab_id="t-mail")
+    folder = Folder("Work", [Tab("https://docs.example/", "Docs", tab_id="t-docs"), easel], "f-work")
+    pinned = [web, note, folder]
+    pool = {t.id: t for t in (web, note, easel, *folder.children)}
+    kept = sync.local_only(pinned)
+    came = [{"type": "folder", "id": "f-work", "name": "Work",
+             "children": [{"id": "t-docs", "url": "https://docs.example/", "title": "Docs"}]},
+            {"id": "t-mail", "url": "https://mail.example/", "title": "Mail"}]  # (reordered on the other Mac)
+    rebuilt = sync.put_back(sync.build_nodes(came, pool, {}), kept, pool)
+    assert note in rebuilt and easel in next(n for n in rebuilt if isinstance(n, Folder)).children
+    assert note.id not in pool and easel.id not in pool  # (so not taken for gone)
+
+
+def test_a_pinned_pages_changing_title_isnt_a_change_to_sync():
+    """A pinned inbox's unread count changed its title, each Mac its own: counted as a change, two Macs sent the
+    Space back and forth every look, for good."""
+    state = sync.new_state()
+    space = _space("Work", "mail.example")
+    assert sync.note_local(state, {"space:w": space}, 1)
+    space["pinned"][0]["title"] = "Inbox (3)"
+    assert not sync.note_local(state, {"space:w": space}, 2)
+    space["pinned"][0]["custom_title"] = "Mail"  # (renamed by you: that is one)
+    assert sync.note_local(state, {"space:w": space}, 3)

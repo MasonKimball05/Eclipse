@@ -47,7 +47,7 @@ class AppsUI(QObject):
 
     def homebase_menu(self, pos):
         b = self.browser
-        hb = b.homebase
+        hb = self.feature.homebase  # (the feature's: the window has none of its own)
         menu = b._menu()
         if hb.status is None:
             menu.addAction(f"Homebase isn't reachable · {hb.error or 'offline'}").setEnabled(False)

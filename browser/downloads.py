@@ -6,9 +6,12 @@
 # ffmpeg come from Homebrew rather than being bundled, since sites change constantly and
 # `brew upgrade` keeps yt-dlp current.
 
+import glob
 import json
 import os
+import re
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -286,6 +289,23 @@ class DownloadItem(QObject):
         pass
 
 
+DESTINATION = "[download] Destination: "
+_FORMAT_PART = re.compile(r"\.f[0-9A-Za-z-]+\.[0-9A-Za-z]+$")  # ("Title [id].f137.mp4": one stream, before merging)
+
+
+def leftovers(destinations) -> list[Path]:
+    """What a cancelled yt-dlp leaves of the files it was writing: their partial downloads, its notes for resuming,
+    and the separate video and audio streams it hadn't merged yet. Nothing else in the folder."""
+    found = []
+    for destination in destinations:
+        dest = Path(destination)
+        found += [p for p in (dest.with_name(dest.name + ".part"), dest.with_name(dest.name + ".ytdl")) if p.exists()]
+        found += sorted(dest.parent.glob(glob.escape(dest.name) + ".part-Frag*"))
+        if _FORMAT_PART.search(dest.name) and dest.exists():
+            found.append(dest)
+    return found
+
+
 class YtDlpDownload(DownloadItem):
     def __init__(self, exe, opts, url, title, playlist_count=0):
         super().__init__(title, "ph.music-note" if opts["kind"] == "audio" else "ph.film-strip")
@@ -295,6 +315,7 @@ class YtDlpDownload(DownloadItem):
         self._stdout = b""
         self._stderr = ""
         self._cancelled = False
+        self._destinations = []  # (the files it's been writing, for a cancel to clear away)
         self.proc = QProcess(self)
         self.proc.setProcessEnvironment(_environment())
         self.proc.readyReadStandardOutput.connect(self._read)
@@ -308,6 +329,11 @@ class YtDlpDownload(DownloadItem):
     def cancel(self):
         if self.state == "running":
             self._cancelled = True
+            # Its own children too (ffmpeg, merging or converting): killed alone, yt-dlp left ffmpeg running, to
+            # finish the file after it was cancelled
+            pid = self.proc.processId()
+            if pid and sys.platform != "win32":
+                subprocess.run(["pkill", "-KILL", "-P", str(pid)], capture_output=True)
             self.proc.kill()
 
     def _prefix(self):
@@ -328,6 +354,8 @@ class YtDlpDownload(DownloadItem):
                 self.fraction = None
             elif line.startswith(PROGRESS_MARKER):
                 self._progress(line[len(PROGRESS_MARKER):].split("|"))
+            elif line.startswith(DESTINATION):
+                self._destinations.append(line[len(DESTINATION):])
             self.changed.emit()
 
     def _progress(self, fields):
@@ -356,6 +384,8 @@ class YtDlpDownload(DownloadItem):
     def _finished(self, code, status):
         if self._cancelled:
             self.state, self.status = "cancelled", "Cancelled"
+            for leftover in leftovers(self._destinations):  # (left, they sat in your Downloads folder)
+                leftover.unlink(missing_ok=True)
         elif code == 0:
             self.state, self.fraction = "done", 1.0
             self.status = f"Done · {self.files_done} files" if self.playlist_count else "Done"
@@ -671,6 +701,30 @@ class DownloadSettingsForm(QWidget):
                 combo.currentIndexChanged.connect(self.save)
             for box in (self.embed_subs, self.embed_metadata, self.embed_thumbnail):
                 box.toggled.connect(self.save)
+
+    def load(self):
+        """The controls as the settings are now. Settings keeps its form for good: changed since in the Download Video
+        window, the next change here saved its old values over all of them."""
+        opts = ytdlp_settings(self.store)
+        combos = ((self.kind, "kind"), (self.video_format, "video_format"), (self.max_height, "max_height"),
+                  (self.audio_format, "audio_format"), (self.cookies, "cookies_from"))
+        edits = ((self.template, "template"), (self.subs, "subtitle_langs"), (self.rate, "rate_limit"))
+        boxes = ((self.embed_subs, "embed_subs"), (self.embed_metadata, "embed_metadata"),
+                 (self.embed_thumbnail, "embed_thumbnail"))
+        widgets = [w for w, _ in combos + edits + boxes]
+        for widget in widgets:
+            widget.blockSignals(True)  # (loading isn't a change to save)
+        try:
+            self.folder.set_folder(opts["folder"])
+            for combo, key in combos:
+                combo.setCurrentIndex(max(0, combo.findData(opts[key])))
+            for edit, key in edits:
+                edit.setText(opts[key])
+            for box, key in boxes:
+                box.setChecked(opts[key])
+        finally:
+            for widget in widgets:
+                widget.blockSignals(False)
 
     def save(self, *_):
         self.store.settings["ytdlp"] = {

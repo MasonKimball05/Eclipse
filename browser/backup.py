@@ -21,7 +21,7 @@ from . import brand, storage
 FORMAT = "eclipse-backup"
 OLD_FORMATS = ("pythonbrowser-backup",)  # (made before the rename: restored the same)
 INCLUDED = ["session.json", "notes", "easels", "browse", "userscripts", "extension_storage", "extensions",
-            "NativeMessagingHosts", "passkeys", "passwords", "recovery.json"]
+            "NativeMessagingHosts", "passkeys", "passwords", "recovery.json", "addresses.json"]  # (AutoFill: left out, a restore had none)
 PENDING = "restore-pending"
 # What runs code: in your pages (extensions, userscripts) or on your Mac (the apps extensions may talk to). A backup
 # from someone else could carry any of it, so restoring says what's there, and can leave it out.
@@ -80,23 +80,34 @@ def stage(path: Path, with_code=True):
     for extensions, and the ones you have now stay."""
     import zipfile
     describe(path)  # refuses anything that isn't a backup
-    pending = storage.data_dir() / PENDING
-    if pending.exists():
-        shutil.rmtree(pending)
+    final = storage.data_dir() / PENDING
+    # Made beside it, and only named as the restore once every file's out: stopped part way (a full disk, a damaged
+    # file in the zip), the half that was there was swapped in at the next launch, the rest coming back empty
+    pending = final.with_name(PENDING + ".partial")
+    for old in (pending, final):
+        if old.exists():
+            shutil.rmtree(old)
     pending.mkdir()
-    with zipfile.ZipFile(path) as archive:
-        for name in archive.namelist():
-            top = name.split("/", 1)[0]
-            target = (pending / name).resolve()
-            # Only what a backup can contain, and nothing that climbs out of the folder
-            if top not in INCLUDED or not target.is_relative_to(pending.resolve()) or name.endswith("/"):
-                continue
-            if top in CODE and not with_code:
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(archive.read(name))
-    if not with_code:
-        (pending / KEEP_CODE).touch()
+    try:
+        with zipfile.ZipFile(path) as archive:
+            for name in archive.namelist():
+                top = name.split("/", 1)[0]
+                target = (pending / name).resolve()
+                # Only what a backup can contain, and nothing that climbs out of the folder
+                if top not in INCLUDED or not target.is_relative_to(pending.resolve()) or name.endswith("/"):
+                    continue
+                if top in CODE and not with_code:
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(archive.read(name))
+        if not with_code:
+            (pending / KEEP_CODE).touch()
+    except Exception as error:
+        shutil.rmtree(pending, ignore_errors=True)
+        if isinstance(error, OSError):
+            raise
+        raise ValueError(f"That backup is damaged ({error})") from error  # (a bad zip, a file in it that won't read)
+    pending.rename(final)
 
 
 def apply_pending() -> Path | None:

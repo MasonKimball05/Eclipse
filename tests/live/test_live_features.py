@@ -1537,8 +1537,9 @@ def test_an_address_fills_a_checkout_but_not_a_newsletter(window, site):
     assert wait_until(lambda: run_js(tab.view, values, world=0) == [
         "Arkan", "Example", "arkan@example.com", "already typed", "1 Main St", "Apt 4", "Springfield", "12345", "US"], 5)
     assert run_js(tab.view, "document.getElementById('newsletter').value", world=0) == ""  # (another form)
-    traps = "['trap-offscreen','trap-clear','trap-tiny','trap-invisible'].map(i => document.getElementById(i).value)"
-    assert run_js(tab.view, traps, world=0) == ["", "", "", ""]  # (fields you can't see)
+    traps = ("['trap-offscreen','trap-clear','trap-tiny','trap-invisible','trap-right','trap-clipped']"
+             ".map(i => document.getElementById(i).value)")
+    assert run_js(tab.view, traps, world=0) == [""] * 6  # (fields you can't see: off past the right, cut off too)
     # With no form, only the fields around the one you clicked, not ones anywhere on the page
     run_js(tab.view, press % "loose-name", world=0)
     assert wait_until(lambda: manager.card_for(tab.view) is not None, 5), "no card for the fields without a form"
@@ -1555,7 +1556,7 @@ def test_the_update_window_shows_whats_new_downloads_and_can_skip(window, monkey
     found = {"state": "available", "build": 202611011200, "version": "Eclipse 2026.11.1", "size": 168_000_000,
              "behind": 1, "subjects": ["Better tabs"], "notes": "- Better tabs\n- Passwords fill faster"}
     asked = []
-    monkeypatch.setattr(updater, "update_and_restart", lambda: asked.append(1))
+    monkeypatch.setattr(updater, "update_and_restart", lambda found=None: asked.append(found or 1))
     updater._manual = False
     updater._offer(found)
     page = updater.window
@@ -1566,7 +1567,7 @@ def test_the_update_window_shows_whats_new_downloads_and_can_skip(window, monkey
     QApplication.processEvents()
     page.grab().save("/private/tmp/claude-501/-Users-masonkimball-projects-GitHub-Eclipse/626a4f58-39ed-47a1-a72d-0f6fa337de5b/scratchpad/update-window.png")
     next(b for b in page.findChildren(QPushButton) if b.text() == "Update && Restart").click()
-    assert asked == [1] and not page.go.isEnabled()
+    assert asked == [found] and not page.go.isEnabled()  # (the update it shows, whatever a check since found)
     updater._set_status({**found, "state": "downloading", "percent": 40})
     assert page.findChildren(QProgressBar)[0].value() == 40 and "40%" in page.state.text()
     updater._set_status({"state": "failed", "reason": "The download didn't finish."})
@@ -2683,7 +2684,7 @@ def test_whats_new_and_the_update_window_open_natively_where_built(window, monke
     found = {"state": "available", "build": 202611011200, "version": "Eclipse 2026.11.1", "size": 168_000_000,
              "notes": "### This week\n- Better tabs\n- Passwords fill faster"}
     asked = []
-    monkeypatch.setattr(updater, "update_and_restart", lambda: asked.append(1))
+    monkeypatch.setattr(updater, "update_and_restart", lambda found=None: asked.append(found or 1))
     updater._manual = False
     updater._offer(found)
     offer = updater.window
@@ -2692,7 +2693,7 @@ def test_whats_new_and_the_update_window_open_natively_where_built(window, monke
     assert state["can_skip"] and "Eclipse 2026.11.1 · 168 MB." in state["about"]
     assert [line["text"] for line in state["sections"][0]["lines"]] == ["Better tabs", "Passwords fill faster"]
     offer.page.press("update")
-    assert asked == [1] and offer.page.state()["busy"]
+    assert asked == [found] and offer.page.state()["busy"]
     updater._set_status({**found, "state": "downloading", "percent": 40})
     assert offer.page.state()["progress"] == 40 and "40%" in offer.page.state()["status"]
     if shots:
@@ -2817,11 +2818,15 @@ def test_the_library_and_downloads_open_natively(window, site, monkeypatch):
     assert all(state["icons"][e["icon"]] for e in state["entries"])  # (each site's icon, as a picture)
     library._act("search", {"value": "links"})  # searched: just what matches
     assert [e["title"] for e in library.page.state()["entries"]] == ["Links Page"]
-    library._act("open", {"id": 0})  # opened: a tab for it
+    library._act("open", {"id": library.page.state()["entries"][0]["id"]})  # opened: a tab for it
     assert wait_until(lambda: window.current_tab is not None and window.current_tab.url.endswith("links.html"), 5)
     library._act("search", {"value": ""})
-    library._act("remove", {"id": 0})  # removed from history
-    assert [h["title"] for h in window.store.history] == ["Links Page"]
+    index_id = next(e["id"] for e in library.page.state()["entries"] if e["title"] == "Index Page")
+    # A page loads while its row's menu is open: a new entry at the top, and Remove still takes the row you chose
+    window.store.history.insert(0, {"url": f"{site}/img.html", "title": "Image Page", "ts": clock.time() + 1})
+    library.refresh()
+    library._act("remove", {"id": index_id})  # removed from history
+    assert [h["title"] for h in window.store.history] == ["Image Page", "Links Page"]
     library._act("section", {"key": "notes"})
     assert library.page.state()["entries"] == [] and "notes" in library.page.state()["empty"].lower()
     if shots:
@@ -3372,3 +3377,369 @@ def test_the_space_and_theme_editors_are_native(window, monkeypatch):
     assert space.color == "#3b82f6" and space.theme["intensity"] == 0.3 and space.theme["colors"] == []
     space.name, space.icon, space.color, space.theme = before
     window.apply_theme()
+
+
+def test_the_homebase_menu_opens(window, monkeypatch):
+    """Its command read the window's homebase, which the window hasn't got (the integrations feature has): the
+    menu never opened, and an error was logged each time."""
+    feature = window.feature("integrations")
+    if feature is None:
+        pytest.skip("no integrations here")
+    shown = []
+    real = window._menu
+
+    def menu(parent=None):
+        m = real(parent)
+        m.exec = lambda *a: shown.append([a.text() for a in m.actions()])  # (not shown: listed)
+        return m
+    monkeypatch.setattr(window, "_menu", menu)
+    feature.homebase.status = None
+    feature.apps.homebase_menu(QPoint(0, 0))
+    assert shown and any("isn't reachable" in t for t in shown[0])
+
+
+def test_right_clicking_a_link_doesnt_select_it(window, site):
+    """A Mac's editing ways select what's right-clicked: on a link (a search result), all its text, highlighted
+    behind the menu. Its selection is put back as it was; plain text still gets its word picked."""
+    from PyQt6.QtWidgets import QMenu
+    tab = open_page(window, f"{site}/links.html")
+    pause(0.8)
+    proxy = tab.view.focusProxy()
+    shown = []
+    real_popup = QMenu.popup
+
+    def right_click(selector):
+        x = run_js(tab.view, f"document.querySelector({selector!r}).getBoundingClientRect().left + 5")
+        y = run_js(tab.view, f"(r => r.top + r.height / 2)(document.querySelector({selector!r}).getBoundingClientRect())")
+        at = QPointF(x, y)
+        for kind, held in ((QEvent.Type.MouseButtonPress, Qt.MouseButton.RightButton),
+                           (QEvent.Type.MouseButtonRelease, Qt.MouseButton.NoButton)):
+            QApplication.sendEvent(proxy, QMouseEvent(kind, at, proxy.mapToGlobal(at), Qt.MouseButton.RightButton,
+                                                      held, Qt.KeyboardModifier.NoModifier))
+            pause(0.15)
+        assert wait_until(lambda: shown, 3), "no menu"
+        shown.clear()
+        menu = QApplication.activePopupWidget()
+        if menu is not None:
+            menu.close()
+        return run_js(tab.view, "getSelection().toString()")
+    QMenu.popup = lambda self, *a: (shown.append(self), real_popup(self, *a))
+    try:
+        assert right_click("a") == ""
+        assert right_click("h1") == "Links"  # (a word, still: as everywhere on a Mac)
+        run_js(tab.view, "getSelection().selectAllChildren(document.querySelector('h1'))")
+        assert right_click("a") == "Links"  # (what you'd selected yourself stays)
+    finally:
+        QMenu.popup = real_popup
+
+
+def _ask_for_notifications(view):
+    run_js(view, "Notification.requestPermission(); 1", 0)
+
+
+def test_a_private_windows_permission_card_stays_with_its_tab(window, site):
+    """The private window never told the permissions its tab changed: a card stayed over the next tab, and a
+    background tab's request was never shown."""
+    private = window.private.new_window(f"{site}/index.html")
+    first = private.current
+    assert loaded(first)
+    second = private.new_tab(select=False, load=False)
+    second.load(QUrl(f"{site}/links.html"))
+    assert loaded(second)
+    manager = window.permissions
+    _ask_for_notifications(first)
+    assert wait_until(lambda: (p := manager._prompts.get(id(first))) is not None and p.isVisible(), 5)
+    private.select(second)
+    pause(0.2)
+    assert not manager._prompts[id(first)].isVisible(), "the first tab's card stayed over the second tab"
+    _ask_for_notifications(second)  # (asked from the background? no: this one's on screen now)
+    private.select(first)
+    pause(0.2)
+    assert manager._prompts[id(first)].isVisible()
+    # A tab in the background asks: shown once you go to it
+    third = private.new_tab(select=False, load=False)
+    third.load(QUrl(f"{site}/img.html"))
+    assert loaded(third)
+    _ask_for_notifications(third)
+    assert wait_until(lambda: manager._waiting.get(id(third)), 5)
+    private.select(third)
+    assert wait_until(lambda: (p := manager._prompts.get(id(third))) is not None and p.isVisible(), 3), \
+        "a background tab's request was never shown"
+    private.close()
+
+
+def test_settings_shows_what_was_changed_elsewhere_and_saves_over_none_of_it(window):
+    """Settings is built once and kept: controls whose setting also changes from menus and the command bar (Do Not
+    Disturb, say) went stale, and its download options, changed since in the Download Video window, were saved back
+    over with their old values at the next change."""
+    from browser.settings import SettingsWindow
+    settings = SettingsWindow(window)
+    try:
+        window.toggle_dnd()  # (from the command bar)
+        window._set_archive_after(24)
+        window.store.settings.setdefault("ytdlp", {})
+        from browser.downloads import ytdlp_settings
+        changed = dict(ytdlp_settings(window.store), folder="/tmp/eclipse-test-videos")
+        window.store.settings["ytdlp"] = changed  # (the Download Video window's own form saved this)
+        settings._refresh()  # (as it shows)
+        for widget, read in settings._mirrors:
+            shown = widget.currentData() if hasattr(widget, "currentData") else widget.isChecked()
+            assert shown == read(), (widget, shown, read())
+        form = settings._download_form
+        form.embed_thumbnail.toggle()  # (any change there saves them all)
+        assert window.store.settings["ytdlp"]["folder"] == "/tmp/eclipse-test-videos"
+        assert window.store.settings["notifications_dnd"] is True
+    finally:
+        settings.deleteLater()
+
+
+def test_switching_tabs_takes_ask_on_pages_answer_away_with_the_find_bar(window, site):
+    """The find bar was only hidden as you switched tabs: Ask on Page's answer, and the request still writing it,
+    came back on the next page's find bar."""
+    first = open_page(window, f"{site}/article.html")
+    second = open_page(window, f"{site}/links.html")
+    window.activate_tab(first)
+    bar = window.content.find_bar
+    bar.open()
+
+    class Request:
+        cancelled = False
+
+        def cancel(self):
+            self.cancelled = True
+    request = bar.request = Request()
+    bar._show_answer("An answer about the first page")
+    bar.answer.show()
+    window.activate_tab(second)
+    assert request.cancelled and bar.request is None
+    assert not bar.isVisible() and not bar.answer.isVisible()
+    bar.open()  # (the next page's own find bar: no answer from the last one)
+    assert not bar.answer.isVisible()
+    bar.close_bar()
+
+
+def test_picturing_the_spaces_either_side_waits_while_you_have_tabs_picked(window, site):
+    """Picturing a neighbouring Space rebuilds the sidebar for it, which dropped the tabs you'd ⌘-clicked: done in
+    the background, while you were about to drag or right-click them."""
+    from browser import space_slide
+    from browser.space_slide import space_pictures
+    store = window.store
+    while len(store.spaces) < 3:
+        store.add_space(f"Extra {len(store.spaces)}", "#22aa66")
+    window.switch_space(store.spaces[0])
+    first, second = open_page(window, f"{site}/index.html"), open_page(window, f"{site}/links.html")
+    pause(0.5)
+    window.sidebar.marked = [first, second]
+    pictures = space_pictures(window)
+    pictures.kept.clear()
+    store.settings[space_slide.PREPARE] = True
+    try:
+        pictures.prepare()
+        assert window.sidebar.marked == [first, second]
+        assert not pictures.kept  # (put off till you've let them go)
+    finally:
+        store.settings[space_slide.PREPARE] = False
+        window.sidebar.marked = []
+
+
+def test_a_space_slide_cut_short_still_switches_the_window_or_gives_way_to_a_click(window, site):
+    """With the next Space's picture ready, the Space is chosen at once and the window switched as the slide lands:
+    stopped by a second slide (a swipe starting), it never landed, and the window kept the last Space's tabs and
+    colors while you were in the new one; and a tab clicked in the last Space meanwhile was taken back from you."""
+    from browser import space_slide
+    from browser.space_slide import SpaceSlide, space_pictures
+    store = window.store
+    while len(store.spaces) < 3:
+        store.add_space(f"Extra {len(store.spaces)}", "#22aa66")
+    first, second = store.spaces[0], store.spaces[1]
+    window.switch_space(first)
+    tab = open_page(window, f"{site}/index.html")
+    pause(0.8)
+
+    def ready():
+        assert wait_until(lambda: not any(c.isVisible() for c in window.findChildren(SpaceSlide)), 3)
+        pictures = space_pictures(window)
+        pictures.kept.clear()
+        store.settings[space_slide.PREPARE] = True
+        try:
+            pictures.prepare()
+        finally:
+            store.settings[space_slide.PREPARE] = False
+        assert pictures.get(second) is not None
+    ready()
+    window.switch_space(second)
+    assert store.active_space is second  # (chosen at once)
+    SpaceSlide(window, 1).deleteLater()  # (another starts before it's landed)
+    assert window.sidebar._built_space == second.id, "the window stayed on the Space before"
+    window.switch_space(first)
+    assert wait_until(lambda: window.sidebar._built_space == first.id, 2)
+    pause(0.8)
+    ready()
+    window.switch_space(second)
+    window.activate_tab(tab)  # (a tab in the Space you're leaving, clicked before the slide lands)
+    pause(0.8)
+    assert store.active_space is first and window.current_tab is tab
+
+
+def test_a_live_folder_ungrouped_while_refreshing_keeps_its_tabs_pages(window, site):
+    """Ungroup (Keep Tabs) while a Live Folder was refreshing: the refresh, landing on the folder that wasn't there
+    any more, closed the pages of the tabs gone from its feed, though they were ordinary tabs in your sidebar now."""
+    from browser.models import PINNED, Tab
+    store = window.store
+    space = store.active_space
+    feed = store.add_folder(space, "Feed", kind=PINNED)
+    feed.live = {"kind": "feed", "url": f"{site}/feed.xml"}
+    kept = []
+    for path in ("index.html", "links.html"):
+        tab = Tab(f"{site}/{path}", path)
+        tab.home_url = tab.url
+        feed.children.append(tab)
+        window.activate_tab(tab)
+        assert loaded(tab.view)
+        kept.append(tab)
+    refresher = window.feature("live_folders").folders
+    told = []
+    refresher._busy.add(feed.id)  # (a refresh under way…)
+    store.ungroup_folder(feed)  # (…when you ungroup it)
+    refresher._finish(feed, [("Index", f"{site}/index.html")], None, None, told.append)  # (links.html gone from it)
+    assert all(t.view is not None for t in kept), "a kept tab's page was closed"
+    assert all(store.locate(t) for t in kept) and not told  # (and no word about a folder that isn't there)
+
+
+def test_a_live_folders_setup_goes_when_its_ungrouped_or_deleted_inside_another(window):
+    """Only deleting a Live Folder itself told its feature it was gone: ungrouped, or deleted inside a folder of
+    your own, its token stayed in the Keychain."""
+    from browser.models import PINNED, Folder
+    store = window.store
+    gone = []
+    window.feature("live_folders").folder_deleted = gone.append
+    feed = store.add_folder(store.active_space, "Feed", kind=PINNED)
+    feed.live = {"kind": "github", "query": "overview"}
+    window.ungroup_folder(feed)
+    assert gone == [feed]
+    outer = store.add_folder(store.active_space, "Mine", kind=PINNED)
+    inner = Folder("Inner feed")
+    inner.live = {"kind": "github", "query": "overview"}
+    outer.children.append(inner)
+    window.delete_folder(outer, asked=True)
+    assert gone == [feed, outer, inner]
+
+
+def test_scripts_never_run_on_the_files_on_your_mac(window, site, site_root):
+    """Chrome keeps file:// behind a switch of its own, off by default; here a script for every page ran on your
+    files too (one opened by an extension, ~/.ssh/id_rsa say, read and sent anywhere)."""
+    from pathlib import Path
+    from browser.ext import userscripts
+    feature = window.feature("extensions")
+    if feature is None:
+        pytest.skip("extensions aren't part of this build")
+    host = feature.host
+    script = userscripts.from_source("// ==UserScript==\n// @name Every page\n// @include *\n// @match *://*/*\n"
+                                     "// @grant none\n// ==/UserScript==\n"
+                                     "document.documentElement.dataset.everyPage = 'ran';\n")
+    host.install_userscript(script)
+    try:
+        web = open_page(window, f"{site}/index.html")
+        assert wait_until(lambda: run_js(web.view, "document.documentElement.dataset.everyPage || ''", 0) == "ran", 5)
+        local = open_page(window, Path(site_root, "links.html").as_uri())
+        pause(0.5)
+        assert run_js(local.view, "document.documentElement.dataset.everyPage || ''", 0) == ""
+    finally:
+        host.remove_userscript(script.id)
+
+
+def test_keep_both_keeps_both_macs_favorites(window, tmp_path, monkeypatch):
+    """Turning sync on with Keep Both stamped everything here as just changed, so this Mac's Favorites (one item)
+    replaced the other Mac's: its favorite tabs were closed there."""
+    import json
+    from browser import sync
+    from browser.models import Tab
+    monkeypatch.setenv("ECLIPSE_SYNC_DIR", str(tmp_path))
+    folder = tmp_path / sync.FOLDER
+    folder.mkdir()
+    (folder / "mac2.json").write_text(json.dumps({
+        "format": "eclipse-sync", "device": "mac2", "name": "Studio Mac", "written": 100, "deleted": {},
+        "items": {"space:theirs": {"modified": 100, "data": {
+            "name": "Their Work", "color": "#aa3366", "icon": "", "theme": {}, "pinned": []}},
+                  "favorites": {"modified": 100, "data": [
+                      {"id": "f-theirs", "url": "https://theirs.example/", "title": "Theirs", "custom_title": None}]},
+                  "order": {"modified": 100, "data": ["theirs"]}}}))
+    window.store.favorites.append(Tab("https://mine.example/", "Mine"))
+    engine = window.feature("sync").sync
+    engine.combine()
+    window.store.settings["sync"] = True
+    engine.refresh_setting()
+    try:
+        engine.run()
+        urls = {t.url for t in window.store.favorites}
+        assert {"https://mine.example/", "https://theirs.example/"} <= urls
+        sent = json.loads((folder / f"{engine.state['device']}.json").read_text())["items"]["favorites"]["data"]
+        assert {"https://mine.example/", "https://theirs.example/"} <= {d["url"] for d in sent}  # (theirs, kept there)
+        names = [sp.name for sp in window.store.spaces]
+        assert "Their Work" in names and len(names) > 1  # (both Macs' Spaces)
+    finally:
+        window.store.settings["sync"] = False
+        engine.refresh_setting()
+
+
+def test_update_installs_the_version_its_window_shows(window, monkeypatch):
+    """Update & Restart read whatever the last check found: one since (hourly, or offline: nothing) changed what was
+    installed, or left nothing to install."""
+    from browser import self_update
+    updater = window.feature("self_update").updater
+    shown = {"state": "available", "build": 202611011200, "version": "Eclipse 2026.11.1"}
+    prepared = []
+    monkeypatch.setattr(self_update, "release_bundle", lambda: "/Applications/Eclipse.app")
+    monkeypatch.setattr(self_update.release_update, "prepare", lambda found, bundle, progress: (prepared.append(found)
+                                                                                                or (None, "stopped")))
+    monkeypatch.setattr(self_update.prompts, "tell", lambda *a, **k: None)
+    updater._found = {}  # (a check since, offline: found nothing)
+    updater.update_and_restart(shown)
+    assert wait_until(lambda: prepared, 3) and prepared == [shown]
+    assert wait_until(lambda: not updater._preparing, 3)
+
+
+def test_a_userscripts_unsafewindow_is_the_pages_own(window, site):
+    """A script asking for unsafeWindow got its own isolated world's window: what it read of the page was undefined,
+    and what it set there the page never saw."""
+    from browser.ext import userscripts
+    feature = window.feature("extensions")
+    if feature is None:
+        pytest.skip("extensions aren't part of this build")
+    host = feature.host
+    script = userscripts.from_source("// ==UserScript==\n// @name Page reach\n// @match *://*/*\n"
+                                     "// @grant unsafeWindow\n// ==/UserScript==\n"
+                                     "unsafeWindow.__fromTheScript = 'reached';\n")
+    host.install_userscript(script)
+    try:
+        tab = open_page(window, f"{site}/index.html")
+        assert wait_until(lambda: run_js(tab.view, "window.__fromTheScript || ''", 0) == "reached", 5)
+    finally:
+        host.remove_userscript(script.id)
+
+
+def test_a_userscripts_saved_value_reaches_its_other_open_tabs(window, site):
+    """Each page kept the values it started with: two tabs of one script saved over each other's (one adding to a
+    list the other had already added to, the first's addition lost)."""
+    from browser.ext import userscripts
+    feature = window.feature("extensions")
+    if feature is None:
+        pytest.skip("extensions aren't part of this build")
+    host = feature.host
+    script = userscripts.from_source(
+        "// ==UserScript==\n// @name Counter\n// @match *://*/*\n// @grant GM_setValue\n// @grant GM_getValue\n"
+        "// ==/UserScript==\n"
+        "document.addEventListener('save-it', e => GM_setValue('n', e.detail));\n"
+        "setInterval(() => { document.documentElement.dataset.n = String(GM_getValue('n', 'none')); }, 100);\n")
+    host.install_userscript(script)
+    try:
+        first = open_page(window, f"{site}/index.html")
+        second = open_page(window, f"{site}/links.html")
+        shown = lambda tab: run_js(tab.view, "document.documentElement.dataset.n || ''", 0)  # noqa: E731
+        assert wait_until(lambda: shown(first) == "none" and shown(second) == "none", 5)
+        run_js(first.view, "document.dispatchEvent(new CustomEvent('save-it', {detail: 7})); 1", 0)
+        assert wait_until(lambda: shown(second) == "7", 5), "the other tab still had the old value"
+        window.activate_tab(first)  # (a tab in the background runs its timers slowly)
+        assert wait_until(lambda: shown(first) == "7", 5)
+    finally:
+        host.remove_userscript(script.id)

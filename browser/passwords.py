@@ -254,7 +254,7 @@ class SaveCard(PageCard):
 
     def __init__(self, manager, view, host, url, username, password, existing):
         super().__init__(manager, view, host)
-        self.url, self.username, self.password = url, username, password
+        self.url, self.username, self.password, self.existing = url, username, password, existing
         self.carries_over = True  # (the form usually sends you to a new page: the card stays for that)
         site = password_store.site_of(url)
         self._set_icon("ph.key")
@@ -284,6 +284,8 @@ class Passwords(QObject):
         self._unlocked = False  # (Touch ID passed since Eclipse opened)
         self._usernames = {}  # site → (username, when): typed on a sign-in's first page, for the password's
         self._made = {}  # site → a strong password Eclipse filled in: saved, without asking, once it's sent
+        self._held = {}  # id(view) → a sign-in step the page announced while another card was asking you something
+        self._never_private = set()  # sites you said never to save for, in a private window (this session only)
 
     @property
     def settings(self):
@@ -312,19 +314,26 @@ class Passwords(QObject):
             # login would match, and the script says each thing once, so it's heard again once the address is in
             QTimer.singleShot(50, lambda: not _gone(view) and self._said(view, message, tries + 1))
             return
+        if self.browser.certificates.overridden(view.url()):
+            # A page whose certificate you chose to trust anyway (Visit Anyway): it may not be the site at all, so
+            # nothing of yours is offered there, filled or saved, as in Chrome
+            return
+        private = _private(view)  # (filling works there; nothing of it is written down)
         url, frame = view.url().toString(), None
         if "frame" in said:  # (a form in an embedded frame: its own address, and only the page's own site's)
             frame = str(said["frame"])
             if not password_store.same_site(QUrl(frame).host(), QUrl(url).host()):
                 return
             url = frame
+        if said.get("kind") == "form" and not self._room_for(view, message):
+            return  # (another card's asking you something: this step's heard once it's answered)
         if said.get("kind") == "form" and said.get("step") == "code":
-            if self.settings.get(FILL_SETTING, True) and id(view) not in self._cards:
+            if self.settings.get(FILL_SETTING, True):
                 found = password_store.codes_for_page(url)
                 if found:
                     self._show(view, CodeCard(self, view, self._host(view), found, frame))
         elif said.get("kind") == "form":
-            if self.settings.get(FILL_SETTING, True) and id(view) not in self._cards:
+            if self.settings.get(FILL_SETTING, True):
                 found = password_store.for_page(url)
                 if found:
                     self._show(view, FillCard(self, view, self._host(view), found,
@@ -334,7 +343,7 @@ class Passwords(QObject):
             if _fillable(url) and self.settings.get(SAVE_SETTING, True) and not isinstance(card, StrongCard):
                 self._show(view, StrongCard(self, view, self._host(view), strong_password(), frame))
         elif said.get("kind") == "username":
-            if _fillable(url) and said.get("username"):
+            if _fillable(url) and said.get("username") and not private:
                 self._usernames[password_store.site_of(url)] = (str(said["username"])[:200], time.time())
         elif said.get("kind") == "sent":
             username = str(said.get("username") or "")[:200] or self._remembered(url)
@@ -361,7 +370,7 @@ class Passwords(QObject):
                 self.browser.toast("Your saved passwords need your recovery PIN first: Settings → Passwords")
             return
         if (not password or not _fillable(url) or not self.settings.get(SAVE_SETTING, True)
-                or site in self.settings.get(NEVER_SETTING, [])):
+                or site in self.settings.get(NEVER_SETTING, []) or site in self._never_private):
             return  # (nothing typed, a page sent in the clear, or you said not to)
         try:
             saved = [e for e in password_store.logins() if password_store.related(QUrl(e["origin"]).host(),
@@ -394,7 +403,7 @@ class Passwords(QObject):
         if not self._still_for(card, login):
             return
         view = card.view
-        if not with_password:
+        if not with_password and not _private(view):
             self._usernames[password_store.site_of(card.frame or view.url().toString())] = (login["username"],
                                                                                             time.time())
         password = login["password"] if with_password else ""
@@ -404,7 +413,8 @@ class Passwords(QObject):
             self.browser.toast("That sign-in form isn't on the page any more")
             self.close(card)
             return
-        password_store.update(login["id"], last_used=time.time())
+        if not _private(view):
+            password_store.update(login["id"], last_used=time.time())
         self.close(card)
 
     def fill_code(self, card, login):
@@ -446,7 +456,12 @@ class Passwords(QObject):
 
     def save(self, card):
         try:
-            password_store.add(card.url, card.username, card.password, source="Eclipse")
+            if getattr(card, "existing", None) is not None:
+                # (the login it found: saved by its own site, "http://" or another part of the site, a new one was
+                # made beside it, the old password kept and offered too)
+                password_store.update(card.existing["id"], password=card.password)
+            else:
+                password_store.add(card.url, card.username, card.password, source="Eclipse")
         except (password_store.Locked, OSError) as error:
             self.browser.toast("Your saved passwords need your recovery PIN first: Settings → Passwords"
                                if isinstance(error, password_store.Locked) else str(error))
@@ -456,8 +471,12 @@ class Passwords(QObject):
         self.browser.toast(f"Password saved for {password_store.site_of(card.url)}")
 
     def never(self, card):
-        never = self.settings.setdefault(NEVER_SETTING, [])
         site = password_store.site_of(card.url)
+        if _private(card.view):
+            self._never_private.add(site)  # (for this private session: in Settings for good, it kept where you'd been)
+            self.close(card)
+            return
+        never = self.settings.setdefault(NEVER_SETTING, [])
         if site not in never:
             never.append(site)
             self.browser.store.schedule_save()
@@ -467,6 +486,16 @@ class Passwords(QObject):
 
     def _host(self, view):
         return self.browser.permissions._host_for(view)
+
+    def _room_for(self, view, message) -> bool:
+        """Whether a sign-in's next step may have its card: one offering the last step (the username, a code) gives
+        way to it; one asking you something (save this password?) is answered first, and the step's heard then.
+        The page says each step once: dropped, a sign-in's password card or its code card never came."""
+        card = self._cards.get(id(view))
+        if card is None or _gone(card) or isinstance(card, (FillCard, CodeCard)):
+            return True
+        self._held[id(view)] = (view, message)
+        return False
 
     def _show(self, view, card):
         old = self._cards.pop(id(view), None)
@@ -494,6 +523,9 @@ class Passwords(QObject):
         if not _gone(card):
             card.host_widget.removeEventFilter(card)
             card.deleteLater()
+        held = self._held.pop(id(card.view), None)  # (a step that came while it asked: heard now)
+        if held is not None and not _gone(held[0]):
+            QTimer.singleShot(0, lambda v=held[0], m=held[1]: not _gone(v) and self._said(v, m))
 
     def card_for(self, view):
         return self._cards.get(id(view))
@@ -519,6 +551,27 @@ def _run_in(view, frame_url, call) -> bool:
         return False
     frame.runJavaScript(call, WORLD)
     return True
+
+
+CONCEALED = "org.nspasteboard.ConcealedType"  # (the mark clipboard history apps honor: nspasteboard.org)
+
+
+def copy_secret(text: str):
+    """Copy a password or code marked as one: plain, clipboard history apps (Maccy, Raycast, Alfred…) kept it for
+    good, long after the minute it's left on the clipboard."""
+    from PyQt6.QtCore import QMimeData
+    from PyQt6.QtWidgets import QApplication
+    data = QMimeData()
+    data.setText(text)
+    data.setData(CONCEALED, b"")
+    QApplication.clipboard().setMimeData(data)
+
+
+def _private(view) -> bool:
+    try:
+        return view.page().profile().isOffTheRecord()
+    except (AttributeError, RuntimeError):
+        return False
 
 
 def _fillable(url: str) -> bool:
@@ -895,14 +948,14 @@ def settings_page(settings):
 
     def copy(login):
         clipboard = QApplication.clipboard()
-        clipboard.setText(login["password"])
+        copy_secret(login["password"])
         browser.toast(f"Copied the password for {password_store.site_of(login['origin'])}: it's cleared in a minute")
         QTimer.singleShot(60_000, lambda: clipboard.text() == login["password"] and clipboard.clear())
 
     def copy_code(login):
         code, left = password_store.otp_code(login["otp"])
         clipboard = QApplication.clipboard()
-        clipboard.setText(code)
+        copy_secret(code)
         browser.toast(f"Copied the code for {password_store.site_of(login['origin'])}: good for {left} more seconds")
         QTimer.singleShot(60_000, lambda: clipboard.text() == code and clipboard.clear())
 

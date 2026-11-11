@@ -625,11 +625,15 @@ class ExtensionsFeature(Feature):
     def profile_ready(self, profile):
         self.host.attach_profile(profile)
 
+    # (Extensions don't run in private windows, Chrome's default too: their pages weren't attached, but their
+    # right-click items were added there, and sent them the page's address and what you'd selected)
     def view_created(self, view, tab):
-        self.host.attach_page(view.page())
+        if not view.page().profile().isOffTheRecord():
+            self.host.attach_page(view.page())
 
     def page_menu(self, menu, request, view, tab):
-        self.host.extend_context_menu(view, menu, request)
+        if not view.page().profile().isOffTheRecord():
+            self.host.extend_context_menu(view, menu, request)
 
     def url_changed(self, tab, url):
         self.host.tab_updated(tab, url=tab.url)

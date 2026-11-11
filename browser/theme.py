@@ -5,11 +5,12 @@
 
 import html
 import random
+import time
 from dataclasses import dataclass
 from functools import lru_cache
 
 from PyQt6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, QSize, Qt, QTimer
-from PyQt6.QtGui import QColor, QFont, QGuiApplication, QIcon, QImage, QLinearGradient, QPainter, QPixmap
+from PyQt6.QtGui import QColor, QCursor, QFont, QGuiApplication, QIcon, QImage, QLinearGradient, QPainter, QPixmap
 from PyQt6.QtWidgets import QComboBox, QLabel, QMenu, QStyledItemDelegate, QWidget
 
 PALETTE = [
@@ -284,6 +285,38 @@ def _quiet(bar, scrolled_by=()):
         source.actionTriggered.connect(show)
     timer.timeout.connect(hide)
     bar.installEventFilter(_PointedAt(bar, show, timer))
+
+
+MENU_SLOP = 8  # points the pointer drifts during the click that opened a menu, and it's still just a click
+MENU_HOLD_S = 0.5  # and as long as the click lasts, however far: let go after, having moved, picks an item
+
+
+class _HeldOpen(QObject):
+    """A menu opened as a button went down (a page's right-click menu: on a Mac it opens then): letting go of that
+    button, the click done, picks nothing and leaves it open, as macOS's own menus do. A click drifts a point or two
+    as it goes: Qt took the item drifted onto (the first: the menu opens with its corner under the pointer) for the
+    one picked, ran it and closed. Held down and moved onto an item, letting go still picks it."""
+
+    def __init__(self, menu):
+        super().__init__(menu)
+        self.start, self.opened, self.moved, self.armed = QCursor.pos(), time.monotonic(), 0, True
+        menu.installEventFilter(self)
+
+    def eventFilter(self, obj, event):
+        if not self.armed:
+            return False
+        if event.type() == QEvent.Type.MouseMove:
+            self.moved = max(self.moved, (event.globalPosition().toPoint() - self.start).manhattanLength())
+        elif event.type() == QEvent.Type.MouseButtonRelease:
+            self.armed = False
+            return time.monotonic() - self.opened < MENU_HOLD_S or self.moved <= MENU_SLOP  # (the click's own)
+        return False
+
+
+def held_open(menu: QMenu) -> QMenu:
+    """`menu`, kept open when the click that opened it lets go where it went down (_HeldOpen)."""
+    _HeldOpen(menu)
+    return menu
 
 
 class _Overlay(QObject):

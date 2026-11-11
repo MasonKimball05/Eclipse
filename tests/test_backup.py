@@ -73,3 +73,38 @@ def test_a_backups_extensions_are_counted_and_can_be_left_out(data_dir, tmp_path
     assert "Theirs" in (data_dir / "session.json").read_text()
     assert [p.name for p in (data_dir / "extensions").iterdir()] == ["mine"]
     assert not (data_dir / "userscripts").exists() and not (data_dir / "NativeMessagingHosts").exists()
+
+
+def test_saved_addresses_come_back_with_a_backup(data_dir, tmp_path):
+    """AutoFill's addresses weren't in a backup, though it says it's everything you've set up: restored on a new Mac,
+    Settings → Addresses was empty."""
+    _fill(data_dir, "Original")
+    (data_dir / "addresses.json").write_text('{"addresses": [{"name": "Arkan Example"}]}')
+    zip_path = tmp_path / "b.zip"
+    backup.create(zip_path)
+    (data_dir / "addresses.json").unlink()
+    backup.stage(zip_path)
+    backup.apply_pending()
+    assert "Arkan Example" in (data_dir / "addresses.json").read_text()
+
+
+def test_a_restore_that_fails_part_way_leaves_nothing_to_swap_in(data_dir, tmp_path, monkeypatch):
+    """Stopped part way (a full disk, a damaged file in the zip), what was written was swapped in at the next launch,
+    and everything it hadn't got to came back empty."""
+    import pytest
+    _fill(data_dir, "Original")
+    zip_path = tmp_path / "b.zip"
+    backup.create(zip_path)
+    real = zipfile.ZipFile.read
+    calls = []
+
+    def failing(self, name, *a, **k):
+        calls.append(name)
+        if len(calls) > 1:
+            raise zipfile.BadZipFile("Bad CRC-32 for file 'notes/a.md'")
+        return real(self, name, *a, **k)
+    monkeypatch.setattr(zipfile.ZipFile, "read", failing)
+    with pytest.raises(ValueError):
+        backup.stage(zip_path)
+    assert backup.apply_pending() is None  # (nothing half-made to swap in)
+    assert "Original" in (data_dir / "session.json").read_text()

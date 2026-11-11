@@ -497,6 +497,12 @@ class CommandBar(QWidget):
             if key == Qt.Key.Key_Tab and self.site is None and site_for_tab(self._typed()):
                 self._set_site(site_for_tab(self._typed()))
                 return True
+            if key in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab):
+                # Otherwise it takes the completion, as in Chrome, or does nothing: let through, Tab moved the focus
+                # out of the bar, and Return and Esc did nothing after
+                if key == Qt.Key.Key_Tab and completing:
+                    self.input.deselect()
+                return True
             if key == Qt.Key.Key_Backspace and self.site is not None and not self.input.text():
                 self._set_site(None)
                 return True

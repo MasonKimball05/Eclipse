@@ -293,6 +293,8 @@ sys.path[:0] = sys.argv[1:3]
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtWebEngineWidgets import QWebEngineView
+from browser import features
+features.before_app()  # (as the app does: pbext://, for extension files, known before the app exists)
 app = QApplication(["eclipse-check"])
 import browser, qtawesome
 for found in pkgutil.walk_packages(browser.__path__, "browser."):

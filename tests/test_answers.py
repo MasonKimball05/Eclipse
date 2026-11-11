@@ -11,3 +11,22 @@ def test_percent_dates_phones_and_utc_offsets():
     from browser.answers import world_time
     assert world_time("time in gmt+5", noon_utc).text.startswith("5:00 PM")  # (five hours ahead of UTC)
     assert world_time("time in utc-3:30", noon_utc).text.startswith("8:30 AM")
+
+
+def test_choosing_another_model_lets_answers_being_written_finish(qapp):
+    """Changing the model shut every Claude process down, so a Browse for Me run or a page answer being written
+    stopped with "Claude stopped unexpectedly" (and the window froze a second for each). Only the waiting one goes."""
+    from PyQt6.QtCore import QObject
+    from browser import ai
+
+    class Worker:
+        def __init__(self):
+            self.killed = False
+
+        def kill(self):
+            self.killed = True
+    claude = ai.Claude(QObject())
+    waiting, busy = Worker(), Worker()
+    claude._warm, claude._workers = waiting, {waiting, busy}
+    claude.drop_warm()
+    assert waiting.killed and not busy.killed and claude._warm is None and claude._workers == {busy}

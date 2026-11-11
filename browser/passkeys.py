@@ -515,9 +515,12 @@ class Passkeys(QObject):
         (conditional) only ever offers Eclipse's, and says nothing when there are none, as a sign-in page that
         waits in the background for a passkey should be left alone."""
         url = view.url()
-        if conditional and not passkey_store.secure(url):
+        # (nor a page whose certificate you trusted anyway: it may not be that site at all, and a passkey's answer,
+        # signed for the real site, could be passed on to it)
+        secure = passkey_store.secure(url) and not self.browser.certificates.overridden(url)
+        if conditional and not secure:
             return
-        if not passkey_store.secure(url):
+        if not secure:
             self._answer(view, request_id, {"use": "key"})  # (Chromium refuses it, as it should)
             return
         host = url.host().lower()
@@ -609,7 +612,7 @@ class Passkeys(QObject):
                 made["credProps"] = bool(options.get("credProps"))
             else:
                 made = passkey_store.sign_in(passkey_id, str(options.get("challenge") or ""), offer["origin"],
-                                             verified)
+                                             verified, [str(i) for i in options.get("allow") or []])
         except (OSError, StopIteration, ValueError) as error:
             self._answer(view, offer["id"], {"error": "NotAllowedError", "message": "The passkey couldn't be used"})
             self.close(card)
@@ -646,13 +649,22 @@ class Passkeys(QObject):
 
     def view_shown(self):
         """A tab came on screen: show its card, if it has one, and hide the others'."""
-        for card in self._cards.values():
-            card.setVisible(card.view.isVisible())
+        # (one gone with what it was on, a Little window moved into the main one, is let go: kept, every tab switch
+        # after raised on it, and what came after in the switch was skipped)
+        for key, card in list(self._cards.items()):
+            if _gone(card) or _gone(card.view):
+                del self._cards[key]
+            else:
+                card.setVisible(card.view.isVisible())
 
     def close(self, card):
+        if _gone(card):
+            self._cards = {k: c for k, c in self._cards.items() if c is not card}
+            return
         if self._cards.get(id(card.view)) is card:
             del self._cards[id(card.view)]
-        card.host_widget.removeEventFilter(card)
+        if not _gone(card.host_widget):
+            card.host_widget.removeEventFilter(card)
         motion.fade(card, False, motion.FAST, done=card.deleteLater) if card.isVisible() else card.deleteLater()
 
     def card_for(self, view) -> PasskeyCard | None:

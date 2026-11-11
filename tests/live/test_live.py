@@ -52,6 +52,21 @@ def test_private_window_keeps_nothing(window, site):
     run_js(view, "window.open('img.html', '_blank')", 0)
     assert wait_until(lambda: len(private.views) == 2, 5)  # popups stay in the private window
     assert len(window.store.history) == history
+    # Its zoom stays as you set it (the main window's per-site zoom put it back at every page), and isn't kept
+    import copy
+    settings = copy.deepcopy(window.store.settings)
+    private.select(view)
+    private.zoom(1)
+    zoomed = view.zoomFactor()
+    assert zoomed > 1
+    view.load(QUrl(f"{site}/index.html"))
+    assert loaded(view)
+    assert abs(view.zoomFactor() - zoomed) < 0.001
+    assert window.store.settings == settings
+    # Nor can its page be watched for changes (kept for good, and looked at with your logins)
+    watch = window.feature("page_watch")
+    if watch is not None:
+        assert watch.selection_menu(None, view, "some words") == []
     private.close()
     assert wait_until(lambda: window.private.profile is None, 5)
 
@@ -808,6 +823,24 @@ def test_a_little_window_fades_in_and_out(window, site):
     little.close()
     assert not closed and little.isVisible()  # fading out first…
     assert wait_until(lambda: closed, 1.5)  # …then gone
+
+
+def test_a_little_window_doesnt_hold_up_quitting(window, site):
+    """Kept open to fade out, a Little window called a quit off (Qt gives up quitting if any window won't close):
+    ⌘Q left Eclipse open, and so did restoring a backup."""
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtWidgets import QApplication
+    from browser.little import LittleWindow
+    little = window._track(LittleWindow(window, url=f"{site}/index.html"))
+    little.show()
+    assert wait_until(lambda: little.windowOpacity() == 1.0, 1)
+    app = QApplication.instance()
+    app._eclipse_quit_watch.eventFilter(app, QEvent(QEvent.Type.Quit))  # (as quitting does, just before the closes)
+    assert little.close(), "it wouldn't close while quitting"
+    assert not little.isVisible()
+    pause(0.05)  # (and a quit given up isn't taken for quitting afterwards)
+    from browser.little import _Quitting
+    assert not _Quitting.now
 
 
 def test_the_command_bar_stays_inside_a_short_window(window, site):
@@ -2176,3 +2209,159 @@ def test_the_collapsed_sidebar_spreads_out_while_the_pointer_rests_on_it(window,
     pause(floating_sidebar.REST_MS / 1000 + 0.3)
     assert not spread.active
     window.toggle_compact_sidebar()
+
+
+def test_tab_in_the_command_bar_takes_the_completion_and_never_leaves_it(window, site):
+    """Tab was only the bar's when it named a site to search: otherwise it moved the focus out of the bar, and
+    Return and Esc did nothing after."""
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtWidgets import QApplication
+    window.store.record_history("https://quietlittleblog.example/", "A blog")  # (no site search of its own)
+    window.open_command_bar("new")
+    bar = window.command_bar
+    bar.input.setFocus()
+
+    def press(key):
+        event = QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier)
+        return QApplication.sendEvent(bar.input, event)
+    bar.input.setText("quietl")
+    bar._prev_typed = ""
+    bar.update_results()
+    assert bar.input.hasSelectedText()  # (the rest of the address offered after what's typed)
+    assert press(Qt.Key.Key_Tab)  # (the bar's: not passed on to move the focus)
+    assert not bar.input.hasSelectedText() and bar.input.text().startswith("quietlittleblog.example")
+    bar.input.setText("zzzz qqqq")
+    bar._prev_typed = ""
+    bar.update_results()
+    assert press(Qt.Key.Key_Tab) and press(Qt.Key.Key_Backtab)
+    assert bar.isVisible()
+    bar.close_bar()
+
+
+def test_zooming_a_little_window_says_so_there_not_in_the_main_window(window, site):
+    from browser.little import LittleWindow
+    little = window._track(LittleWindow(window, url=f"{site}/index.html"))
+    little.show()
+    assert loaded(little.view)
+    little._zoom(1)
+    assert little.view.zoomFactor() > 1 and little.toast.text().startswith("Zoom ")
+    assert not window.toasts  # (nothing said behind it, in the main window)
+    little._zoom(0)
+    little.close()
+
+
+def test_extensions_get_nothing_from_a_private_window(window, site, monkeypatch):
+    """Extensions don't run in private windows (Chrome's default too), but their right-click items were added there,
+    and sent them the private page's address and what you'd selected."""
+    feature = window.feature("extensions")
+    if feature is None:
+        pytest.skip("extensions aren't part of this build")
+    attached, menus = [], []
+    monkeypatch.setattr(feature.host, "attach_page", lambda page: attached.append(page))
+    monkeypatch.setattr(feature.host, "extend_context_menu", lambda *a: menus.append(a))
+    private = window.private.new_window(f"{site}/index.html")
+    view = private.current
+    assert loaded(view)
+    feature.page_menu(None, None, view, None)
+    assert not attached and not menus
+    normal = open_page(window, f"{site}/links.html")
+    feature.page_menu(None, None, normal.view, normal)
+    assert menus  # (an ordinary page still has them)
+    private.close()
+
+
+def test_no_password_is_offered_on_a_page_whose_certificate_you_trusted_anyway(window, site, monkeypatch):
+    """Visit Anyway past a bad certificate: the page may not be that site at all (someone on the network in between),
+    yet its saved login was offered, and filled after Touch ID. Chrome turns the password manager off there."""
+    from browser import password_store
+    _stand_ins(monkeypatch)
+    login = site.replace("127.0.0.1", "localhost") + "/login.html"
+    password_store.add(login, "arkan@example.com", "correct horse")
+    monkeypatch.setattr(window.certificates, "overridden", lambda url: True)
+    tab = open_page(window, login)
+    pause(1)
+    assert window.passwords.card_for(tab.view) is None
+    monkeypatch.setattr(window.certificates, "overridden", lambda url: False)  # (the same page, trusted: offered)
+    tab.view.reload()
+    assert loaded(tab.view)
+    assert wait_until(lambda: window.passwords.card_for(tab.view) is not None, 5)
+
+
+def test_never_save_in_a_private_window_isnt_kept_in_settings(window, site, monkeypatch):
+    from types import SimpleNamespace
+    from browser.passwords import NEVER_SETTING
+    private = window.private.new_window(f"{site}/index.html")
+    view = private.current
+    assert loaded(view)
+    card = SimpleNamespace(url="https://secret.example/login", view=view)
+    monkeypatch.setattr(window.passwords, "close", lambda c: None)
+    window.passwords.never(card)
+    assert "secret.example" not in window.store.settings.get(NEVER_SETTING, [])
+    private.close()
+
+
+def test_no_passkey_answers_a_page_whose_certificate_you_trusted_anyway(window, site, monkeypatch):
+    """Its answer is signed for the real site: on a page past a bad certificate (maybe someone in between), it could
+    be passed on to sign in as you there."""
+    _stand_ins(monkeypatch)
+    tab = open_page(window, site.replace("127.0.0.1", "localhost") + "/index.html")
+    answers = []
+    monkeypatch.setattr(window.passkeys, "_answer", lambda view, request_id, answer: answers.append(answer))
+    monkeypatch.setattr(window.certificates, "overridden", lambda url: True)
+    window.passkeys._asked(tab.view, 1, "get", {"rpId": "localhost"})
+    assert answers == [{"use": "key"}]
+
+
+def test_updating_a_password_changes_the_login_found_not_a_new_one(window, site, monkeypatch):
+    """Found by its site (www. or not, http or https), but saved by its exact address: Update made a second login
+    beside the old one, which kept the old password, and both were offered."""
+    from types import SimpleNamespace
+    from browser import password_store
+    _stand_ins(monkeypatch)
+    old = password_store.add("https://example.com/login", "arkan@example.com", "old horse")
+    monkeypatch.setattr(window.passwords, "close", lambda card: None)
+    card = SimpleNamespace(url="https://www.example.com/account", username="arkan@example.com",
+                           password="new horse", existing=old, view=None)
+    window.passwords.save(card)
+    entries = password_store.logins()
+    assert [(e["origin"], e["password"]) for e in entries] == [("https://example.com", "new horse")]
+
+
+def test_a_passkey_card_gone_with_its_window_doesnt_break_switching_tabs(window, site, monkeypatch):
+    """A Little window moved into the main window takes its passkey card with it: kept in the list, every tab switch
+    after raised on it, and the rest of the switch was skipped."""
+    from PyQt6 import sip
+    from PyQt6.QtWidgets import QWidget
+    tab = open_page(window, f"{site}/index.html")
+
+    class Card(QWidget):  # (a card on a window that's since gone)
+        view = tab.view
+        host_widget = QWidget()
+    card = Card()
+    window.passkeys._cards[id(tab.view)] = card
+    sip.delete(card)
+    window.passkeys.view_shown()  # (a tab switch)
+    assert window.passkeys.card_for(tab.view) is None
+
+
+def test_a_sign_in_step_heard_while_a_card_asks_you_something_comes_once_its_answered(window, site, monkeypatch):
+    """The page says each step of a sign-in once: heard while another card was up, it was dropped, so a two-step
+    sign-in's password card, or the code card after a save card, never came."""
+    from PyQt6.QtWidgets import QWidget
+    from browser.passwords import FillCard
+    tab = open_page(window, f"{site}/index.html")
+    manager = window.passwords
+    class Asking(QWidget):  # (a save card, say)
+        view = tab.view
+        host_widget = QWidget()
+    asking = Asking()
+    manager._cards[id(tab.view)] = asking
+    assert not manager._room_for(tab.view, "the code step")
+    heard = []
+    monkeypatch.setattr(manager, "_said", lambda view, message, tries=0: heard.append(message))
+    manager.close(asking)
+    assert wait_until(lambda: heard == ["the code step"], 2)
+    offer = FillCard.__new__(FillCard)  # (an offer for the last step gives way at once)
+    manager._cards[id(tab.view)] = offer
+    assert manager._room_for(tab.view, "the password step")
+    manager._cards.pop(id(tab.view))
