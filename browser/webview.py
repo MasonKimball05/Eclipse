@@ -152,7 +152,7 @@ class WebPage(QWebEnginePage):
                 WebPage.external_link(self, url, is_main_frame,
                                       nav_type == QWebEnginePage.NavigationType.NavigationTypeRedirect)
             return False
-        if self.navigation_filter is not None and not self.navigation_filter(url, is_main_frame):
+        if self.navigation_filter is not None and not self.navigation_filter(url, is_main_frame, nav_type):
             return False
         if is_main_frame and not all(allow(self, url) for allow in list(WebPage.blockers)):
             return False

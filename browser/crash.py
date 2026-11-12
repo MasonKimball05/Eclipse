@@ -11,6 +11,7 @@ import datetime
 import faulthandler
 import os
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -27,6 +28,8 @@ MAX_LOG_BYTES = 1_000_000
 _native_log = None
 
 
+KEPT_CRASH_LOGS = 10
+
 def logs_dir() -> Path:
     folder = storage.data_dir() / "logs"
     folder.mkdir(exist_ok=True)
@@ -41,8 +44,20 @@ def _alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True
+        return False  # (another account's process, a system one: never the last run, which was ours)
     return True
+
+
+def _booted_at() -> float | None:
+    """When the Mac last started (None elsewhere, or if it can't say): a last run from before then isn't running."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        import subprocess
+        text = subprocess.run(["sysctl", "-n", "kern.boottime"], capture_output=True, text=True, timeout=2).stdout
+        return float(text.split("sec =")[1].split(",")[0])
+    except (OSError, IndexError, ValueError, subprocess.SubprocessError):
+        return None
 
 
 def _alive_on_windows(pid: int) -> bool:
@@ -67,14 +82,20 @@ def start() -> dict | None:
     crashed = None
     try:
         previous = marker.read_text().split()
-        if previous and not _alive(int(previous[0])):
-            crashed = {"when": " ".join(previous[1:]), "native": native.exists() and native.stat().st_size > 0}
+        started = float(previous[3]) if len(previous) > 3 else None
+        booted = _booted_at() if started is not None else None
+        # (its process number may be another's by now: after a restart, numbers start again from low)
+        before_boot = started is not None and booted is not None and started < booted
+        if previous and (before_boot or not _alive(int(previous[0]))):
+            crashed = {"when": " ".join(previous[1:3]), "native": native.exists() and native.stat().st_size > 0}
     except (OSError, ValueError):
         pass
-    marker.write_text(f"{os.getpid()} {datetime.datetime.now():%Y-%m-%d %H:%M}")
+    marker.write_text(f"{os.getpid()} {datetime.datetime.now():%Y-%m-%d %H:%M} {time.time():.0f}")
     if crashed and crashed["native"]:
         # Keep the crash's stack for reading; this run gets a fresh file
         native.replace(logs_dir() / f"native-crash-{datetime.datetime.now():%Y%m%d-%H%M%S}.log")
+        for old in sorted(logs_dir().glob("native-crash-*.log"))[:-KEPT_CRASH_LOGS]:  # (the latest few, not all)
+            old.unlink(missing_ok=True)
     _native_log = open(native, "w")
     faulthandler.enable(_native_log, all_threads=True)
     return crashed

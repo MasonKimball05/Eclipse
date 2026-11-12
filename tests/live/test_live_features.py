@@ -753,6 +753,9 @@ def test_a_video_keeps_playing_in_the_mini_player_when_you_leave_its_tab(window,
         from browser import macos
         assert macos.window_rounding(player.window) == (mini_player.RADIUS, True, False)
         assert macos.window_border(player.window) == (1.0, mini_player.BORDER)  # (and a light edge just inside)
+        # (with you on every desktop, and over a window in full screen: else left behind, or not shown at all)
+        assert macos.collection_behavior(player.window) & (macos._NS_JOIN_ALL_SPACES | macos._NS_FULL_SCREEN_AUXILIARY) \
+            == macos._NS_JOIN_ALL_SPACES | macos._NS_FULL_SCREEN_AUXILIARY
 
     controls = player.window.controls
     at = QPointF(50, 50)
@@ -971,6 +974,8 @@ def test_the_page_youre_on_is_offered_to_your_other_devices(window, site, monkey
     monkeypatch.setattr(macos, "handoff", lambda url, title="": offered.append((url, title)) or True)
     monkeypatch.setattr(macos, "end_handoff", lambda: offered.append(None))
     window.store.settings["handoff"] = True  # (off in tests: see conftest)
+    from browser import handoff
+    monkeypatch.setattr(handoff, "offerable", lambda url: url.startswith("http"))  # (the test site's on this Mac)
     tab = open_page(window, site + "/article.html")
     assert wait_until(lambda: offered and offered[-1] == (tab.url, tab.label) and tab.label != tab.url, 5)
     # Closing the window (Eclipse keeps running) stops it; the Dock bringing it back offers it again
@@ -1837,7 +1842,7 @@ def test_low_power_mode_pauses_background_tabs_and_motion(window, site, monkeypa
     window.store.settings["sleep_after_minutes"] = 60
     front.last_active = time.time() - 11 * 60
     window.sleep_idle_tabs()
-    assert window.is_sleeping(front)
+    assert wait_until(lambda: window.is_sleeping(front), 3)  # (once it's said nothing's typed into it)
     window.store.settings["sleep_after_minutes"] = 0  # ("Never" stays never)
     window.activate_tab(front)
     assert wait_until(lambda: not window.is_sleeping(front), 3)
@@ -2010,14 +2015,15 @@ def test_memory_running_low_puts_the_longest_unused_tabs_to_sleep(window, site, 
     assert not any(window.is_sleeping(t) for t in tabs)
     level[0] = memory.LOW
     assert feature.check() == memory_saver.AT_ONCE[memory.LOW]
-    assert [window.is_sleeping(t) for t in tabs] == [True, True, True, False, False, False]
+    # (each asked first whether something's typed into it: asleep once it's answered)
+    assert wait_until(lambda: [window.is_sleeping(t) for t in tabs] == [True, True, True, False, False, False], 3)
     assert window.toasts[-1].startswith("Memory's running low")
     told = len(window.toasts)
     assert feature.check() == 1  # (the last one unused long enough; and no second toast so soon)
-    assert window.is_sleeping(tabs[3]) and len(window.toasts) == told
+    assert wait_until(lambda: window.is_sleeping(tabs[3]), 3) and len(window.toasts) == told
     level[0] = memory.CRITICAL  # (critical: a minute unused is enough)
     tabs[4].last_active = now - 90
-    assert feature.check() == 1 and window.is_sleeping(tabs[4])
+    assert feature.check() == 1 and wait_until(lambda: window.is_sleeping(tabs[4]), 3)
     assert not window.is_sleeping(tabs[5])  # (never the tab you're on)
     # Turned off in Settings: nothing sleeps
     window.activate_tab(tabs[0])
@@ -4022,3 +4028,816 @@ def test_the_find_bar_says_what_its_buttons_are_and_gives_the_keys_back(window, 
     bar.open()
     bar.close_bar()
     assert focused == [True]
+
+
+def test_a_live_folder_can_be_edited_from_its_menu(window, monkeypatch):
+    """Right-clicking a Live Folder offered no way to change what it follows or what it's called: only delete it
+    and make it again."""
+    from PyQt6.QtWidgets import QMenu
+    from browser.models import PINNED, Tab
+    feature = window.feature("live_folders")
+    refreshed = []
+    monkeypatch.setattr(feature, "_refresh", lambda folder: refreshed.append(folder))
+    folder = window.store.add_folder(window.store.active_space, "News", kind=PINNED)
+    folder.live = {"kind": "feed", "url": "https://news.example/feed.xml", "seen": ["https://news.example/1"]}
+    item = Tab("https://news.example/1", "One")
+    item.home_url = item.url
+    folder.children.append(item)
+    menu = QMenu()
+    feature.folder_menu(menu, folder)
+    assert "Edit Live Folder…" in [a.text() for a in menu.actions()]
+    # Renamed, the same feed: its items and what you've seen stay
+    assert feature._edited(folder, {"kind": "feed", "feed_url": "https://news.example/feed.xml",
+                                    "name": "Morning News"}) is None
+    assert folder.name == "Morning News" and folder.live["named"] and folder.children == [item]
+    assert folder.live["seen"] == ["https://news.example/1"] and refreshed == [folder]
+    # Another feed: the old items go, and it fills again
+    assert feature._edited(folder, {"kind": "feed", "feed_url": "other.example/rss", "name": "Morning News"}) is None
+    assert folder.live["url"] == "https://other.example/rss" and folder.children == [] and "seen" not in folder.live
+    assert feature._edited(folder, {"kind": "feed", "feed_url": "", "name": "x"})  # (nothing to follow: says so)
+    # A token folder's token is kept when none's typed
+    folder.live = {"kind": "json", "url": "https://api.example/items", "auth": "token", "header": "Authorization"}
+    tokens = []
+    monkeypatch.setattr(feature, "set_token", lambda f, token: tokens.append(token) or True)
+    assert feature._edited(folder, {"kind": "json", "json_url": "https://api.example/items", "json_auth": "token",
+                                    "json_header": "Authorization", "json_token": "", "name": "API"}, True) is None
+    assert tokens == [] and folder.live["auth"] == "token"
+    window.store.remove_tab(folder)
+
+
+def test_a_live_folder_has_its_own_refresh_interval_and_item_limit(window, monkeypatch):
+    """Every Live Folder refreshed each half hour and showed at most 25 items: now each can say how often, and how
+    many (in each of its sub-folders, for the GitHub one)."""
+    import time
+    from browser.live_folder_dialog import LiveFolderDialog, live_from, live_sections
+    from browser.live_folders import apply_items, capped, item_limit
+    from browser.models import PINNED
+    feature = window.feature("live_folders")
+    # The form offers both, filled in from the folder
+    fields = {f.get("id"): f for s in live_sections({"kind": "feed", "url": "x", "refresh": 5, "limit": 50})
+              for f in s["fields"]}
+    assert fields["refresh"]["value"] == "5" and fields["limit"]["value"] == "50"
+    live, _name, _token = live_from({"kind": "feed", "feed_url": "a.example/rss", "refresh": "60", "limit": "10"})
+    assert live["refresh"] == 60 and live["limit"] == 10
+    assert "refresh" not in live_from({"kind": "feed", "feed_url": "a.example/rss", "refresh": "7"})[0]  # (not a choice)
+    # Set back to the default, in the edit form: it goes
+    edited = window.store.add_folder(window.store.active_space, "E", kind=PINNED)
+    edited.live = {"kind": "feed", "url": "https://a.example/rss", "refresh": 5, "limit": 50}
+    monkeypatch.setattr(feature, "_refresh", lambda f: None)
+    assert feature._edited(edited, {"kind": "feed", "feed_url": "https://a.example/rss", "refresh": "30",
+                                    "limit": "25"}) is None
+    assert "refresh" not in edited.live and "limit" not in edited.live
+    window.store.remove_tab(edited)
+    dialog = LiveFolderDialog(window, {"kind": "feed", "url": "x", "refresh": 240, "limit": 100})
+    assert dialog.values()["refresh"] == 240 and dialog.values()["limit"] == 100
+    dialog.deleteLater()
+    # The limit: in a folder, and in each sub-folder
+    items = [(f"Item {i}", f"https://a.example/{i}") for i in range(40)]
+    assert len(capped(items, 10)) == 10
+    assert [len(t) for _n, t in capped([("A", items), ("B", items[:3])], 10)] == [10, 3]
+    folder = window.store.add_folder(window.store.active_space, "Feed", kind=PINNED)
+    folder.live = {"kind": "feed", "url": "https://a.example/rss", "limit": 10}
+    monkeypatch.setattr(feature.folders, "_feed", lambda url, done, *a, **k: done(items, "A"))
+    feature.folders.refresh(folder)
+    assert len(folder.children) == 10 and item_limit(folder.live) == 10
+    # The interval: due once its own minutes have passed since it last asked
+    asked = []
+    monkeypatch.setattr(feature.folders, "refresh", lambda f, on_done=None: asked.append(f))
+    monkeypatch.setattr(feature.folders, "folders", lambda: [folder])
+    folder.live.update(refresh=5, refreshed=time.time() - 4 * 60)
+    feature.folders._tried.pop(folder.id, None)
+    feature.folders.refresh_due()
+    assert asked == []
+    folder.live["refreshed"] = time.time() - 6 * 60
+    feature.folders.refresh_due()
+    assert asked == [folder]
+    folder.live["refresh"] = 60  # (the half-hour default no longer applies)
+    asked.clear()
+    feature.folders.refresh_due()
+    assert asked == []
+    window.store.remove_tab(folder)
+
+
+def test_a_page_has_most_shortcut_keys_before_the_window(window, site):
+    """⌘S toggled the sidebar in Google Docs (where it saves), ⌘K and ⌘F never reached a web app's own search: the
+    window's shortcuts took every key first. Now the page has the key first, as in Chrome, and the window's
+    shortcut runs when the page lets it go by. The browser's own keys (⌘T, ⌘W, ⌘L, switching tabs) stay the
+    window's."""
+    from PyQt6.QtTest import QTest
+    tab = open_page(window, f"{site}/typing.html")
+    pause(0.3)
+    tab.view.page().runJavaScript("window.keys = []; document.addEventListener('keydown', e => {"
+                                  "keys.push(e.key); if (window.takeIt && e.key === 's') e.preventDefault() })")
+    toggled = []
+    sidebar = next(a for a in window.actions() if a.text() == "Toggle Sidebar")
+    spy = lambda *_: toggled.append(1)  # noqa: E731
+    sidebar.triggered.connect(spy)  # (and it toggles too: twice, back as it was)
+    tab.view.setFocus()
+    pause(0.3)
+    cmd = Qt.KeyboardModifier.ControlModifier  # (⌘ on a Mac)
+
+    def keys():
+        got = []
+        tab.view.page().runJavaScript("window.keys.splice(0)", got.append)
+        assert wait_until(lambda: got, 2)
+        return [k for k in got[0] if k not in ("Meta", "Control")]
+    # A page that doesn't want it: the page sees it, then the window's shortcut runs
+    QTest.keyClick(tab.view.focusProxy(), Qt.Key.Key_S, cmd)
+    assert wait_until(lambda: toggled, 2) and keys() == ["s"]
+    # A page that takes it (preventDefault): only the page's
+    tab.view.page().runJavaScript("window.takeIt = true")
+    pause(0.2)
+    QTest.keyClick(tab.view.focusProxy(), Qt.Key.Key_S, cmd)
+    pause(0.6)
+    assert toggled == [1] and keys() == ["s"]
+    # ⌘S once more, let by: the sidebar's back as it was
+    tab.view.page().runJavaScript("window.takeIt = false")
+    pause(0.2)
+    QTest.keyClick(tab.view.focusProxy(), Qt.Key.Key_S, cmd)
+    assert wait_until(lambda: len(toggled) == 2, 2)
+    sidebar.triggered.disconnect(spy)
+    # The browser's own: the window's, first (the page isn't asked)
+    from PyQt6.QtCore import QEvent
+    from PyQt6.QtGui import QKeyEvent
+    asks = lambda key, mods=cmd: window.page_keys.action_for(QKeyEvent(QEvent.Type.ShortcutOverride, key, mods))
+    assert asks(Qt.Key.Key_S).text() == "Toggle Sidebar" and asks(Qt.Key.Key_F).text() == "Find…"
+    assert [asks(k) for k in (Qt.Key.Key_T, Qt.Key.Key_W, Qt.Key.Key_L, Qt.Key.Key_1, Qt.Key.Key_R)] == [None] * 5
+    assert asks(Qt.Key.Key_Tab, Qt.KeyboardModifier.MetaModifier) is None  # (⌃Tab)
+
+
+def test_menu_keys_in_a_private_or_little_window_stay_in_it(window, site, monkeypatch):
+    """On a Mac the menu bar is the main window's even with a Private or Little window in front, so its keys ran on
+    the main window behind: ⌘D pinned its tab, ⌘S folded its sidebar, ⌘P printed its page. Now an item runs in
+    the window in front, where it has one there, and does nothing otherwise."""
+    import warnings
+    from PyQt6.QtWidgets import QApplication
+    actions = {a.text(): a for a in window.actions()}
+    private = window.private.new_window(f"{site}/index.html")
+    assert wait_until(lambda: private.current is not None, 3)
+    private.new_tab(f"{site}/article.html")
+    first, second = private.views
+
+    def front(w):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            QApplication.setActiveWindow(w)
+        assert wait_until(lambda: QApplication.activeWindow() is w, 2)
+    current = open_page(window, f"{site}/links.html")
+    sidebar_shown, where = window.sidebar.isVisible(), window.store.locate(current)
+    front(private)
+    actions["Toggle Sidebar"].trigger()
+    actions["Pin / Unpin Tab"].trigger()
+    assert window.sidebar.isVisible() == sidebar_shown and window.current_tab is current
+    assert window.store.locate(current) == where
+    actions["Tab 1"].trigger()
+    assert private.current is first
+    actions["Next Tab"].trigger()
+    assert private.current is second
+    actions["Close Tab"].trigger()
+    assert private.views == [first] and window.current_tab is current
+    private.close()
+    # A Little window: its own Close and Zoom
+    little = window.new_little_window(f"{site}/index.html")
+    assert wait_until(lambda: little.view is not None and little.view.url().isValid(), 3)
+    front(little)
+    zoomed = little.view.zoomFactor()
+    actions["Zoom In"].trigger()
+    assert little.view.zoomFactor() > zoomed
+    actions["Actual Size"].trigger()
+    actions["Close Tab"].trigger()
+    assert wait_until(lambda: not little.isVisible(), 3) and window.current_tab is current
+    front(window)
+
+
+def test_a_page_card_is_reached_from_the_keyboard_without_stealing_it(window, site, monkeypatch):
+    """A permission card (or an app's, or a passkey's) could only be answered with the mouse, and VoiceOver never
+    heard it appear. Taking the keyboard as it appears would answer it with a key meant for the page, so it doesn't:
+    VoiceOver says it, and ⌥⇧⌘A (Go to Prompt on Page, as in Chrome) moves the keyboard to it."""
+    from PyQt6.QtGui import QKeySequence
+    from PyQt6.QtTest import QTest
+    from PyQt6.QtWidgets import QPushButton
+    from browser import prompt_keys
+    said = []
+    monkeypatch.setattr(prompt_keys.macos, "announce", lambda text: said.append(text) or True)
+    focused = []
+    monkeypatch.setattr(window, "focus_current", lambda: focused.append(True))
+    tab = open_page(window, f"{site}/links.html")
+    manager = window.permissions
+    _ask_for_notifications(tab.view)
+    assert wait_until(lambda: (p := manager._prompts.get(id(tab.view))) is not None and p.isVisible(), 5)
+    card = manager._prompts[id(tab.view)]
+    assert said and "wants to" in said[0] and "to answer" in said[0]
+    assert window.focusWidget() is None or not card.isAncestorOf(window.focusWidget())  # (not taken)
+    go = next(a for a in window.actions() if a.text() == "Go to Prompt on Page")
+    assert go.shortcut().toString() == QKeySequence(prompt_keys.KEYS).toString()
+    go.trigger()
+    buttons = {b.text(): b for b in card.findChildren(QPushButton)}
+    assert window.focusWidget() in (buttons["Allow"], buttons["Don't Allow"])  # (Allow, once it can be clicked)
+    QTest.keyClick(window.focusWidget(), Qt.Key.Key_Escape)
+    assert focused == [True] and card.isVisible()  # (back to the page, the card still there)
+    buttons["Don't Allow"].setFocus()
+    QTest.keyClick(buttons["Don't Allow"], Qt.Key.Key_Return)
+    assert wait_until(lambda: manager._prompts.get(id(tab.view)) is None or not card.isVisible(), 3)
+    assert not prompt_keys.focus_card(window)  # (nothing to go to)
+
+
+def test_a_certificate_warning_has_the_keyboard(window, site, bad_https):
+    """The warning covers the whole page, so there's nothing a key could be meant for: it takes the keyboard, and
+    Return goes back."""
+    from PyQt6.QtTest import QTest
+    tab = open_page(window, f"{site}/index.html")
+    tab.view.load(QUrl(f"{bad_https}/links.html"))
+    card = wait_until(lambda: window.certificates.warning(tab.view), 8)
+    assert card and window.focusWidget() is card.back_btn
+    QTest.keyClick(card.back_btn, Qt.Key.Key_Return)
+    assert wait_until(lambda: tab.view.url().toString() == f"{site}/index.html", 5)
+
+
+def test_a_toasts_button_waits_and_is_reached_from_the_keyboard(window, monkeypatch):
+    """Undo (or Open Anyway) went after five seconds, mouse or no mouse, and only a click could reach it. Now it
+    waits while the pointer or the keyboard's on it, VoiceOver says it, and ⌥⇧⌘A reaches its button."""
+    from PyQt6.QtGui import QEnterEvent
+    from PyQt6.QtTest import QTest
+    from browser import content, prompt_keys
+    said = []
+    monkeypatch.setattr(content.macos, "announce", lambda text: said.append(text) or True)
+    focused = []
+    monkeypatch.setattr(window, "focus_current", lambda: focused.append(True))
+    pressed = []
+    frame = window.content
+    window.real_toast("Archived 3 tabs", lambda: pressed.append(True))
+    assert wait_until(lambda: frame.toast.isVisible(), 1)
+    assert said[-1].startswith("Archived 3 tabs. Undo:") and frame._toast_timer.interval() == content.TOAST_ACTION_MS
+    at = QPointF(5, 5)
+    QApplication.sendEvent(frame.toast, QEnterEvent(at, at, at))  # (pointing at it: it waits)
+    assert not frame._toast_timer.isActive()
+    QApplication.sendEvent(frame.toast, QEvent(QEvent.Type.Leave))
+    assert frame._toast_timer.isActive()
+    assert prompt_keys.focus_card(window) and window.focusWidget() is frame.toast_button  # (⌥⇧⌘A: no card up)
+    assert not frame._toast_timer.isActive()  # (the keyboard's on it: it waits)
+    QTest.keyClick(frame.toast_button, Qt.Key.Key_Return)
+    assert pressed == [True] and wait_until(lambda: not frame.toast.isVisible(), 1)
+    # Esc: gone, back to the page
+    window.real_toast("Closed “Mail”", lambda: pressed.append(True))
+    assert wait_until(lambda: frame.toast_waiting(), 1) and frame.focus_toast()
+    QTest.keyClick(frame.toast_button, Qt.Key.Key_Escape)
+    assert pressed == [True] and focused and wait_until(lambda: not frame.toast.isVisible(), 1)
+    window.real_toast("Copied URL to clipboard")  # (a plain one: nothing to reach)
+    assert said[-1] == "Copied URL to clipboard" and not prompt_keys.focus_card(window)
+
+
+def test_the_mini_player_works_from_the_keyboard_and_its_menu(window, site):
+    """Its controls showed only under the pointer: View › Mini Player has them all now, and with the keyboard on
+    one of its buttons they show and stay."""
+    from PyQt6.QtCore import QRect
+    from PyQt6.QtTest import QTest
+    player = window.mini_player
+    player._screen_area = lambda: QRect(-6000, -4000, 1600, 1000)  # (off your screen)
+    menu = next(a.menu() for a in window.menuBar().actions() if a.text() == "View")
+    mini = next(a.menu() for a in menu.actions() if a.text() == "Mini Player")
+    window._fill_mini_player_menu(mini)
+    assert [a.text() for a in mini.actions()][:3] == ["Play / Pause", "Skip Back 10 Seconds", "Skip Ahead 10 Seconds"]
+    assert not any(a.isEnabled() for a in mini.actions())  # (nothing in it)
+    video = open_page(window, f"{site}/video.html")
+    assert wait_until(lambda: window.tab_audio(video)[0], 5)
+    open_page(window, f"{site}/index.html")
+    assert wait_until(lambda: player.tab is video and player.window.isVisible(), 5)
+    window._fill_mini_player_menu(mini)
+    items = {a.text(): a for a in mini.actions()}
+    assert items["Play / Pause"].isEnabled() and items["Close Mini Player"].isEnabled()
+    items["Play / Pause"].trigger()
+    assert wait_until(lambda: run_js(video.view, "document.getElementById('v').paused"), 3)
+    # The keyboard on its play button: the controls show, and stay
+    controls = player.window.controls
+    player.window.play_btn.setFocus()
+    from PyQt6.QtGui import QFocusEvent
+    QApplication.sendEvent(player.window.play_btn, QFocusEvent(QEvent.Type.FocusIn, Qt.FocusReason.TabFocusReason))
+    assert wait_until(lambda: controls.isVisible(), 1)
+    QTest.keyClick(player.window.play_btn, Qt.Key.Key_Return)
+    assert wait_until(lambda: not run_js(video.view, "document.getElementById('v').paused"), 3)
+    items["Close Mini Player"].trigger()
+    assert wait_until(lambda: player.tab is None and not player.window.isVisible(), 3)
+
+
+def test_the_command_bar_and_tab_switcher_say_whats_highlighted(window, site, monkeypatch):
+    """The keyboard stays in the command bar's box (and on the page, with ⌃Tab), so VoiceOver never said the row
+    or tab the arrows had moved to."""
+    from PyQt6.QtGui import QKeyEvent
+    from browser import command_bar, tab_switcher
+    said = []
+    monkeypatch.setattr(command_bar.macos, "announce", lambda text: said.append(text) or True)
+    monkeypatch.setattr(tab_switcher.macos, "announce", lambda text: said.append(text) or True)
+    for url in ("https://github.com/", "https://gitlab.com/"):
+        window.store.record_history(url, url)
+    open_page(window, f"{site}/index.html")
+    window.open_command_bar("new")
+    bar = window.command_bar
+    bar.input.setText("git")
+    bar.update_results()
+    assert bar.list.count() >= 2
+    QApplication.sendEvent(bar.input, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Down, Qt.KeyboardModifier.NoModifier))
+    assert wait_until(lambda: said, 2) and said[-1] == bar.said_text() and bar.said_text().startswith(
+        bar.list.currentItem().text())
+    bar.hide()
+    # ⌃Tab: the tab it's on, and where in the list
+    open_page(window, f"{site}/links.html")
+    said.clear()
+    window.tab_switcher.step(1)
+    assert said and said[-1].endswith(f"2 of {len(window.tab_switcher.tabs)}")
+    window.tab_switcher.cancel()
+
+
+def test_editing_a_suggested_live_folder_keeps_its_items_and_a_stale_refresh_is_ignored(window, monkeypatch):
+    """An app's suggested folder (a public API, "auth": "none", some settings left out) counted as a new source when
+    only its refresh was changed: its tabs went, and it was read with cookies instead. And a refresh already out when
+    you edited answered with the old source's items."""
+    from browser.models import PINNED, Tab
+    feature = window.feature("live_folders")
+    folder = window.store.add_folder(window.store.active_space, "Recently Pushed", kind=PINNED)
+    folder.live = {"kind": "json", "auth": "none", "url": "https://api.example/repos", "items": "", "title": "name",
+                   "link": "html_url", "seen": ["https://example/a"], "refreshed": 1.0}
+    item = Tab("https://example/a", "a")
+    item.home_url = item.url
+    folder.children.append(item)
+    asked = []
+    monkeypatch.setattr(feature, "_refresh", lambda f: asked.append(f))
+    from browser.live_folder_dialog import live_sections
+    fields = {f.get("id"): f for s in live_sections({**folder.live, "name": ""}) for f in s["fields"]}
+    assert fields["json_auth"]["value"] == "none"
+    values = {"kind": "json", "json_url": "https://api.example/repos", "json_items": "", "json_title": "name",
+              "json_link": "html_url", "json_auth": "none", "json_header": "Authorization", "refresh": "60",
+              "name": ""}
+    assert feature._edited(folder, values) is None
+    assert folder.live["auth"] == "none" and folder.live["refresh"] == 60 and folder.children == [item]
+    assert folder.live["seen"] == ["https://example/a"]
+    # A refresh out when the address changes: what it brings back is the old address's, so it's dropped
+    finished = []
+    monkeypatch.setattr(feature.folders, "_finish", lambda *a: finished.append(a))
+    held = []
+    monkeypatch.setattr(feature.folders, "_json", lambda f, done: held.append(done))
+    feature.folders.refresh(folder)
+    assert held and folder.id in feature.folders._busy
+    assert feature._edited(folder, {**values, "json_url": "https://api.example/other"}) is None
+    assert folder.id not in feature.folders._busy  # (free to ask again, for the new address)
+    held[0]([("old", "https://example/old")])
+    assert finished == []
+    window.store.remove_tab(folder)
+
+
+def test_a_live_folders_tab_you_are_reading_goes_cleanly_when_its_source_changes(window, site, monkeypatch):
+    """Changing the address while reading one of its tabs left the page area blank on a tab that was gone, unless
+    the refresh after worked."""
+    from browser.models import PINNED
+    feature = window.feature("live_folders")
+    monkeypatch.setattr(feature, "_refresh", lambda f: None)
+    other = open_page(window, f"{site}/index.html")
+    folder = window.store.add_folder(window.store.active_space, "Feed", kind=PINNED)
+    folder.live = {"kind": "feed", "url": f"{site}/feed.xml"}
+    tab = window.open_url(f"{site}/links.html")
+    window.store.remove_tab(tab)
+    folder.children.append(tab)  # (one of its items, as a refresh would put it there)
+    tab.home_url = tab.url
+    window.activate_tab(tab)
+    assert window.current_tab is tab
+    assert feature._edited(folder, {"kind": "feed", "feed_url": f"{site}/other.xml", "name": "Feed"}) is None
+    assert window.current_tab is not tab and window.current_tab is not None
+    assert window.store.locate(window.current_tab) is not None
+    window.store.remove_tab(folder)
+    assert other is not None
+
+
+def test_page_first_keys_held_or_pressed_twice_and_menu_items_from_other_windows(window, site, monkeypatch):
+    """A held key's repeats skipped the page and went to the window; a key pressed twice before the page answered
+    ran once. From a Little window, ⌘T did nothing at all (it isn't about that page) and ⌥⇧⌘A missed its cards."""
+    import warnings
+    from PyQt6.QtGui import QKeyEvent
+    from PyQt6.QtWidgets import QApplication
+    from browser import prompt_keys
+    tab = open_page(window, f"{site}/typing.html")
+    keys = window.page_keys
+    proxy = tab.view.focusProxy()
+    sidebar = next(a for a in window.actions() if a.text() == "Toggle Sidebar")
+    ran = []
+    spy = lambda *_: ran.append(1)  # noqa: E731
+    sidebar.triggered.connect(spy)
+    cmd = Qt.KeyboardModifier.ControlModifier
+
+    def offer(repeat=False):
+        event = QKeyEvent(QEvent.Type.ShortcutOverride, Qt.Key.Key_S, cmd, "s", repeat)
+        return keys.eventFilter(proxy, event)
+
+    def back():
+        event = QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_S, cmd)
+        return keys.eventFilter(tab.view.parentWidget(), event)
+    assert offer() and offer(repeat=True)  # (a repeat goes to the page first too)
+    assert back() and back() and len(ran) == 2  # (both let go by: twice)
+    sidebar.triggered.disconnect(spy)
+    window.toggle_sidebar() if len(ran) % 2 else None
+    # From a Little window: New Tab brings the main window forward and opens it there; Toggle Sidebar does nothing
+    little = window.new_little_window(f"{site}/index.html")
+    assert wait_until(lambda: little.view is not None, 3)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        QApplication.setActiveWindow(little)
+    assert wait_until(lambda: QApplication.activeWindow() is little, 2)
+    opened, fronted = [], []
+    monkeypatch.setattr(window, "open_command_bar", lambda mode="new": opened.append(mode))
+    monkeypatch.setattr(window, "bring_to_front", lambda: fronted.append(1))
+    window._menu_for_front("New Tab", lambda: window.open_command_bar("new"))
+    assert opened == ["new"] and fronted == [1]
+    window._menu_for_front("Toggle Sidebar", lambda: opened.append("sidebar"))
+    assert opened == ["new"]
+    # ⌥⇧⌘A finds a card in the window in front
+    from PyQt6.QtWidgets import QFrame, QPushButton, QHBoxLayout
+    card = QFrame(little)
+    card.setObjectName(prompt_keys.CARD)
+    QHBoxLayout(card).addWidget(button := QPushButton("Allow"))
+    button.setObjectName("PermissionAllow")
+    card.show()
+    assert prompt_keys.focus_card(window._front_window()) and little.focusWidget() is button
+    little.close()
+
+
+def test_zap_keeps_listening_when_started_twice_or_the_page_moves_its_address(window, site):
+    """Started again before Esc, the page kept the first go's picker (and its token) while the browser listened for
+    the new one: every click hid something, and none was saved. A page setting its own address (a #section) ended
+    it the same way."""
+    feature = window.feature("boosts")
+    tab = open_page(window, f"{site}/index.html")
+    zapped = []
+    real = feature.boosts.add_zapped
+    feature.boosts.add_zapped = lambda site_, sel: (zapped.append(sel), real(site_, sel))[1]
+    try:
+        feature.start_zap()
+        pause(0.3)
+        feature.start_zap()  # (again, before Esc)
+        pause(0.3)
+        run_js(tab.view, "history.replaceState(null, '', '#further-down'); 1")
+        assert wait_until(lambda: tab.view.url().fragment() == "further-down", 2)
+        pause(0.2)
+        assert feature.zap_tab is tab
+        run_js(tab.view, "document.querySelector('h1').click()")
+        assert wait_until(lambda: zapped == ["h1"], 3), zapped
+    finally:
+        feature.boosts.add_zapped = real
+        for boost in [b for b in feature.boosts.boosts if b.zapped == ["h1"]]:
+            feature.boosts.delete(boost)
+
+
+def test_a_split_recipe_is_just_its_own_pages(window, site):
+    """Run with its first page already in a split, the recipe's split took that split's other tab too (or, full,
+    showed the old one). Two of its addresses for one open page put that tab beside itself."""
+    from browser.models import walk_tabs
+    feature = window.feature("recipes")
+    space = window.store.active_space
+    for tab in list(walk_tabs(space.today)):
+        window.close_tab(tab)
+    a = open_page(window, f"{site}/article.html")
+    x = open_page(window, f"{site}/links.html")
+    window.store.add_to_split(a, x)
+    recipe = {"name": "Reading", "urls": [a.url, a.url + "#top", f"{site}/index.html"], "split": True,
+              "space": space.id}
+    tabs = feature.run(recipe)
+    group = window.store.split_of(window.current_tab)
+    assert group is not None and len(group) == 2 and x not in group and a in group
+    assert len({id(t) for t in group}) == len(group)
+    assert not window.store.add_to_split(a, a)
+    window.separate_split()
+    for tab in list(walk_tabs(space.today)):
+        window.close_tab(tab)
+    assert tabs
+
+
+def test_a_moved_watch_finds_the_text_not_a_pages_script_data_and_page_words_stay_plain(window, site):
+    """When a watched part moved, the fallback took the last element whose text matched: on a page with its data as
+    JSON in a script after the content, the script. And a watched page's title went into Settings as HTML."""
+    from browser.page_watch import read_script
+    tab = open_page(window, f"{site}/index.html")
+    run_js(tab.view, """(() => { const p = document.createElement('p'); p.id = 'moved';
+        p.textContent = 'The latest headline on the front page today: rain later'; document.body.appendChild(p);
+        const s = document.createElement('script'); s.type = 'application/json';
+        s.textContent = JSON.stringify({text: 'The latest headline on the front page today: sun', build: 7});
+        document.body.appendChild(s);
+        return 1 })()""")
+    found = run_js(tab.view, read_script("#gone-now", "The latest headline on the front page today: sun"))
+    assert found == {"text": "The latest headline on the front page today: rain later"}, found
+    # Page words in Settings: plain
+    settings_row = window.settings_window() if hasattr(window, "settings_window") else None
+    from browser.settings import SettingsWindow
+    from PyQt6.QtWidgets import QLabel
+    s = SettingsWindow.__new__(SettingsWindow)
+    row = SettingsWindow._row(s, "<b>Sale</b> page", "<img src=x>", plain=True)
+    labels = row.findChildren(QLabel)
+    assert labels and all(label.textFormat() == Qt.TextFormat.PlainText for label in labels)
+    assert settings_row is None or settings_row is not None
+
+
+def test_a_boost_works_on_a_site_that_forbids_eval_and_inline_styles(window, site):
+    """A Boost's JavaScript ran through new Function(), which a strict Content Security Policy (GitHub's, a bank's)
+    refuses, and its <style> was refused with inline styles: neither worked, and nothing said so."""
+    import conftest
+    from pathlib import Path
+    from urllib.parse import urlparse
+    from browser.boosts import Boost
+    root = Path(conftest._site_root[0])
+    (root / "strict.html").write_text(
+        "<!doctype html><meta http-equiv=\"Content-Security-Policy\" content=\"script-src 'self'; style-src 'self'\">"
+        "<title>Strict</title><h1>Strict page</h1>")
+    host = urlparse(site).hostname
+    manager = window.feature("boosts").boosts
+    boost = Boost(host, css="h1 { color: rgb(1, 2, 3) }", js="document.title = 'Boosted';")
+    manager.save(boost)
+    try:
+        tab = open_page(window, f"{site}/strict.html")
+        assert wait_until(lambda: tab.view.title() == "Boosted", 3), tab.view.title()
+        assert wait_until(lambda: run_js(tab.view, "getComputedStyle(document.querySelector('h1')).color")
+                          == "rgb(1, 2, 3)", 3)
+    finally:
+        manager.delete(boost)
+
+
+def test_a_video_download_to_a_folder_that_cant_be_made_says_so_and_a_stale_lookup_is_ignored(window, tmp_path):
+    """With the download folder on a drive that isn't plugged in, Download did nothing at all (the error was only
+    logged). And an earlier link's lookup, answering late, cleared the new one's and showed its own."""
+    downloads = window.downloads_window
+    blocker = tmp_path / "a-file"
+    blocker.write_text("")
+    before = len(downloads.items)
+    downloads.info = {"url": "https://videos.example/v", "title": "Talk", "playlist": False, "count": 0}
+    downloads.folder.folder = str(blocker / "Downloads")  # (inside a file: can't be made)
+    downloads.start_download()
+    assert len(downloads.items) == before and "Can't save to" in downloads.message.text()
+    downloads.info = None
+    # A late answer from a lookup that's been replaced
+    seen = []
+    downloads._show_options = lambda info: seen.append(info)
+    old, new = object(), object()
+    downloads._fetch = new
+
+    class Stale:
+        def deleteLater(self):
+            seen.append("let go")
+    stale = Stale()
+    downloads._fetched({"url": "https://old.example"}, "", stale)
+    assert downloads._fetch is new and seen == ["let go"]
+    downloads._fetch = None
+    del downloads._show_options
+    assert old is not None
+
+
+def test_a_swipe_whose_fingers_up_never_came_leaves_no_picture_over_the_page(window, site):
+    """A back swipe's end never arrived (the page's renderer swapped mid-swipe): the next swipe started over it, and
+    its picture of the old page stayed over the live one for good, letting clicks through to a page you couldn't
+    see."""
+    from browser.gestures import PageSlide
+    tab = open_page(window, f"{site}/index.html")
+    tab.view.load(QUrl(f"{site}/links.html"))
+    assert loaded(tab.view)
+    pause(0.2)
+    target = tab.view.focusProxy()
+    at = QPoint(600, 450)
+
+    def send(phase, dx):
+        QApplication.sendEvent(target, QWheelEvent(QPointF(at), QPointF(target.mapToGlobal(at)), QPoint(int(dx), 0),
+                                                   QPoint(int(dx) * 4, 0), Qt.MouseButton.NoButton,
+                                                   Qt.KeyboardModifier.NoModifier, phase, False))
+    send(Qt.ScrollPhase.ScrollBegin, 0)
+    for _ in range(4):  # (a little way: it would spring back)
+        send(Qt.ScrollPhase.ScrollUpdate, 15)
+        pause(0.016)
+    assert wait_until(lambda: [s for s in tab.view.findChildren(PageSlide) if s.isVisible()], 2)
+    send(Qt.ScrollPhase.ScrollBegin, 0)  # (no end: the next swipe begins)
+    send(Qt.ScrollPhase.ScrollEnd, 0)
+    assert wait_until(lambda: not [s for s in tab.view.findChildren(PageSlide) if s.isVisible()], 3)
+    assert tab.view.url().fileName() in ("links.html", "index.html")  # (decided either way: by how it moved)
+
+
+def test_the_updater_never_sticks_runs_twice_or_tidies_under_a_download(window, monkeypatch):
+    """A problem unpacking an update left it "downloading" for good (and no check ever ran again); a check that
+    failed the same way left it "checking" for good; the checkout's update ran twice at once from two buttons; and
+    the clean-up two minutes after opening deleted an update still coming down into the same folder."""
+    import threading
+    from browser import release_update, self_update
+    feature = window.feature("self_update")
+    updater = feature.updater
+    monkeypatch.setattr(threading, "Thread", lambda target, daemon=True: type("T", (), {"start": lambda s: target()})())
+    monkeypatch.setattr(updater, "_offer", lambda result: None)
+    monkeypatch.setattr(self_update.prompts, "tell", lambda *a, **k: None)
+    monkeypatch.setattr(window, "toast", lambda *a, **k: None)
+    # A check that raises: it ends, and another can run
+    monkeypatch.setattr(self_update, "inspect", lambda: 1 / 0)
+    updater._busy = False
+    updater.check()
+    assert wait_until(lambda: not updater._busy, 2) and updater.status["state"] == "failed"
+    # Unpacking that raises: the download ends, it isn't stuck
+    def broken(found, bundle, progress):
+        raise FileExistsError("new")
+    monkeypatch.setattr(release_update, "prepare", broken)
+    updater._prepare("/Applications/Eclipse.app", {"build": "1"})
+    assert wait_until(lambda: not getattr(updater, "_preparing", False), 2)
+    assert updater.status["state"] == "failed"
+    # The checkout's update: once, however many buttons
+    ran = []
+    monkeypatch.setattr(self_update, "release_bundle", lambda: None)
+    monkeypatch.setattr(self_update, "apply_update", lambda: ran.append(1) or (False, "stopped here"))
+    monkeypatch.setattr(threading, "Thread", lambda target, daemon=True: type("T", (), {"start": lambda s: None})())
+    updater._preparing = False
+    updater.update_and_restart({"state": "available"})
+    updater.update_and_restart({"state": "available"})
+    assert updater._preparing  # (the second is refused while the first's on its way)
+    # Tidying waits for an update coming down
+    tidied = []
+    monkeypatch.setattr(release_update, "tidy", lambda: tidied.append(1))
+    monkeypatch.setattr(self_update.QTimer, "singleShot", lambda ms, fn: None)
+    feature._tidy()
+    assert tidied == []
+    updater._preparing = False
+    updater._staged = None
+    monkeypatch.setattr(threading, "Thread", lambda target, daemon=True: type("T", (), {"start": lambda s: target()})())
+    feature._tidy()
+    assert tidied == [1]
+
+
+def test_a_tab_with_something_typed_in_it_isnt_put_to_sleep_by_itself(window, site):
+    """Memory Saver (or the idle timer) put a tab to sleep with a half-written comment in it: it reloaded, and the
+    comment was gone."""
+    from PyQt6.QtWebEngineCore import QWebEnginePage
+    typing = open_page(window, f"{site}/typing.html")
+    plain = open_page(window, f"{site}/links.html")
+    run_js(typing.view, "document.getElementById('t').value = 'half a comment'; 1")
+    open_page(window, f"{site}/index.html")  # (both in the background now)
+    for tab in (typing, plain):
+        window.sleep_unless_typed_in(tab)
+    discarded = QWebEnginePage.LifecycleState.Discarded
+    assert wait_until(lambda: plain.view.page().lifecycleState() == discarded, 3)
+    pause(0.3)
+    assert typing.view.page().lifecycleState() != discarded
+
+
+def test_a_library_archive_row_brought_back_elsewhere_doesnt_make_a_second_tab(window, site):
+    """Brought back from the sidebar's archive menu, the archived tab's row stayed in an open Library, and a
+    double-click there made a second tab of it."""
+    from browser.library import LibraryWindow
+    from browser.models import walk_tabs
+    tab = open_page(window, f"{site}/article.html?archived")
+    space = window.store.active_space
+    entry = window.store.archive_tab(tab, space)
+    assert entry is not None
+    library = LibraryWindow(window)
+    library.show_section("archive")
+    row = next(e for e in library._entries() if e["source"] == entry)
+    window.restore_archived(entry)  # (from the sidebar)
+    library.open_entry(row)  # (then the stale row)
+    url = entry["url"]
+    assert [t.url for t in walk_tabs(space.today)].count(url) == 1
+    library.deleteLater()
+    for t in [t for t in walk_tabs(space.today) if t.url == url]:
+        window.close_tab(t)
+
+
+def test_a_private_window_asks_afresh_and_a_page_asking_again_gets_its_answer(window, site):
+    """A camera allowed once in a normal window was granted in a private one without asking; a page that asked
+    again after a reload lost its request (the old, dead one counted as "already asking"); and Clear Cookies & Site
+    Data left camera and microphone answers behind."""
+    from PyQt6.QtWebEngineCore import QWebEnginePermission
+    from browser import permissions
+    manager = window.permissions
+    T = QWebEnginePermission.PermissionType
+    origin = permissions.origin_key(QUrl(site))
+    permissions.set_capture_rule(manager.settings, origin, T.MediaVideoCapture.name, "allow")
+
+    class Request:
+        def __init__(self, valid=True):
+            self.valid, self.granted, self.denied = valid, False, False
+        def permissionType(self): return T.MediaVideoCapture
+        def origin(self): return QUrl(site)
+        def isValid(self): return self.valid
+        def grant(self): self.granted = True
+        def deny(self): self.denied = True
+    import browser.permissions as pm
+    real = pm.QWebEnginePermission
+    pm.QWebEnginePermission = lambda p: p  # (the stand-in, as it is)
+    try:
+        private = window.private.new_window(f"{site}/index.html")
+        assert wait_until(lambda: private.current is not None, 3)
+        asked = Request()
+        manager._requested(private.current, asked)
+        assert not asked.granted and manager._waiting.get(id(private.current))  # (asked, not granted)
+        manager._waiting[id(private.current)] = [(private.current, Request(valid=False))]  # (from before a reload)
+        again = Request()
+        permissions.set_capture_rule(manager.settings, origin, T.MediaVideoCapture.name, None)
+        manager._requested(private.current, again)
+        assert any(p is again for _v, p in manager._waiting[id(private.current)])
+        manager.set_rule(private.session.profile, origin, T.MediaVideoCapture, "allow")
+        assert permissions.capture_rule(manager.settings, origin, T.MediaVideoCapture.name) is None
+        private.close()
+    finally:
+        pm.QWebEnginePermission = real
+
+
+def _pretend_full_screen(window, monkeypatch, state=Qt.WindowState.WindowNoState):
+    """The window's full-screen calls recorded, never made (a real one takes over the screen and moves you to a new
+    desktop), and the window state `state` before the video."""
+    calls = []
+    for name in ("showFullScreen", "showNormal", "showMaximized"):
+        monkeypatch.setattr(window, name, lambda n=name: calls.append(n))
+    monkeypatch.setattr(window, "windowState", lambda: state)
+    return calls
+
+
+def _video_request(site, told):
+    from types import SimpleNamespace
+    return lambda on: SimpleNamespace(toggleOn=lambda: on, reject=lambda: told.append("rejected"),
+                                      accept=lambda: told.append("accepted"), origin=lambda: QUrl(site))
+
+
+def test_leaving_a_full_screen_video_puts_the_window_back_as_it_was(window, site, monkeypatch):
+    """Leaving a video's full screen always made the window a normal one: out of macOS full screen too, or unzoomed.
+    And quitting meanwhile saved the full-screen window, so Eclipse opened full screen next time."""
+    tab = open_page(window, f"{site}/index.html")
+    told = []
+    request = _video_request(site, told)
+    for state, after in ((Qt.WindowState.WindowNoState, ["showNormal"]),
+                         (Qt.WindowState.WindowMaximized, ["showMaximized"]),
+                         (Qt.WindowState.WindowFullScreen, [])):
+        calls = _pretend_full_screen(window, monkeypatch, state)
+        before = window.saveGeometry()
+        window._on_fullscreen(request(True), tab.view)
+        assert window._fullscreen and calls == ["showFullScreen"]
+        from PyQt6.QtCore import QByteArray
+        monkeypatch.setattr(window, "saveGeometry", lambda: QByteArray(b"full screen"))  # (what Qt has now)
+        assert window.geometry_to_save() == before  # (as it was before the video)
+        window._on_fullscreen(request(False), tab.view)
+        assert not window._fullscreen and calls[1:] == after, (state, calls)
+        monkeypatch.undo()
+    assert window.sidebar.isVisible()
+
+
+def test_another_tab_or_space_takes_you_out_of_a_full_screen_video(window, site, monkeypatch):
+    """Switching tabs (or Spaces) while a video filled the screen left the window in full screen, with the other tab
+    and no sidebar or way out but Esc; closing the video's tab from elsewhere left it so for good."""
+    video, other = open_page(window, f"{site}/index.html"), open_page(window, f"{site}/links.html")
+    window.activate_tab(video)
+    _pretend_full_screen(window, monkeypatch)
+    told = []
+    request = _video_request(site, told)
+    left = []
+    monkeypatch.setattr(window, "_leave_page_fullscreen", lambda: (left.append(True), window._set_fullscreen(False)))
+    window._on_fullscreen(request(True), video.view)
+    window.activate_tab(video)  # (its own tab: stays)
+    assert window._fullscreen and not left
+    window.activate_tab(other)
+    assert left and not window._fullscreen
+    # Another Space
+    window.activate_tab(video)
+    window._on_fullscreen(request(True), video.view)
+    spaces = _two_spaces(window)
+    window.switch_space(spaces[1])
+    assert len(left) == 2 and not window._fullscreen
+    window.switch_space(spaces[0])
+    # The video's tab closed while another's on: out of it
+    window.activate_tab(video)
+    window._on_fullscreen(request(True), video.view)
+    window._fullscreen_view = video.view
+    monkeypatch.setattr(window, "current_tab", other)
+    window._destroy_view(video)
+    assert not window._fullscreen
+
+
+def test_a_full_screen_video_fills_the_screen_alone(window, site, monkeypatch):
+    """What's beside the page (Ask About This Page, the web panel) stayed beside the video filling the screen; ⌘S
+    meanwhile changed the saved sidebar setting the window then didn't follow."""
+    from PyQt6.QtWidgets import QWidget
+    tab = open_page(window, f"{site}/index.html")
+    _pretend_full_screen(window, monkeypatch)
+    panel = QWidget()
+    window.content_layout.addWidget(panel)
+    panel.show()
+    told = []
+    request = _video_request(site, told)
+    try:
+        window._on_fullscreen(request(True), tab.view)
+        assert panel.isHidden()
+        shown = window.store.settings.get("sidebar_visible", True)
+        window.toggle_sidebar()
+        assert window.store.settings.get("sidebar_visible", True) == shown and window.sidebar.isHidden()
+        window._on_fullscreen(request(False), tab.view)
+        assert not panel.isHidden() and window.sidebar.isVisible() == shown
+    finally:
+        window.content_layout.removeWidget(panel)
+        panel.deleteLater()
+
+
+def test_a_video_in_a_little_window_goes_full_screen_from_a_tab(window, site, monkeypatch):
+    """A Little window's (or Peek's) page asking for full screen was ignored, so the video's button did nothing."""
+    from browser.little import LittleWindow
+    little = window._track(LittleWindow(window, url=f"{site}/index.html"))
+    little.show()
+    assert loaded(little.view)
+    view = little.view
+    asked = []
+    monkeypatch.setattr(window, "_on_fullscreen", lambda request, v: asked.append(v))
+    told = []
+    little._full_screen(_video_request(site, told)(True))
+    assert asked == [view] and window.current_tab is not None and window.current_tab.view is view
+    window.close_tab(window.current_tab)

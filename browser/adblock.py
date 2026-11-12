@@ -105,8 +105,12 @@ YOUTUBE_PRUNER = r"""
 """
 
 
+from .passkey_store import PUBLIC_SUFFIXES  # noqa: E402 (names anyone can have one under)
+
+
 def _ace(host: str) -> str:
     """A host in punycode ("xn--…"), the form block lists use; Qt hands us international hosts decoded."""
+    host = host.rstrip(".")  # ("example.com." is example.com: a trailing dot slipped past every list)
     if host.isascii():
         return host.lower()
     return bytes(QUrl.toAce(host)).decode().lower() or host.lower()
@@ -121,6 +125,11 @@ def _site(host: str) -> str:
     except ValueError:
         pass
     labels = _ace(host).removeprefix("www.").split(".")
+    # One under a name anyone can have one of (alice.github.io, a shop on myshopify.com): its own site, not the
+    # whole platform's (allowing ads on one allowed them on all of them, and their trackers counted as its own)
+    for size in (3, 2):
+        if len(labels) > size and ".".join(labels[-size:]) in PUBLIC_SUFFIXES:
+            return ".".join(labels[-size - 1:])
     if len(labels) >= 3 and len(labels[-1]) == 2 and len(labels[-2]) <= 3:  # co.uk, com.au, ...
         return ".".join(labels[-3:])
     return ".".join(labels[-2:])
@@ -342,16 +351,15 @@ class AdBlocker(QWebEngineUrlRequestInterceptor):
 
 class OffTheRecord(AdBlocker):
     """Private windows' blocker: blocks just as the main one does (its lists and settings), but reports nothing, so
-    nothing of private browsing reaches the privacy report. Its blocks still count towards the shield's number,
-    which is only kept while Eclipse runs. Extensions' rules aren't applied: extensions don't run here, and with
+    nothing of private browsing reaches the privacy report. Its blocks are counted on its own (private windows'
+    shields), never in the main window's: a site's count there told of a visit in a private window. Extensions' rules aren't applied: extensions don't run here, and with
     them, their webRequest listeners were told every address you went to."""
 
     reports = False
     domains = property(lambda self: self.main.domains)
-    counts = property(lambda self: self.main.counts)
     extension_rules = None
 
     def __init__(self, main):
         QWebEngineUrlRequestInterceptor.__init__(self, main)
         self.main, self.store, self.link_cleaner, self.profiles = main, main.store, main.link_cleaner, []
-        self.blocked.connect(main.blocked)  # (the shield's number updates)
+        self.counts = {}  # (its own: gone with the private session)

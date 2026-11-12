@@ -24,7 +24,7 @@ from PyQt6 import sip
 from PyQt6.QtCore import QObject, QProcess, QTimer, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
-from . import brand, prompts, release_update, storage, verified
+from . import brand, crash, prompts, release_update, storage, verified
 from .features import Feature
 
 REPO = Path(__file__).resolve().parents[1]
@@ -201,7 +201,15 @@ class SelfUpdater(QObject):
         self.browser.store.schedule_save()
         if manual:
             self.browser.toast("Checking for updates…")
-        threading.Thread(target=lambda: self.checked.emit(inspect()), daemon=True).start()
+        threading.Thread(target=self._inspect, daemon=True).start()
+
+    def _inspect(self):
+        try:
+            result = inspect()
+        except Exception as error:  # (whatever went wrong, the check ends: otherwise no check ever ran again)
+            crash.log_exception(type(error), error, error.__traceback__)
+            result = {"state": "failed", "reason": "Couldn't check for updates"}
+        self.checked.emit(result)
 
     def _checked(self, result):
         self._busy = False
@@ -245,14 +253,21 @@ class SelfUpdater(QObject):
         a check since (hourly, or one that failed offline) changed what was installed, or found nothing to."""
         found = found or self._found
         self.browser.toast(f"Updating {brand.NAME}…")
+        if getattr(self, "_preparing", False):
+            return  # (already on its way: a second click, or Settings' button as well as the window's)
+        self._preparing = True
         if (bundle := release_bundle()) is not None and "build" in found:
-            if getattr(self, "_preparing", False):
-                return  # (already on its way)
-            self._preparing = True
             self._set_status({**found, "state": "downloading", "percent": 0})
             threading.Thread(target=lambda: self._prepare(bundle, found), daemon=True).start()  # (a few hundred MB)
             return
-        threading.Thread(target=lambda: self.applied.emit(*apply_update()), daemon=True).start()  # pip can be slow
+        threading.Thread(target=self._apply_checkout, daemon=True).start()  # pip can be slow
+
+    def _apply_checkout(self):
+        try:
+            self.applied.emit(*apply_update())
+        except Exception as error:
+            crash.log_exception(type(error), error, error.__traceback__)
+            self.applied.emit(False, "The update didn't finish: try again, or pull it yourself (git pull)")
 
     def _prepare(self, bundle, found):
         shown = [-1]
@@ -262,7 +277,11 @@ class SelfUpdater(QObject):
             if percent != shown[0]:
                 shown[0] = percent
                 self.progressed.emit(percent)
-        self._staged, why = release_update.prepare(found, bundle, progress)
+        try:
+            self._staged, why = release_update.prepare(found, bundle, progress)
+        except Exception as error:  # (an unpacking problem, say: otherwise "downloading" for good, and no check)
+            crash.log_exception(type(error), error, error.__traceback__)
+            self._staged, why = None, "The update couldn't be unpacked: try again in a while"
         self.applied.emit(self._staged is not None, why or "Updated")
 
     def _applied(self, ok, message):
@@ -300,7 +319,17 @@ class UpdatesFeature(Feature):
             # Started: said so after a few seconds (an update's swap is waiting to hear it, or puts the old copy
             # back), and what the last update left (the old copy) cleared a while after that, not at once
             QTimer.singleShot(5_000, release_update.mark_started)
-            QTimer.singleShot(120_000, lambda: threading.Thread(target=release_update.tidy, daemon=True).start())
+            QTimer.singleShot(120_000, self._tidy)
+
+    def _tidy(self):
+        """What the last update left, cleared: not while an update's coming down into the same folder (clicked
+        within two minutes of opening, it was deleted under the download), then once it's done."""
+        if getattr(self.updater, "_preparing", False):
+            QTimer.singleShot(120_000, self._tidy)
+            return
+        if getattr(self.updater, "_staged", None) is not None:
+            return  # (an update's ready in it, waiting for the restart)
+        threading.Thread(target=release_update.tidy, daemon=True).start()
 
     def check(self):
         self.updater.check(manual=True)

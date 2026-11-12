@@ -33,7 +33,7 @@ from .downloads import (BrowserDownload, DownloadsWindow, edit_settings as edit_
 from .library import LibraryWindow
 from .air_traffic import route
 from .little import LittleWindow
-from .mini_player import MiniPlayer
+from .mini_player import SKIP, MiniPlayer
 from .notify import NotificationCenter
 from .devmode import DevMode, is_dev_url
 from .cert_errors import CertificateGuard
@@ -52,6 +52,7 @@ from .tab_preview import TabPreview
 from .tab_switcher import TabSwitcher
 from .zoom import remember_zoom, step_zoom, zoom_for, zoom_key
 from .page_actions import markdown_link, safe_filename
+from . import page_keys, prompt_keys
 from .passkeys import Passkeys
 from .passwords import Passwords
 from .permissions import KINDS, PermissionManager, origin_key
@@ -70,6 +71,22 @@ from .timefmt import portable
 MAC = sys.platform == "darwin"
 # Qt maps "Ctrl" to ⌘ on macOS; the physical Control key is "Meta" there
 CONTROL = "Meta" if MAC else "Ctrl"
+# Whether a page has a field with text typed into it that hasn't been sent (what it showed when it loaded, changed)
+TYPED_IN = r"""(() => [...document.querySelectorAll(
+  'textarea, input:not([type=hidden]):not([type=password]):not([type=checkbox]):not([type=radio])' +
+  ':not([type=submit]):not([type=button])')].some((e) => e.value && e.value !== e.defaultValue) ||
+  [...document.querySelectorAll('[contenteditable=""], [contenteditable=true]')].some((e) => e === document.activeElement
+    && e.textContent.trim()))()"""
+# The menu items about the page or tab you're on: with a Private or Little window in front, they're its own or nothing
+PAGE_ITEMS = {"Print…", "Save as PDF…", "Save Page As…", "Share…", "Copy Screenshot", "Save Screenshot of Whole Page",
+              "Download Video…", "Copy URL", "Copy as Markdown Link", "Find…", "Find Next", "Find Previous",
+              "Toggle Sidebar", "Collapse Sidebar to Icons", "Reload", "Hard Reload", "Zoom In", "Zoom Out",
+              "Actual Size", "Reader View", "Developer Tools", "Developer Console", "Back", "Forward",
+              "Pin / Unpin Tab", "Add / Remove Favorite", "Clear Today's Tabs", "Put Other Tabs to Sleep",
+              "Separate Split View", "Next Tab", "Previous Tab", "Last Tab", "Close Tab", "Open Location…",
+              "Next Space", "Previous Space", "Block Ads & Trackers"}
+MINI_PLAYER_ITEMS = ("Play / Pause", f"Skip Back {SKIP} Seconds", f"Skip Ahead {SKIP} Seconds", "Next Video",
+                     "Back to Video's Tab", "Close Mini Player")
 RECENT_PAGES = 12  # (at the bottom of the History menu)
 HISTORY_MENU = 15  # (pages in the back and forward buttons' menus)
 THUMBNAILS = memory.kept(40, 20)  # (small pictures of pages, for previews and ⌃Tab)
@@ -111,7 +128,10 @@ class MainWindow(QMainWindow):
         self._closed: list[tuple[dict, str]] = []   # (tab data, space id) for ⇧⌘T
         self._extra_windows: list[QWidget] = []     # Little windows and DevTools
         self._recent_downloads: dict[int, list[float]] = {}  # id(page) → when it last started downloads
-        self._fullscreen = False
+        self._fullscreen = False  # (a page's video filling the screen: _set_fullscreen)
+        self._fullscreen_view = None
+        self._state_before_fullscreen = Qt.WindowState.WindowNoState
+        self._geometry_before_fullscreen = QByteArray()
         self._rebuild_pending = False
         # Claude, Live Folders, extensions, Easels…: whichever features are here (features.py), each hooked in
         self._hovered_link = ""
@@ -232,6 +252,7 @@ class MainWindow(QMainWindow):
         self.apply_theme()
         # The native macOS menu bar is slow to build (~150 ms), so draw the window first
         QTimer.singleShot(0, self._build_menus)
+        self.page_keys = page_keys.install(self)  # (a page has most shortcuts' keys first, as in Chrome)
         self.apply_keep_running()
         QApplication.instance().applicationStateChanged.connect(self._app_state_changed)
 
@@ -473,6 +494,13 @@ class MainWindow(QMainWindow):
         elif kind == QEvent.Type.WindowStateChange:  # (out of full screen: macOS lays the lights out anew)
             QTimer.singleShot(0, self.place_traffic_lights)
             QTimer.singleShot(800, self.place_traffic_lights)  # (and again once its animation's over)
+            for ms in (0, 800):  # (the top row back beside the lights, or up top in full screen)
+                QTimer.singleShot(ms, self._align_sidebar_row)
+            QTimer.singleShot(800, lambda: not sip.isdeleted(self) and self._float_if_empty())  # (out of full screen)
+
+    def _align_sidebar_row(self):
+        if not sip.isdeleted(self) and not self.floating_sidebar.active:
+            self.sidebar.align_with_traffic_lights()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -685,8 +713,8 @@ class MainWindow(QMainWindow):
                                                                                    r.numberOfMatches()))
 
     def _destroy_view(self, tab):
-        if self._fullscreen and tab is self.current_tab:
-            self._set_fullscreen(False)  # its page was the one filling the screen
+        if self._fullscreen and tab.view is not None and tab.view is getattr(self, "_fullscreen_view", None):
+            self._set_fullscreen(False)  # its page was the one filling the screen (current or not)
         self.thumbnails.pop(tab.id, None)
         self.mini_player.release(tab)
         self.emit("view_destroyed", tab)
@@ -957,21 +985,60 @@ class MainWindow(QMainWindow):
             self._set_fullscreen(False)
 
     def _set_fullscreen(self, on):
+        was = self._fullscreen
         self._fullscreen = on
         if self._fullscreen:
-            # Whether the sidebar is meant to be there (the hidden one, slid out over the page, isn't)
-            self._sidebar_before_fullscreen = self.store.settings.get("sidebar_visible", True)
+            if not was:
+                # Whether the sidebar is meant to be there (the hidden one, slid out over the page, isn't)
+                self._sidebar_before_fullscreen = self.store.settings.get("sidebar_visible", True)
+                # How the window was (zoomed, or already macOS full screen), to go back to it, not just to normal
+                self._state_before_fullscreen = self.windowState()
+                self._geometry_before_fullscreen = self.saveGeometry()  # (what's saved if you quit meanwhile)
             self.spread_sidebar.fold(animate=False)
             if self.floating_sidebar.active:
                 self.sidebar.hide()
                 self._dock_sidebar()
             self.sidebar.hide()
+            if not was:
+                self._solo_fullscreen_view(True)
             self.showFullScreen()
         else:
             self.sidebar.setVisible(getattr(self, "_sidebar_before_fullscreen", True))
-            self.showNormal()
+            self._solo_fullscreen_view(False)
+            state = getattr(self, "_state_before_fullscreen", Qt.WindowState.WindowNoState)
+            if state & Qt.WindowState.WindowFullScreen:
+                pass  # (macOS full screen before the video: still)
+            elif state & Qt.WindowState.WindowMaximized:
+                self.showMaximized()
+            else:
+                self.showNormal()
         self.content.set_rounded(not self._fullscreen)
         self._update_content_margins()
+
+    def geometry_to_save(self):
+        """The window's size and place, to open with next time: with a video filling the screen, as it was before
+        (else the next launch opened in full screen, with nothing to take it out of it but the green button)."""
+        return self._geometry_before_fullscreen if self._fullscreen else self.saveGeometry()
+
+    def _solo_fullscreen_view(self, on):
+        """The page filling the screen, alone: what's beside it (Ask About This Page, the web panel, Split View's
+        other panes) hides while it does, and comes back after."""
+        if on:
+            view = getattr(self, "_fullscreen_view", None)
+            beside = [self.content_layout.itemAt(i).widget() for i in range(self.content_layout.count())]
+            split = self.content.split_view
+            if self.content.splitting and view is not None:
+                mine = split.pane_containing(view)
+                beside += [p for p in split.panes if p is not mine]
+            self._hidden_for_fullscreen = [w for w in beside if w is not None and w is not self.content
+                                           and not w.isHidden()]
+            for widget in self._hidden_for_fullscreen:
+                widget.hide()
+        else:
+            for widget in getattr(self, "_hidden_for_fullscreen", []):
+                if not sip.isdeleted(widget):
+                    widget.show()
+            self._hidden_for_fullscreen = []
 
     def _on_download(self, download):
         if download.isSavePageDownload():  # Save Page As: you already chose where it goes
@@ -1324,6 +1391,10 @@ class MainWindow(QMainWindow):
         if loc is None:
             return
         self._kept_from_launch = []
+        if self._fullscreen and (tab.view is None or tab.view is not getattr(self, "_fullscreen_view", None)):
+            # (another tab: the video filling the screen gives way, or that tab filled it with no sidebar or way out
+            # but Esc)
+            self._leave_page_fullscreen()
         _, space = loc
         if space is not None and space.id != self.store.active_space_id:
             self._set_active_space(space)
@@ -2169,6 +2240,8 @@ class MainWindow(QMainWindow):
             self.toast("macOS didn't accept the change")
 
     def toggle_sidebar(self):
+        if self._fullscreen:
+            return  # (a video filling the screen: no sidebar to show, nor the setting to change behind your back)
         self.spread_sidebar.fold(animate=False)
         if self.floating_sidebar.active:
             self._dock_sidebar()
@@ -2401,10 +2474,29 @@ class MainWindow(QMainWindow):
         cutoff = time.time() - minutes * 60
         slept = 0
         for tab in list(self.resting_tabs()):
-            if force or tab.last_active < cutoff:
-                self.put_to_sleep(tab)
+            if force:
+                self.put_to_sleep(tab)  # (you asked: Put Other Tabs to Sleep)
+                slept += 1
+            elif tab.last_active < cutoff:
+                self.sleep_unless_typed_in(tab)
                 slept += 1
         return slept
+
+    def sleep_unless_typed_in(self, tab):
+        """Put a background tab to sleep by itself (the idle timer, Memory Saver), unless something's been typed
+        into it and not sent: asleep, it reloads, and a comment you were half way through went with it."""
+        view = tab.view
+        page = view.page()
+        if page.lifecycleState() == QWebEnginePage.LifecycleState.Frozen:
+            self.put_to_sleep(tab)  # (frozen by Low Power Mode, it can't answer: as before)
+            return
+
+        def answered(typed):
+            if typed is True or sip.isdeleted(view) or tab.view is not view:
+                return
+            if page.lifecycleState() != QWebEnginePage.LifecycleState.Discarded and not view.isVisible():
+                self.put_to_sleep(tab)
+        page.runJavaScript(TYPED_IN, QWebEngineScript.ScriptWorldId.ApplicationWorld, answered)
 
     def put_to_sleep(self, tab):
         """Let a background page go, freeing its memory; it reloads, where you'd scrolled to, when you click it."""
@@ -2581,6 +2673,8 @@ class MainWindow(QMainWindow):
         if space.id == self.store.active_space_id:
             return
         self.tab_preview.dismiss()
+        if self._fullscreen:
+            self._leave_page_fullscreen()  # (another Space: the video filling the screen gives way)
         spaces = self.store.spaces
 
         def change():
@@ -2880,7 +2974,7 @@ class MainWindow(QMainWindow):
         own_window = {"New Little Window", "New Private Window", "Downloads", "Keyboard Shortcuts", "Library",
                       "Archived Tabs", "Notes", "Browse for Me Answers", "Minimize", "Zoom", "Toggle Full Screen",
                       "Send Feedback…", "What's New", "Show Crash Logs", "Back Up Everything…",
-                      "Restore from Backup…", "Download Settings…"}
+                      "Restore from Backup…", "Download Settings…", "Go to Prompt on Page", *MINI_PLAYER_ITEMS}
 
         def add(menu, text, shortcut, slot):
             action = QAction(text, self)
@@ -2888,6 +2982,9 @@ class MainWindow(QMainWindow):
                 action.setShortcut(QKeySequence(shortcuts.here(shortcut)))  # (Windows' own keys: shortcuts.here)
             if text not in own_window:
                 slot = (lambda inner: lambda: (self.isHidden() and self.bring_to_front(), inner()))(slot)
+                # With a Private or Little window in front, the item is that window's (or nothing): on a Mac its
+                # keys still reach this window's menu bar, and ran on the window behind it
+                slot = (lambda inner, text: lambda: self._menu_for_front(text, inner))(slot, text)
             action.triggered.connect(lambda _=False: slot())
             menu.addAction(action)
             self.addAction(action)  # keeps the shortcut working when the menu bar isn't native
@@ -2962,6 +3059,18 @@ class MainWindow(QMainWindow):
         self.adblock_action.triggered.connect(lambda _=False: self.toggle_adblock())
         view.addAction(self.adblock_action)
 
+        add(view, "Go to Prompt on Page", prompt_keys.KEYS,  # (⌥⇧⌘A: in whichever window is in front)
+            lambda: prompt_keys.focus_card(self._front_window()))
+        # The mini player's controls, from the keyboard (and VoiceOver): over the video, they show only on hover
+        mini = view.addMenu("Mini Player")
+        player = self.mini_player
+        for text, slot in zip(MINI_PLAYER_ITEMS, (player.toggle_play, lambda: player.skip(-SKIP),
+                                                  lambda: player.skip(SKIP), player.next_video, player.back_to_tab,
+                                                  player.close)):
+            add(mini, text, "", slot)
+        mini.aboutToShow.connect(lambda m=mini: self._fill_mini_player_menu(m))
+        # (enabled again once it's closed: a disabled item's shortcut, one given it in Settings, wouldn't work)
+        mini.aboutToHide.connect(lambda m=mini: [a.setEnabled(True) for a in m.actions()])
         add(view, "Keyboard Shortcuts", "Ctrl+/", lambda: self.open_settings("shortcuts"))
 
         history = bar.addMenu("History")
@@ -3028,6 +3137,25 @@ class MainWindow(QMainWindow):
         """Eclipse's windows on screen: this one, then private and Little windows (and DevTools)."""
         return [w for w in [self, *self.private.windows, *self._extra_windows] if not sip.isdeleted(w) and w.isVisible()]
 
+    def _fill_mini_player_menu(self, menu):
+        """Its items work while a video's in the mini player (Next Video, where the site has one)."""
+        player = self.mini_player
+        showing = player.tab is not None and player.window is not None
+        for action in menu.actions():
+            action.setEnabled(showing and (action.text() != "Next Video" or not player.window.next_btn.isHidden()))
+
+    def _menu_for_front(self, text, run):
+        """A menu item chosen with a Private or Little window in front: that window's, where it has it. An item about
+        the page or tab you're on does nothing otherwise (it isn't the main window's tab you're looking at); the rest,
+        a new tab say, bring the main window forward and do it there, as from any other app."""
+        front = QApplication.activeWindow()
+        handler = getattr(front, "menu_action", None) if front is not None and front is not self else None
+        if handler is None:
+            run()
+        elif not handler(text) and text not in PAGE_ITEMS and not text.startswith(("Tab ", "Space ")):
+            self.bring_to_front()
+            run()
+
     def _front_window(self):
         active = QApplication.activeWindow()
         return active if active is not None else self
@@ -3039,7 +3167,9 @@ class MainWindow(QMainWindow):
     def _toggle_full_screen(self):
         window = self._front_window()
         if window is self and self._fullscreen:
-            self._set_fullscreen(False)  # (a video that went full screen)
+            # (a video that went full screen: out of it, and out of macOS full screen too if it was in that before)
+            self._state_before_fullscreen = self._state_before_fullscreen & ~Qt.WindowState.WindowFullScreen
+            self._leave_page_fullscreen()
         elif window.isFullScreen():
             window.showNormal()
         else:
@@ -3116,7 +3246,7 @@ class MainWindow(QMainWindow):
         self._stamp_on_screen()
         for tab in self.store.all_tabs():
             self._note_scroll(tab)
-        self.store.window_geometry = bytes(self.saveGeometry().toBase64()).decode()
+        self.store.window_geometry = bytes(self.geometry_to_save().toBase64()).decode()
         self.store.save()
         self.store.save_history()
         # The red button (a close from the window system, not from quitting): on a Mac, Eclipse stays open, in

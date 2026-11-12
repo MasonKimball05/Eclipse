@@ -86,3 +86,72 @@ def test_dark_websites_rules():
     assert dark_pages.wanted(on, "https://notexample.com/")
     dark_pages.set_skipped(on, "example.com", False)
     assert dark_pages.wanted(on, "https://example.com/")
+
+
+def test_handoff_offers_only_pages_your_other_devices_can_open():
+    """localhost:5173/admin?token=…, a router's page or a .test name went to iCloud for your iPhone, which can't
+    reach any of them; and an address with a name and password in it too."""
+    from browser.handoff import offerable
+    assert offerable("https://github.com/x") and offerable("http://example.com/")
+    for url in ("http://localhost:5173/admin?token=abc", "http://127.0.0.1:8000/", "http://192.168.1.1/",
+                "http://myapp.test/", "http://printer.local/", "https://user:pass@example.com/", "file:///Users/me/a",
+                "note:abc", "http://intranet/"):
+        assert not offerable(url), url
+
+
+def test_hop_quicklinks_skip_odd_rows_and_homebase_errors_from_a_list(tmp_path):
+    """A quicklinks file with a string or null among its rows lost every shortcut (an AttributeError nothing
+    caught); a homebase answer that's a list crashed reading its error."""
+    import json
+    from browser import integrations
+    path = tmp_path / "quicklinks.json"
+    path.write_text(json.dumps([None, "oops", {"keyword": "gh", "url": "https://gh.example/search?q={query}",
+                                               "name": "GH"}]))
+    assert [q["keyword"] for q in integrations.hop_quicklinks(str(path), builtin={})] == ["gh"]
+    assert integrations._said_error([1, 2]) is None and integrations._said_error({"error": "x"}) == "x"
+
+
+def test_a_crash_is_noticed_after_the_mac_restarts(data_dir, monkeypatch):
+    """After a crash and a restart, the last run's process number belonged to a system process by then (numbers
+    start again from low): it counted as still running, so nothing said Eclipse hadn't quit properly, and the crash's
+    stack was written over."""
+    import os
+    import time
+    from browser import crash
+    data_dir.mkdir(parents=True, exist_ok=True)
+    marker = data_dir / crash.MARKER
+    monkeypatch.setattr(crash, "_booted_at", lambda: time.time() - 60)
+    marker.write_text(f"{os.getpid()} 2026-11-10 09:00 {time.time() - 3600:.0f}")  # (before the restart: "alive")
+    found = crash.start()
+    assert found is not None and found["when"] == "2026-11-10 09:00"
+    crash.clean_exit()
+    marker.write_text("1 2026-11-10 09:00")  # (an older marker; process 1 isn't ours)
+    assert crash.start() is not None
+    crash.clean_exit()
+    assert not crash._alive(1)
+
+
+def test_ad_blocking_tells_sites_on_shared_hosts_apart_and_ignores_a_trailing_dot():
+    """Allowing ads on alice.github.io allowed them on every github.io site (the "site" was github.io), and its
+    trackers counted as its own; a tracker's address with a trailing dot (google-analytics.com.) got past the
+    lists."""
+    from browser.adblock import _site, should_block
+    assert _site("alice.github.io") == "alice.github.io" != _site("bob.github.io")
+    assert _site("shop.myshopify.com") == "shop.myshopify.com" and _site("news.bbc.co.uk") == "bbc.co.uk"
+    assert _site("cdn.example.com") == "example.com"
+    lists = {"google-analytics.com", "tracker.github.io"}
+    assert should_block("www.google-analytics.com.", "news.example", lists)
+    assert should_block("tracker.github.io", "alice.github.io", lists)  # (not alice's own, though both github.io)
+    assert not should_block("tracker.github.io", "bob.github.io", lists, allowed_sites={"bob.github.io"})
+    assert should_block("tracker.github.io", "carol.github.io", lists, allowed_sites={"bob.github.io"})
+
+
+def test_a_window_or_popup_is_kept_on_its_screen():
+    """Cascaded Little and Private windows went under the Dock (or off the screen), and popups past its edge."""
+    from PyQt6.QtCore import QRect
+    from browser import screens
+    area = QRect(0, 25, 1440, 850)  # (a MacBook's, below the menu bar, above the Dock)
+    assert screens.fit(QRect(400, 200, 680, 820), area) == QRect(400, 55, 680, 820)  # (moved up, all of it in)
+    assert screens.fit(QRect(-50, 0, 300, 2000), area) == QRect(0, 25, 300, 850)  # (in from the left, no taller)
+    assert screens.fit(QRect(1300, 800, 300, 200), area) == QRect(1140, 675, 300, 200)
+    assert screens.fit(QRect(10, 30, 50, 50), None) == QRect(10, 30, 50, 50)

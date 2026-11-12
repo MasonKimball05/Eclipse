@@ -467,6 +467,7 @@ class DownloadRow(QFrame):
         self.title.setTextFormat(Qt.TextFormat.PlainText)  # (a video's title, from the site)
         self.title.setObjectName("DownloadTitle")
         self.status = QLabel()
+        self.status.setTextFormat(Qt.TextFormat.PlainText)  # (yt-dlp's words, which can quote the site's)
         self.status.setObjectName("DownloadStatus")
         self.status.setWordWrap(True)
         self.bar = QProgressBar()
@@ -871,6 +872,7 @@ class DownloadsWindow(FadesIn, QWidget):
         layout.addLayout(link_row)
 
         self.message = QLabel()
+        self.message.setTextFormat(Qt.TextFormat.PlainText)  # (yt-dlp's errors, which can quote the site's)
         self.message.setObjectName("Hint")
         self.message.setWordWrap(True)
         self.message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -1021,15 +1023,18 @@ class DownloadsWindow(FadesIn, QWidget):
         if not url or not self.exe:
             return
         if self._fetch is not None:
-            self._fetch.cancel()
+            self._fetch.cancel()  # (its answer, stopped, still comes: ignored, and it's let go then: _fetched)
         self.options.hide()
         self.info = None
         self.message.setText("Looking at that link…")
         self.fetch_btn.setEnabled(False)
-        self._fetch = InfoFetch(self.exe, url, ytdlp_settings(self.store)["cookies_from"], self)
-        self._fetch.done.connect(self._fetched)
+        fetch = self._fetch = InfoFetch(self.exe, url, ytdlp_settings(self.store)["cookies_from"], self)
+        fetch.done.connect(lambda info, error: self._fetched(info, error, fetch))
 
-    def _fetched(self, info, error):
+    def _fetched(self, info, error, fetch=None):
+        if fetch is not None and fetch is not self._fetch:
+            fetch.deleteLater()  # (an earlier link's, stopped for this one: its answer isn't this link's)
+            return
         self.fetch_btn.setEnabled(True)
         self._fetch.deleteLater()
         self._fetch = None
@@ -1099,6 +1104,13 @@ class DownloadsWindow(FadesIn, QWidget):
                 "subtitle_langs": self.subs.text().strip(),
                 "embed_subs": self.embed_subs.isChecked(),
                 "folder": self.folder.folder}
+        try:
+            Path(opts["folder"]).mkdir(parents=True, exist_ok=True)
+        except OSError:
+            # (a drive that isn't plugged in, or a folder you can't write to: say so, rather than nothing happening)
+            self.message.setText(f"Can't save to {opts['folder']}: is its drive connected? Choose another folder "
+                                 "in Download Settings.")
+            return
         self.add(YtDlpDownload(self.exe, opts, info["url"], info["title"],
                                playlist_count=info["count"] if info["playlist"] else 0))
         self.options.hide()

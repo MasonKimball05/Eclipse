@@ -348,10 +348,16 @@ class NativeSettings(QObject):
                 widget.setPlainText(value)
         elif name == "select_row" and isinstance(widget, QListWidget) and isinstance(value, int):
             shown = [i for i in range(widget.count()) if not widget.item(i).isHidden()]
-            if 0 <= value < len(shown):
-                widget.setCurrentRow(shown[value])
+            row = shown[value] if 0 <= value < len(shown) else None
+            text = event.get("text")
+            if isinstance(text, str) and text and (row is None or plain(widget.item(row).text()) != text):
+                # The list changed since it was drawn (a site got a permission, say): the row clicked, by its words,
+                # not whatever's in its place now; or nothing, if it's gone
+                row = next((i for i in shown if plain(widget.item(i).text()) == text), None)
+            if row is not None:
+                widget.setCurrentRow(row)
                 if event.get("open"):
-                    widget.itemDoubleClicked.emit(widget.item(shown[value]))
+                    widget.itemDoubleClicked.emit(widget.item(row))
         elif name == "keys":
             from .shortcuts import KeyRecorder
             if not isinstance(widget, KeyRecorder):

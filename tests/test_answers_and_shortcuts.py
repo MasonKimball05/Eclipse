@@ -69,3 +69,35 @@ def test_pinned_tab_away_from_home():
     tab.url = "https://accounts.google.com/"
     assert is_away(tab)
     assert not is_away(Tab("https://x.com/", "X"))  # never pinned at a page
+
+
+def test_dates_zip_codes_and_tiny_or_complex_results_arent_wrong_answers():
+    """10/26/2024 became 0.000…, a ZIP+4 a subtraction, 24/7 a fraction; 1 mg in tonnes rounded to "0 t"; and
+    (-8)^(1/3) showed a complex number."""
+    from browser.answers import calculate, convert
+    for q in ("10/26/2024", "12345-6789", "24/7", "(-8)^(1/3)"):
+        assert calculate(q) is None, q
+    assert calculate("1/3").text.startswith("0.333")
+    tiny = convert("1 mg in t")
+    assert tiny is not None and not tiny.text.startswith("0 ") and "e-09" in tiny.text
+
+
+def test_addresses_dev_servers_ipv6_and_files_open_rather_than_search(tmp_path):
+    """app.localhost:5173 and myapp.test went to https (an http dev server failed); [::1]-style addresses and
+    myserver:8080 went to the search engine; so did a file's path, with its folders and your name; and a shortcut
+    of yours with the words in it twice raised on every key."""
+    from browser import command_bar
+    from browser.command_bar import SITE_SEARCHES, site_url, to_url
+    assert to_url("app.localhost:5173") == "http://app.localhost:5173"
+    assert to_url("myapp.test/login") == "http://myapp.test/login"
+    assert to_url("[fe80::1]:8080") == "http://[fe80::1]:8080" and to_url("myserver:8080") == "http://myserver:8080"
+    assert to_url("example.com") == "https://example.com" and to_url("hello world") is None
+    page = tmp_path / "index.html"
+    page.write_text("<p>hi</p>")
+    assert to_url(str(page)) == page.as_uri()
+    SITE_SEARCHES["custom:test"] = ("Two", "https://x.example/?q={}&alt={}", ("xx",))
+    try:
+        assert site_url("custom:test", "a b") == "https://x.example/?q=a%20b&alt=a%20b"
+    finally:
+        del SITE_SEARCHES["custom:test"]
+    assert command_bar is not None

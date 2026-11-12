@@ -46,9 +46,13 @@ from .timefmt import portable
 DEFAULT_ROOT = "~/projects/GitHub"
 NOT_HERE = "it was set up on another computer: choose “Use on This Computer…” from its menu first"
 MAX_FEED_BYTES = 8_000_000
-REFRESH_MS = 30 * 60 * 1000
+REFRESH_MS = 30 * 60 * 1000  # (unless the folder says otherwise: its "refresh", in minutes)
+REFRESH_CHOICES = (5, 15, 30, 60, 240)  # minutes
+TICK_MS = 60 * 1000  # (how often to look for folders that are due)
 GH_TIMEOUT_MS = 30_000  # gh stuck on the network that long is given up on
-MAX_ITEMS = 25
+MAX_ITEMS = 25  # (unless the folder says otherwise: its "limit")
+LIMIT_CHOICES = (10, 25, 50, 100)
+MAX_FETCH = max(LIMIT_CHOICES)  # (read this many: each folder shows its own limit of them)
 GITHUB = {
     "overview": ("GitHub", None),  # all of the below and your repos' open issues, in sub-folders
     "review": ("PRs to Review", ["search", "prs", "--review-requested=@me", "--state=open"]),
@@ -114,7 +118,7 @@ def parse_json_items(data, items_path: str, title_field: str, link: str, base_ur
             title = str(dig(row, title_field) or "")
         title = " ".join(title.split()).strip(" ·—-") or url
         items.append((title[:200], url))
-    return items[:MAX_ITEMS]
+    return items[:MAX_FETCH]
 
 
 # Runs in a page you're signed in to: the links that match the folder's selector
@@ -167,7 +171,7 @@ def parse_feed(data: bytes, base_url: str = "") -> tuple[str, list[tuple[str, st
             link = urljoin(base_url, link) if base_url else link
             if link.lower().startswith(("http://", "https://")):  # not javascript:, file:, note:…
                 items.append((item_title or link, link))
-    return title, items[:MAX_ITEMS]
+    return title, items[:MAX_FETCH]
 
 
 class _FeedLinks(HTMLParser):
@@ -333,6 +337,27 @@ def apply_items(folder: Folder, items: list) -> list[Tab]:
     return dropped + list(existing.values())
 
 
+def refresh_minutes(live: dict) -> int:
+    value = live.get("refresh")
+    return value if value in REFRESH_CHOICES else REFRESH_MS // 60000
+
+
+def item_limit(live: dict) -> int:
+    value = live.get("limit")
+    return value if value in LIMIT_CHOICES else MAX_ITEMS
+
+
+def capped(items: list, limit: int) -> list:
+    """The first `limit` items; for a folder of sub-folders, the first `limit` in each."""
+    out = []
+    for title, target in items:
+        if isinstance(target, list):
+            out.append((title, capped(target, limit)))
+        elif sum(1 for _t, x in out if not isinstance(x, list)) < limit:
+            out.append((title, target))
+    return out
+
+
 def mark_seen(folder: Folder, tab: Tab):
     tab.fresh = False
     seen = folder.live.setdefault("seen", [])
@@ -346,7 +371,9 @@ class LiveFolders(QObject):
         self.browser = browser
         self.network = QNetworkAccessManager(self)
         self._busy: set[str] = set()
-        self._timer = QTimer(self, interval=REFRESH_MS, timeout=self.refresh_all)
+        self._tried: dict[str, float] = {}
+        self._asked: dict[str, int] = {}  # (bumped when a folder's settings change: a refresh asked before is ignored)  # (when each folder last asked, whether or not it got an answer)
+        self._timer = QTimer(self, interval=TICK_MS, timeout=self.refresh_due)
         self._timer.start()
         QTimer.singleShot(5000, self.refresh_all)  # catch up after launch, once the window is up
         trust_existing(browser.store)
@@ -361,11 +388,25 @@ class LiveFolders(QObject):
         for folder in self.folders():
             self.refresh(folder)
 
+    def refresh_due(self):
+        """Each folder whose own refresh interval has passed since it last asked."""
+        now = time.time()
+        for folder in self.folders():
+            last = max(folder.live.get("refreshed", 0), self._tried.get(folder.id, 0))
+            if now - last >= refresh_minutes(folder.live) * 60 - 5:
+                self.refresh(folder)
+
     def refresh(self, folder: Folder, on_done=None):
         if folder.id in self._busy:
             return
         self._busy.add(folder.id)
-        done = lambda items, title=None, error=None: self._finish(folder, items, title, error, on_done)
+        self._tried[folder.id] = time.time()
+        asked = self._asked.get(folder.id, 0)
+
+        def done(items, title=None, error=None):
+            if self._asked.get(folder.id, 0) != asked:
+                return  # (its settings changed since it asked: what came back is for the old ones)
+            self._finish(folder, items, title, error, on_done)
         if not allowed_here(folder):
             done([], error=NOT_HERE)
             return
@@ -385,6 +426,12 @@ class LiveFolders(QObject):
         else:
             self._feed(folder.live.get("url", ""), done)
 
+    def changed(self, folder: Folder):
+        """`folder`'s settings changed: a refresh still out answers for the old ones, so it's let go, and the folder
+        can be refreshed again now."""
+        self._asked[folder.id] = self._asked.get(folder.id, 0) + 1
+        self._busy.discard(folder.id)
+
     def _finish(self, folder, items, title, error, on_done):
         self._busy.discard(folder.id)
         if self.browser.store.locate(folder) is None:
@@ -399,7 +446,7 @@ class LiveFolders(QObject):
             current = browser.current_tab
             on_screen = [current, *(browser.store.split_of(current) or [])] if current is not None else []
             located = browser.store.locate(folder)
-            dropped = apply_items(folder, items)
+            dropped = apply_items(folder, capped(items, item_limit(folder.live)))
             for tab in dropped:
                 if located and any(tab is t for t in on_screen):
                     # Gone from the source while you're reading it (a notification you've just read, say):
@@ -517,7 +564,7 @@ class LiveFolders(QObject):
                 if url.startswith(("http://", "https://")) and url not in seen:
                     seen.add(url)
                     items.append((" ".join(title.split())[:200] or url, url))
-            done(items[:MAX_ITEMS], result.get("title"))
+            done(items[:MAX_FETCH], result.get("title"))
         self.read_in_page(self._profile_for(folder), folder.live.get("url", ""),
                           PAGE_LINKS % json.dumps(folder.live.get("selector", "a")),
                       got, lambda message: done([], error=message))
@@ -586,7 +633,8 @@ class LiveFolders(QObject):
         if query == "overview":
             self._github_overview(done, folder)
             return
-        args = GITHUB.get(query, GITHUB["review"])[1] + ["--json", "title,url,repository", "--limit", str(MAX_ITEMS)]
+        limit = item_limit(folder.live) if folder is not None and folder.live else MAX_ITEMS
+        args = GITHUB.get(query, GITHUB["review"])[1] + ["--json", "title,url,repository", "--limit", str(limit)]
         self._gh(args, lambda rows: done([(_titled(r), r["url"]) for r in rows if r.get("url")]),
                  lambda error: done([], error=error))
 
@@ -611,7 +659,10 @@ class LiveFolders(QObject):
             if not failed:  # (one message, however many of them fail)
                 failed.append(error)
                 done([], error=error)
+        limit = str(item_limit(folder.live)) if folder is not None and folder.live else str(MAX_ITEMS)
         for key, args in OVERVIEW.items():
+            if key in ("review", "mine", "assigned"):  # (the folder's own limit, for each of those searches)
+                args = args[:-1] + [limit]
             self._gh(args, lambda rows, k=key: not failed and got(k, rows),
                      (lambda _error, k=key: not failed and got(k, kept(k))) if key in OPTIONAL else fail)
 
@@ -830,7 +881,7 @@ def upcoming_events(text: str, base_url: str = "", now=None, days=60) -> list[tu
             link = (base_url.split("#")[0] or "https://calendar.invalid/") + "#event-" + uid
         items.append((start, f"{when} · {summary}", link))
     items.sort(key=lambda i: i[0])
-    return [(title, link) for _start, title, link in items][:MAX_ITEMS]
+    return [(title, link) for _start, title, link in items][:MAX_FETCH]
 
 
 # --- Repos (Repo Radar, built in) -------------------------------------------------------------------
@@ -882,7 +933,7 @@ def scan_repos(root: str) -> list[tuple[str, str]]:
         parts = ([f"{changed} changed"] if changed else []) + ([f"{ahead} unpushed"] if ahead else [])
         url = web_url(_git(repo, "remote", "get-url", "origin")) or f"file://{repo}"
         items.append((f"{name} · {', '.join(parts)}", url))
-    return items[:MAX_ITEMS]
+    return items[:MAX_FETCH]
 
 
 class _RepoScan(QThread):

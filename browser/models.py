@@ -553,6 +553,8 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
         return None
 
     def add_to_split(self, base, tab, limit=4) -> bool:
+        if tab is base or tab.id == base.id:
+            return False  # (a tab beside itself: two panes on one page)
         group = next((g for g in self.splits if base.id in g), None)
         if group is not None and tab.id in group:
             return True

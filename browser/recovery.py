@@ -64,9 +64,26 @@ def key() -> bytes | None:
     return secure_store.load(KEY_ACCOUNT) if is_set() else None
 
 
+def needs_entering() -> bool:
+    """A PIN's set, but this Mac doesn't have its key (a backup restored here, or another Mac's data): the copies
+    can only be opened with the PIN, so nothing may seal them again until it's entered (Recover…)."""
+    if not is_set():
+        return False
+    saved = storage.read_json(_path())
+    found = secure_store.load(KEY_ACCOUNT)
+    if not saved or found is None:
+        return True
+    try:
+        return unseal(found, saved["check"], b"check") != CHECK
+    except Exception:
+        return True
+
+
 def set_pin(pin: str) -> bool:
-    """Set (or change) the PIN: every store seals its copy again with the new key."""
-    if pin_problem(pin):
+    """Set (or change) the PIN: every store seals its copy again with the new key. Not while the old PIN still
+    needs entering here: sealed again then, the copies would keep only what's on this Mac, and what came from the
+    backup (only in the copies) would be gone for good."""
+    if pin_problem(pin) or needs_entering():
         return False
     old = key()
     salt = os.urandom(16)

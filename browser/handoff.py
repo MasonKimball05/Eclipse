@@ -13,6 +13,20 @@ from .features import Feature
 SETTING = "handoff"
 
 
+
+def offerable(url: str) -> bool:
+    """A page your other devices could open: on the web, not this Mac's own servers or your network's (localhost:5173,
+    a router, a .test name), which they can't reach, and whose addresses (with their tokens) needn't go to iCloud;
+    nor one with a name and password in its address."""
+    from PyQt6.QtCore import QUrl
+    from .favicons import is_private_host
+    q = QUrl(url)
+    if q.scheme() not in ("http", "https") or q.userInfo():
+        return False
+    host = q.host().lower()
+    return bool(host) and "." in host and not host.endswith((".test", ".local", ".localhost", ".internal", ".lan",
+                                                            ".home.arpa")) and not is_private_host(host)
+
 class HandoffFeature(Feature):
     name = "handoff"
 
@@ -26,7 +40,7 @@ class HandoffFeature(Feature):
     def offer(self, tab=None):
         """Offer the current tab's page (or stop, if there's nothing to offer)."""
         tab = tab if tab is not None else self.window.current_tab
-        if not self.on() or tab is None or self.window.isHidden():
+        if not self.on() or tab is None or self.window.isHidden() or not offerable(tab.url):
             macos.end_handoff()
             return
         macos.handoff(tab.url, tab.label)

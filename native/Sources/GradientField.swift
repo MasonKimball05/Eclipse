@@ -1,6 +1,9 @@
 // The theme editor's colors as dots on a field of color: hue from left to right, and from soft (pale) at the top
 // through vivid in the middle to deep at the bottom. Drag a dot to change its color; double-click the field to add
-// one (up to "max"), double-click a dot (or right-click it) to take it out. The strip below shows them blended, as
+// one (up to "max"), double-click a dot (or right-click it) to take it out. Without dragging: a dot takes the
+// keyboard (Tab to it; the arrows move it, ← → through the hues and ↑ ↓ softer or deeper; Return chooses its color in
+// macOS's color panel; Delete takes it out), VoiceOver adjusts it (its hue) and has the same actions, and right-click
+// has Choose Color…. The strip below shows them blended, as
 // the window will be. The value is the colors as hex, the first the Space's own (a "gradient" field in Form.swift).
 
 import AppKit
@@ -107,6 +110,7 @@ struct GradientField: View {
         .padding(.vertical, 4)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Colors")
+        .onDisappear { ColorChooser.shared.stop() }  // (the form's gone: the panel changes nothing now)
     }
 
     private func spot(_ index: Int, _ hex: String, in size: CGSize) -> CGPoint {
@@ -141,13 +145,39 @@ struct GradientField: View {
             )
             .simultaneousGesture(TapGesture(count: 2).onEnded { remove(index) })
             .contextMenu {
+                Button("Choose Color…") { choose(index) }
                 if colors.count > 1 { Button("Remove Color") { remove(index) } }
             }
+            .focusable()
+            .modifier(DotKeys(move: { dx, dy in nudge(index, dx: dx, dy: dy) }, choose: { choose(index) },
+                              remove: { remove(index) }))
             .help(index == 0 ? "The Space's color: drag to change it" : "Drag to change; double-click to take it out")
             .accessibilityElement()
             .accessibilityLabel(index == 0 ? "Main color" : "Color \(index + 1)")
             .accessibilityValue(hex)
+            .accessibilityAdjustableAction { direction in
+                nudge(index, dx: direction == .increment ? 1 : -1, dy: 0)
+            }
+            .accessibilityAction(named: "Choose Color") { choose(index) }
+            .accessibilityAction(named: "Remove Color") { remove(index) }
             .animation(.snappy(duration: 0.12), value: dragging?.index == index)
+    }
+
+    /// A dot moved a step on the field without dragging it: `dx` through the hues (round the end), `dy` softer or
+    /// deeper.
+    private func nudge(_ index: Int, dx: Int, dy: Int) {
+        guard colors.indices.contains(index) else { return }
+        let place = ColorField.place(colors[index])
+        var x = place.x + Double(dx) * 0.02
+        x -= x.rounded(.down)  // (past red at either end: round to the other)
+        let y = Swift.min(Swift.max(place.y + Double(dy) * 0.05, 0), 1)
+        set(index, ColorField.hex(x: x, y: y))
+    }
+
+    /// macOS's color panel, for the dot's color: any color, typed in (hex, RGB) or picked from the screen.
+    private func choose(_ index: Int) {
+        guard colors.indices.contains(index) else { return }
+        ColorChooser.shared.choose(colors[index]) { hex in set(index, hex) }
     }
 
     private func set(_ index: Int, _ hex: String) {
@@ -166,7 +196,60 @@ struct GradientField: View {
 
     private func remove(_ index: Int) {
         guard colors.count > 1, colors.indices.contains(index) else { return }
+        ColorChooser.shared.stop()  // (the color panel was for a dot by its place: the one moving into it isn't it)
         withAnimation(.snappy(duration: 0.18)) { _ = values.list[id]?.remove(at: index) }
+    }
+}
+
+/// A dot's keys (macOS 14 and later; before, right-click and VoiceOver have the same).
+private struct DotKeys: ViewModifier {
+    let move: (Int, Int) -> Void
+    let choose: () -> Void
+    let remove: () -> Void
+
+    func body(content: Content) -> some View {
+        if #available(macOS 14.0, *) {
+            content
+                .onKeyPress(.leftArrow) { move(-1, 0); return .handled }
+                .onKeyPress(.rightArrow) { move(1, 0); return .handled }
+                .onKeyPress(.upArrow) { move(0, -1); return .handled }
+                .onKeyPress(.downArrow) { move(0, 1); return .handled }
+                .onKeyPress(.return) { choose(); return .handled }
+                .onKeyPress(.delete) { remove(); return .handled }
+                .onKeyPress(.deleteForward) { remove(); return .handled }
+        } else {
+            content
+        }
+    }
+}
+
+/// macOS's shared color panel, telling one dot what's picked in it.
+final class ColorChooser: NSObject {
+    static let shared = ColorChooser()
+    private var picked: ((String) -> Void)?
+    private var picking = false  // (the panel's ours: it was shown for a dot)
+
+    func choose(_ hex: String, picked: @escaping (String) -> Void) {
+        self.picked = nil  // (setting its color below would tell the last dot)
+        let panel = NSColorPanel.shared
+        panel.setTarget(self)
+        panel.setAction(#selector(changed(_:)))
+        panel.isContinuous = true
+        panel.showsAlpha = false
+        panel.color = NSColor(Color(hex: hex) ?? .gray)
+        self.picked = picked
+        picking = true
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    func stop() {
+        picked = nil
+        if picking { NSColorPanel.shared.setTarget(nil) }
+        picking = false
+    }
+
+    @objc private func changed(_ panel: NSColorPanel) {
+        picked?(Color(nsColor: panel.color).hexString)
     }
 }
 

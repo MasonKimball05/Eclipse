@@ -45,7 +45,7 @@ class MemorySaverFeature(Feature):
         idle = sorted((t for t in self.window.resting_tabs() if t.last_active < cutoff), key=lambda t: t.last_active)
         chosen = idle[:AT_ONCE[level]]
         for tab in chosen:
-            self.window.put_to_sleep(tab)
+            self.window.sleep_unless_typed_in(tab)  # (not one with something typed into it, unsent)
         if chosen and time.time() - self.told > TOAST_EVERY:
             self.told = time.time()
             count = len(chosen)

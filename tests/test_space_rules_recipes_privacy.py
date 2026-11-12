@@ -95,4 +95,5 @@ def test_private_windows_blocker_blocks_but_never_reports(qapp, data_dir):
     assert there.blocked and here.blocked
     assert reported == [("news.example", "doubleclick.net")]  # (nothing of secret.example)
     assert extensions_saw == ["https://doubleclick.net/ad.js"]  # (the main window's request only)
-    assert main.count_for("https://secret.example/") == 1  # (the shield still counts it, while Eclipse runs)
+    # (counted in the private session's own, never the main window's: a site's count there told of the visit)
+    assert main.count_for("https://secret.example/") == 0 and private.count_for("https://secret.example/") == 1

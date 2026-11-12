@@ -12,6 +12,7 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFrame, QGraphicsDropShadowEffect, QGridLayout, QHBoxLayout,
                              QLabel, QLineEdit, QPushButton, QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
+from . import screens
 from .icons import EMOJI, SYMBOLS, emoji_icon, is_symbol, space_icon
 from .theme import PALETTE, dot_icon, stylesheet
 from .webview import DEFAULT_PROFILE
@@ -356,7 +357,7 @@ class SpaceEditor(QWidget):
 
     def popup(self, pos: QPoint):
         self.adjustSize()
-        screen = self.screen().availableGeometry()
+        screen = screens.area_at(pos, self)  # (the screen you clicked on, not the window's)
         x = min(pos.x() - 18, screen.right() - self.width())
         y = min(pos.y() - 14, screen.bottom() - self.height())
         self.move(max(x, screen.left()), max(y, screen.top()))

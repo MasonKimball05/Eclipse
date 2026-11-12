@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayou
 
 import qtawesome as qta
 
-from . import macos, motion
+from . import macos, motion, prompt_keys
 from .permissions import origin_key
 
 SETTING = "external_apps"  # {origin: [schemes it may open without asking]}
@@ -151,6 +151,7 @@ class ExternalPrompt(QFrame):
         if self.view.isVisible() and not self.isVisible() and not getattr(self, "_shown_once", False):
             self._shown_once = True
             motion.fade(self, True, motion.NORMAL)
+            prompt_keys.shown(self)  # (VoiceOver says it; ⌥⇧⌘A reaches it)
         else:
             self.setVisible(self.view.isVisible())
         self.raise_()

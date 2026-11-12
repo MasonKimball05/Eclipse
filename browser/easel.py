@@ -487,7 +487,8 @@ class EaselScene(QGraphicsScene):
         if self.easel.tool == "select" and self.handles.handle_at(event.scenePos()) is not None:
             return self.mousePressEvent(event)  # (a quick second grab of a handle still resizes)
         item = self.itemAt(event.scenePos(), self.views()[0].transform()) if self.views() else None
-        if item is not None and item.data(SOURCE):  # a capture: back to the page it came from
+        if item is not None and str(item.data(SOURCE) or "").lower().startswith(("http://", "https://")):
+            # a capture (or a dropped link): back to the page it came from
             self.easel.open_link.emit(item.data(SOURCE))
             return
         super().mouseDoubleClickEvent(event)
@@ -721,10 +722,12 @@ class EaselView(QWidget):
     # --- Images -----------------------------------------------------------------------------------
 
     def add_image(self, image: QImage, source="", caption="", at: QPointF | None = None,
-                  pixel_ratio=1.0) -> QGraphicsPixmapItem:
-        """Add an image (pixel_ratio: 2 for a Retina capture, so it shows at its on-screen size)."""
+                  pixel_ratio=1.0) -> QGraphicsPixmapItem | None:
+        """Add an image (pixel_ratio: 2 for a Retina capture, so it shows at its on-screen size). None if it couldn't
+        be kept (no image at all, or the disk refused it): nothing's added, rather than an invisible item."""
         name = f"{new_id()}.png"
-        image.save(str(self.folder / name), "PNG")
+        if image.isNull() or image.width() == 0 or not image.save(str(self.folder / name), "PNG"):
+            return None
         scale = 1 / pixel_ratio
         if image.width() * scale > 900:  # big images start at a comfortable size; zoom in for detail
             scale = 900 / image.width()
@@ -771,8 +774,9 @@ class EaselView(QWidget):
                     self.add_image(QImage(url.toLocalFile()), at=at)
                 elif not url.isLocalFile():  # a link: as a text card you can double-click
                     text = _movable(QGraphicsTextItem(url.toString()), "text")
-                    text.setDefaultTextColor(QColor("#2563eb"))
-                    text.setData(SOURCE, url.toString())
+                    if url.scheme().lower() in ("http", "https"):  # (a page's drag can carry any address: only the web opens)
+                        text.setDefaultTextColor(QColor("#2563eb"))
+                        text.setData(SOURCE, url.toString())
                     text.setPos(at or self.canvas.mapToScene(self.canvas.viewport().rect().center()))
                     self.scene.addItem(text)
         elif mime.hasText() and mime.text().strip():
@@ -1003,9 +1007,24 @@ class EaselView(QWidget):
         file = self.folder / "easel.json"
         data = storage.read_json(file) or {}
         self.from_dict(data)
+        self._forget_unused_images(data)
         self._history = [json.dumps(self.to_dict())]
         QTimer.singleShot(0, self._save_timer.stop)  # loading isn't an edit
         QTimer.singleShot(0, self.fit)
+
+    def _forget_unused_images(self, data):
+        """Images taken out (or undone) last time it was open: their files go now, so a capture you deleted (of a
+        page you'd rather not keep, say) isn't left in your data, or its backups. (Not while it's open: undo could
+        bring one back.)"""
+        if not data:
+            return  # (nothing read: an easel that couldn't be read keeps everything)
+        used = {e.get("image") for e in data.get("items", []) if isinstance(e, dict)}
+        for file in self.folder.glob("*.png"):
+            if file.name not in used:
+                try:
+                    file.unlink()
+                except OSError:
+                    pass
 
     def save(self):
         self._save_timer.stop()
@@ -1172,7 +1191,9 @@ class EaselsFeature(Feature):
         easel = self.last if self.last is not None and window.store.locate(self.last) else None
         if easel is None:
             easel = self.last = self.new_easel(activate=False)
-        window._ensure_view(easel).add_image(image, source=url, caption=title, pixel_ratio=ratio)
+        if window._ensure_view(easel).add_image(image, source=url, caption=title, pixel_ratio=ratio) is None:
+            window.toast("Couldn't keep that capture: is the disk full?")
+            return
         window.toast(f"Captured to “{easel.label}”")
 
     def commands(self):

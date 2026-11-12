@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (QDialog, QDialogButtonBox, QFrame, QHBoxLayout, QLa
 
 import qtawesome as qta
 
-from . import motion
+from . import motion, prompt_keys
 from .theme import stylesheet
 
 T = QWebEnginePermission.PermissionType
@@ -144,7 +144,8 @@ class PermissionPrompt(QFrame):
         # The page area is shared by every tab: only show while the asking tab is the one on screen
         if self.view.isVisible() and not self.isVisible() and not getattr(self, "_shown_once", False):
             self._shown_once = True
-            motion.fade(self, True, motion.NORMAL)  # the first time, it eases in
+            motion.fade(self, True, motion.NORMAL)
+            prompt_keys.shown(self)  # (VoiceOver says it; ⌥⇧⌘A reaches it)  # the first time, it eases in
         else:
             self.setVisible(self.view.isVisible())
         self.raise_()
@@ -247,7 +248,8 @@ class PermissionManager(QObject):
             permission.deny()
             return
         origin = origin_key(permission.origin())
-        if kind in REMEMBERED and origin:
+        private = view.page().profile().isOffTheRecord()
+        if kind in REMEMBERED and origin and not private:  # (a private window asks afresh: as in Chrome's Incognito)
             rule = capture_rule(self.settings, origin, kind.name)
             if rule == "allow":
                 self._grant(view, permission)
@@ -255,7 +257,8 @@ class PermissionManager(QObject):
             if rule == "block":
                 permission.deny()
                 return
-        waiting = self._waiting.setdefault(id(view), [])
+        # (asked again after a reload: the old request's dead, and this one's the one to answer)
+        waiting = self._waiting[id(view)] = [(v, p) for v, p in self._waiting.get(id(view), []) if p.isValid()]
         if any(origin_key(p.origin()) == origin and p.permissionType() == kind for _v, p in waiting):
             return  # already asking
         waiting.append((view, permission))
@@ -334,6 +337,7 @@ class PermissionManager(QObject):
         prompt = self._prompts.pop(key, None)
         if prompt is not None:
             prompt.host_widget.removeEventFilter(prompt)
+            prompt.hide()  # (gone now, not when Qt next gets round to deleting it)
             prompt.deleteLater()
 
     def _forget(self, key):
@@ -398,6 +402,8 @@ class PermissionManager(QObject):
     def set_rule(self, profile, origin, kind, value):
         """value: "allow", "block" or None (ask next time)."""
         if kind in REMEMBERED:
+            if profile.isOffTheRecord():
+                return  # (a private window's Site Controls remember nothing, nor change what other windows do)
             set_capture_rule(self.settings, origin, kind.name, value)
             self.browser.store.schedule_save()
             return
@@ -410,7 +416,8 @@ class PermissionManager(QObject):
             permission.deny()
 
     def reset_site(self, profile, origin):
-        self.settings.get(SETTING, {}).pop(origin, None)
+        if not profile.isOffTheRecord():
+            self.settings.get(SETTING, {}).pop(origin, None)
         for permission in profile.listPermissionsForOrigin(QUrl(origin)):
             permission.reset()
         self.browser.store.schedule_save()

@@ -1,5 +1,5 @@
 # Arc's mini player: switch away from a tab that's playing a video and the video keeps playing
-# in a small floating window. On hover: its title, "back to tab" and close along the top, and back 10 seconds,
+# in a small floating window. On hover (or with the keyboard on it: Tab to its buttons; or from View › Mini Player): its title, "back to tab" and close along the top, and back 10 seconds,
 # play/pause, ahead 10 seconds and next video (where the site has one) along the bottom. Drag its top to move it,
 # or an edge or corner to resize it (keeping the video's shape); let go and it glides to the nearest corner of the
 # screen, like Arc's. Its size and corner are remembered.
@@ -10,9 +10,9 @@
 
 import sys
 
-from PyQt6.QtCore import QPoint, QRect, QSize, Qt
+from PyQt6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer
 from PyQt6.QtGui import QGuiApplication
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QToolButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QToolButton, QVBoxLayout, QWidget
 
 import qtawesome as qta
 
@@ -28,6 +28,7 @@ SIZE_SETTING, CORNER_SETTING = "mini_player_size", "mini_player_corner"  # ([w, 
 RADIUS = 12  # (its rounded corners, like Arc's)
 BORDER = 0.22  # (a light edge just inside them, so it stands out on a dark screen as on a light one)
 SKIP = 10  # seconds back or ahead
+KEYBOARD_REASONS = (Qt.FocusReason.TabFocusReason, Qt.FocusReason.BacktabFocusReason, Qt.FocusReason.ShortcutFocusReason)
 # The page script runs in the application world: it shares the page's DOM but not its JavaScript
 WORLD = 1
 FIND_PLAYING = """(() => [...document.querySelectorAll('video')]
@@ -116,6 +117,7 @@ class MiniPlayerWindow(QFrame):
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.resize(DEFAULT_SIZE)
         self._drag_from: QPoint | None = None
+        self._tabbed = False  # (the keyboard's on a button, Tabbed to: its controls stay)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.view_layout = layout
@@ -159,8 +161,45 @@ class MiniPlayerWindow(QFrame):
         button.setToolTip(tip)
         button.setAccessibleName(tip)  # (an icon alone says nothing to VoiceOver)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFocusPolicy(Qt.FocusPolicy.TabFocus)  # (Tab reaches them, a click doesn't: the controls show while it does)
         button.clicked.connect(slot)
+        button.installEventFilter(self)
         return button
+
+    def show_controls(self, shown=True):
+        if shown:
+            self.player.refresh()  # (whether there's a next video now, and its title)
+        for bar in (self.controls, self.transport):
+            if shown:
+                bar.raise_()
+            motion.fade(bar, shown)  # (fading, as the other hover controls do)
+
+    def _keyboard_on_it(self) -> bool:
+        """Tabbed to one of its buttons (not focused by the window coming forward, or a click)."""
+        focused = QApplication.focusWidget()
+        return self._tabbed and focused is not None and self.isAncestorOf(focused) and isinstance(focused, QToolButton)
+
+    def eventFilter(self, obj, event):
+        t = event.type()
+        if t == QEvent.Type.FocusIn:
+            self._tabbed = event.reason() in KEYBOARD_REASONS
+            if self._tabbed and not self.controls.isVisible():
+                self.show_controls()
+        elif t == QEvent.Type.FocusOut:
+            QTimer.singleShot(0, lambda: not self.underMouse() and not self._keyboard_on_it()
+                              and self.show_controls(False))
+        elif t == QEvent.Type.KeyPress:
+            key = event.key()
+            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                obj.click()
+                return True
+            if key in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+                self.player.skip(SKIP if key == Qt.Key.Key_Right else -SKIP)
+                return True
+            if key == Qt.Key.Key_Escape:
+                self.player.browser.activateWindow()  # (back to the browser, the video still playing here)
+                return True
+        return False
 
     def set_playing(self, playing):
         self.play_btn.setIcon(qta.icon("ph.pause-fill" if playing else "ph.play-fill", color="white"))
@@ -195,14 +234,11 @@ class MiniPlayerWindow(QFrame):
         self.setGeometry(x, y, width, height)
 
     def enterEvent(self, event):
-        self.player.refresh()  # (whether there's a next video now, and its title)
-        for bar in (self.controls, self.transport):
-            bar.raise_()
-            motion.fade(bar, True)  # (fading, as the other hover controls do)
+        self.show_controls()
 
     def leaveEvent(self, event):
-        for bar in (self.controls, self.transport):
-            motion.fade(bar, False)
+        if not self._keyboard_on_it():  # (the keyboard's on them: they stay)
+            self.show_controls(False)
 
     # Drag anywhere on the control strip to move the player
     def mousePressEvent(self, event):
@@ -295,6 +331,7 @@ class MiniPlayer:
         self.window.set_playing(True)
         self.window.show()
         macos.round_window(self.window, RADIUS, BORDER)  # (the page in it too, which its style can't round)
+        macos.follow_spaces(self.window)  # (over a full-screen window too, and on every desktop, as Arc's)
         self.window.controls.raise_()
         self.window.transport.raise_()
         self.window.raise_grips()

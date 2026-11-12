@@ -127,4 +127,16 @@ def apply_pending() -> Path | None:
         if (pending / name).exists():
             shutil.move(str(pending / name), str(root / name))
     shutil.rmtree(pending, ignore_errors=True)
+    _forget_what_sync_knew(root)
     return kept
+
+
+def _forget_what_sync_knew(root):
+    """A backup's Spaces are in now, but sync still knew the ones since: missing here, they'd have been sent as
+    deleted, from every Mac (ones made on other Macs too). Forgotten, the next look takes the other Macs' newer copies
+    of what's here, brings back what's only there, and sends what's only here (sync.note_local)."""
+    path = root / "sync-state.json"
+    state = storage.read_json(path)
+    if state:
+        state["known"], state["deleted"] = {}, {}
+        storage.write_json(path, state)

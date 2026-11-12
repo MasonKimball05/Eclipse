@@ -10,7 +10,7 @@ import qtawesome as qta
 from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QPainter
 from PyQt6.QtWebEngineCore import QWebEngineCertificateError
-from PyQt6.QtWidgets import QFrame, QLabel, QPushButton, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QApplication, QFrame, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from .devmode import is_dev_url
 
@@ -106,6 +106,19 @@ class CertificateWarning(QWidget):
         self._place()
         self.show()
         self.raise_()
+        focused = QApplication.focusWidget()
+        if view.isVisible() and (focused is None or focused is view or view.isAncestorOf(focused)):
+            # It covers the page: nothing there to type into, so it has the keyboard (Return or Space goes back).
+            # (Not while you're typing elsewhere, in Split View's other page, say: a key there would go back)
+            back.setDefault(True)
+            back.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and self.back_btn.isVisible():
+            focused = self.focusWidget()
+            (focused if isinstance(focused, QPushButton) else self.back_btn).click()
+            return
+        super().keyPressEvent(event)
 
     def _show_details(self):
         self.details_btn.hide()
@@ -132,8 +145,10 @@ class CertificateWarning(QWidget):
         return False
 
 
-def _site(url: QUrl) -> tuple[str, int]:
-    return url.host().lower(), url.port(443)
+def _site(url: QUrl) -> str:
+    """What a Visit Anyway is for: the host, on any port (as Chromium remembers it: a certificate trusted for
+    intranet.example:8443 is trusted on intranet.example too, so either has no lock, nor passwords filled)."""
+    return url.host().lower().rstrip(".")
 
 
 class CertificateGuard:
@@ -142,7 +157,10 @@ class CertificateGuard:
     def __init__(self, browser):
         self.browser = browser
         self._cards = {}  # id(view) → CertificateWarning
-        self._visited_anyway = set()  # (host, port) you went on to anyway: no lock in the pill for them
+        self._private: set[int] = set()  # (the profiles above that are private windows')
+        # Hosts you went on to anyway, by profile (a private window's isn't the other windows'): no lock in the pill
+        # for them, and no passwords or passkeys there
+        self._visited_anyway: dict[int, set] = {}
 
     def attach(self, view):
         view.page().certificateError.connect(lambda error, v=view: self._error(v, error))
@@ -163,9 +181,13 @@ class CertificateGuard:
                                                    lambda _=False, v=view: self.visit_anyway(v))
         card.previous = previous if previous != error.url() else QUrl()
 
-    def overridden(self, url) -> bool:
-        """Whether this address's site has a certificate you chose to trust anyway (this session)."""
-        return _site(QUrl(url)) in self._visited_anyway
+    def overridden(self, url, profile=None) -> bool:
+        """Whether this address's host has a certificate you chose to trust anyway (this session): in `profile`, or
+        any window's but a private one's if none's given."""
+        host = _site(QUrl(url))
+        if profile is not None:
+            return host in self._visited_anyway.get(id(profile), set())
+        return any(host in hosts for key, hosts in self._visited_anyway.items() if key not in self._private)
 
     def warning(self, view):
         return self._cards.get(id(view))
@@ -174,7 +196,10 @@ class CertificateGuard:
         card = self._cards.pop(id(view), None)
         if card is not None:
             card.error.acceptCertificate()  # for this site, until the browser quits
-            self._visited_anyway.add(_site(card.error.url()))
+            profile = view.page().profile()
+            self._visited_anyway.setdefault(id(profile), set()).add(_site(card.error.url()))
+            if profile.isOffTheRecord():
+                self._private.add(id(profile))
             card.done()
 
     def go_back(self, view):

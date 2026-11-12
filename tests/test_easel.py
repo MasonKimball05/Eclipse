@@ -393,3 +393,27 @@ def test_duplicate_and_stacking_order(data_dir):
     assert copy.rect() == a.rect()
     again = EaselView(url)
     assert sum(1 for i in again.to_dict()["items"] if i["kind"] == "rect") == 3
+
+
+def test_an_image_that_cant_be_kept_isnt_added_and_deleted_ones_leave_no_file(data_dir):
+    """A capture whose file couldn't be written (no image, a full disk) became an invisible item that crashed a resize
+    later; and a deleted capture's file stayed in the data folder (and its backups) for good."""
+    from PyQt6.QtCore import QMimeData, QUrl
+    url = new_easel_url()
+    easel = EaselView(url)
+    assert easel.add_image(QImage()) is None and not easel.to_dict()["items"]
+    image = QImage(40, 20, QImage.Format.Format_ARGB32)
+    image.fill(QColor("teal"))
+    kept = easel.add_image(image)
+    gone = easel.add_image(image)
+    assert len(list(easel.folder.glob("*.png"))) == 2
+    easel.scene.removeItem(gone)
+    easel.save()
+    again = EaselView(url)  # (opened again: the file of the one taken out goes)
+    assert [f.name for f in again.folder.glob("*.png")] == [kept.data(2)]  # (IMAGE: its file's name)
+    # A dropped link that isn't a web address: shown, but nothing to open
+    mime = QMimeData()
+    mime.setUrls([QUrl("javascript:alert(1)")])
+    again._drop(mime, QPointF(0, 0))
+    card = next(i for i in again.scene.items() if isinstance(i, QGraphicsTextItem) and "javascript" in i.toPlainText())
+    assert not card.data(1)  # (SOURCE: nothing to open on a double-click)

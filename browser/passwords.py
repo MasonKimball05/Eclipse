@@ -314,7 +314,9 @@ class Passwords(QObject):
             # login would match, and the script says each thing once, so it's heard again once the address is in
             QTimer.singleShot(50, lambda: not _gone(view) and self._said(view, message, tries + 1))
             return
-        if self.browser.certificates.overridden(view.url()):
+        profile = view.page().profile()
+        frame_url = str(said.get("frame") or "") if isinstance(said, dict) else ""
+        if any(self.browser.certificates.overridden(u, profile) for u in (view.url(), frame_url) if u):
             # A page whose certificate you chose to trust anyway (Visit Anyway): it may not be the site at all, so
             # nothing of yours is offered there, filled or saved, as in Chrome
             return
@@ -340,7 +342,10 @@ class Passwords(QObject):
                                               username_only=said.get("step") == "username", frame=frame))
         elif said.get("kind") == "new-password":
             card = self._cards.get(id(view))
-            if _fillable(url) and self.settings.get(SAVE_SETTING, True) and not isinstance(card, StrongCard):
+            site = password_store.site_of(url)
+            if (_fillable(url) and self.settings.get(SAVE_SETTING, True) and not isinstance(card, StrongCard)
+                    and not private and site not in self.settings.get(NEVER_SETTING, [])):
+                # (not in a private window, where nothing's written down, nor a site you said never to save for)
                 self._show(view, StrongCard(self, view, self._host(view), strong_password(), frame))
         elif said.get("kind") == "username":
             if _fillable(url) and said.get("username") and not private:
@@ -361,7 +366,8 @@ class Passwords(QObject):
 
     def _sent(self, view, url, username, password):
         site = password_store.site_of(url)
-        if self._made.get(site) == password:  # (the strong one Eclipse made: saved, as Apple's and Chrome's do)
+        if self._made.get(site) == password and not _private(view):  # (the strong one Eclipse made: saved, as
+            # Apple's and Chrome's do; a private window's never is)
             del self._made[site]
             try:
                 password_store.add(url, username, password, source="Eclipse")
@@ -372,14 +378,18 @@ class Passwords(QObject):
         if (not password or not _fillable(url) or not self.settings.get(SAVE_SETTING, True)
                 or site in self.settings.get(NEVER_SETTING, []) or site in self._never_private):
             return  # (nothing typed, a page sent in the clear, or you said not to)
+        page = QUrl(url)
         try:
-            saved = [e for e in password_store.logins() if password_store.related(QUrl(e["origin"]).host(),
-                                                                                  QUrl(url).host())]
+            saved = [e for e in password_store.logins() if password_store.related(QUrl(e["origin"]).host(), page.host())
+                     and password_store.same_port(e["origin"], page)]
         except password_store.Locked:
             return
-        existing = next((e for e in saved if e["username"] == username), None)
-        if existing is not None and existing["password"] == password:
-            return  # (nothing new)
+        if any(e["username"] == username and e["password"] == password for e in saved):
+            return  # (nothing new: saved already, here or elsewhere on the site)
+        # Updated only if it's this very page's login (its origin): one of another part of the site (shop. for
+        # example.com, or "http://") is a separate account, perhaps, and a new one is saved beside it instead
+        origin = password_store._origin(url)
+        existing = next((e for e in saved if e["username"] == username and e["origin"] == origin), None)
         self._show(view, SaveCard(self, view, self._host(view), url, username, password, existing))
 
     # --- Doing it --------------------------------------------------------------------------------------------
@@ -397,7 +407,8 @@ class Passwords(QObject):
         if _gone(card) or self._cards.get(id(card.view)) is not card:
             return False
         here = QUrl(card.frame or card.view.url().toString())
-        return _fillable(here.toString()) and password_store.related(QUrl(login["origin"]).host(), here.host())
+        return (_fillable(here.toString()) and password_store.related(QUrl(login["origin"]).host(), here.host())
+                and password_store.same_port(login["origin"], here))
 
     def _fill(self, card, login, with_password=True):
         if not self._still_for(card, login):
@@ -457,8 +468,8 @@ class Passwords(QObject):
     def save(self, card):
         try:
             if getattr(card, "existing", None) is not None:
-                # (the login it found: saved by its own site, "http://" or another part of the site, a new one was
-                # made beside it, the old password kept and offered too)
+                # (this page's own login: its password changed. Another part of the site's was never "existing":
+                # a new one's saved beside it, and both are offered)
                 password_store.update(card.existing["id"], password=card.password)
             else:
                 password_store.add(card.url, card.username, card.password, source="Eclipse")
@@ -800,6 +811,7 @@ def settings_page(settings):
     def set_pin():
         def chosen(pin):
             browser.toast("Recovery PIN set" if busy(lambda: recovery.set_pin(pin))
+                          else "Enter your current PIN with Recover… first" if recovery.needs_entering()
                           else "Couldn't keep the recovery PIN in the Keychain")
             fill()
         _pin_dialog(settings, browser, "Change Recovery PIN" if recovery.is_set() else "Set a Recovery PIN",
@@ -1009,6 +1021,9 @@ def settings_page(settings):
         # The recovery PIN
         pin_button = QPushButton("Change PIN…" if recovery.is_set() else "Set PIN…")
         pin_button.clicked.connect(set_pin)
+        if recovery.needs_entering():  # (Recover… with the PIN first: changing it now would lose what's waiting)
+            pin_button.setEnabled(False)
+            pin_button.setToolTip("Bring your passwords and passkeys back with your current PIN first")
         rows = [settings._row("Recovery PIN", "Set: your passwords and passkeys are in your backups, locked with it."
                               if recovery.is_set() else "Not set: your passwords and passkeys are only on this Mac.",
                               pin_button)]

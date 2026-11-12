@@ -212,8 +212,8 @@ def traffic_lights(widget) -> tuple[float, float] | None:
         return None
     window = _send(ctypes.c_void_p(int(widget.window().winId())), "window")
     zoom = _send(window, "standardWindowButton:", 2, argtypes=(ctypes.c_long,)) if window else None
-    if not zoom:
-        return None
+    if not zoom or _send(zoom, "window") != window:
+        return None  # (full screen: they're in the menu bar's own window, measured from its corner, not ours)
     bounds = _send(zoom, "bounds", restype=_CGRect)
     frame = _send(zoom, "convertRect:toView:", bounds, None, restype=_CGRect, argtypes=(_CGRect, ctypes.c_void_p))
     height = widget.window().height()
@@ -229,8 +229,8 @@ def traffic_light_frames(widget) -> list[tuple[float, float, float, float]]:
     height, frames = widget.window().height(), []
     for i in range(3):
         button = _send(window, "standardWindowButton:", i, argtypes=(ctypes.c_long,)) if window else None
-        if not button:
-            return []
+        if not button or _send(button, "window") != window:
+            return []  # (full screen: in the menu bar's own window)
         bounds = _send(button, "bounds", restype=_CGRect)
         f = _send(button, "convertRect:toView:", bounds, None, restype=_CGRect, argtypes=(_CGRect, ctypes.c_void_p))
         frames.append((f.x, height - f.y - f.h, f.w, f.h))  # (Cocoa measures y from the bottom)
@@ -267,8 +267,8 @@ def shift_traffic_lights(widget, dx: float, dy: float) -> bool:
         return False
     window = _send(ctypes.c_void_p(int(widget.window().winId())), "window")
     buttons = [_send(window, "standardWindowButton:", i, argtypes=(ctypes.c_long,)) for i in range(3)] if window else []
-    if not all(buttons):
-        return False
+    if not all(buttons) or any(_send(b, "window") != window for b in buttons):
+        return False  # (full screen: they're in the menu bar's own window, macOS's to place)
     key = int(window)
     now = [(f.x, f.y) for f in (_send(b, "frame", restype=_CGRect) for b in buttons)]
     flipped = _send(_send(buttons[0], "superview"), "isFlipped", restype=ctypes.c_bool)
@@ -304,6 +304,32 @@ def style_traffic_lights(widget, hidden: bool, alpha: float = 1.0) -> bool:
             _send(button, "setHidden:", hidden, restype=None, argtypes=(ctypes.c_bool,))
         _send(button, "setAlphaValue:", alpha, restype=None, argtypes=(ctypes.c_double,))
     return True
+
+
+_NS_JOIN_ALL_SPACES, _NS_FULL_SCREEN_AUXILIARY = 1 << 0, 1 << 8
+# (macOS refuses, with an exception that ends the app, these alongside them: the window moving to your desktop as it
+# comes forward, and full screen of its own, primary or none)
+_NS_CONFLICTS = (1 << 1) | (1 << 7) | (1 << 9)
+
+
+def follow_spaces(widget) -> bool:
+    """Keep a floating window (the mini player) with you: on every desktop, and over a window in full screen, rather
+    than left behind on the desktop it opened on (or not shown at all over full screen)."""
+    if not _cocoa():
+        return False
+    window = _send(ctypes.c_void_p(int(widget.window().winId())), "window")
+    if not window:
+        return False
+    behavior = _send(window, "collectionBehavior", restype=ctypes.c_ulong)
+    _send(window, "setCollectionBehavior:", (behavior & ~_NS_CONFLICTS) | _NS_JOIN_ALL_SPACES | _NS_FULL_SCREEN_AUXILIARY,
+          restype=None, argtypes=(ctypes.c_ulong,))
+    return True
+
+
+def collection_behavior(widget) -> int:
+    """The window's collectionBehavior, for the tests."""
+    window = _send(ctypes.c_void_p(int(widget.window().winId())), "window") if _cocoa() else None
+    return _send(window, "collectionBehavior", restype=ctypes.c_ulong) if window else 0
 
 
 def round_window(widget, radius: float, border: float = 0.0) -> bool:
@@ -895,3 +921,40 @@ def low_power() -> bool:
                    restype=ctypes.c_bool, argtypes=(ctypes.c_void_p,)) and \
         _send(info, "isLowPowerModeEnabled", restype=ctypes.c_bool)
     return bool(saving) or _send(info, "thermalState", restype=ctypes.c_long) >= _THERMAL_SERIOUS
+
+
+# --- VoiceOver -------------------------------------------------------------------------------------------
+
+def announce(text: str) -> bool:
+    """VoiceOver says `text` now (nothing happens with VoiceOver off): for something that appears without taking the
+    keyboard, like a card asking about a page."""
+    if _objc is None or _cf is None or not text:
+        return False
+    appkit = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/AppKit.framework/AppKit")
+    post = appkit.NSAccessibilityPostNotificationWithUserInfo
+    post.restype, post.argtypes = None, [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+    app = _send(_objc.objc_getClass(b"NSApplication"), "sharedApplication")
+    if not app:
+        return False
+    _cf.CFDictionaryCreate.restype = ctypes.c_void_p
+    _cf.CFDictionaryCreate.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_void_p),
+                                       ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p]
+    _cf.CFNumberCreate.restype = ctypes.c_void_p
+    _cf.CFNumberCreate.argtypes = [ctypes.c_void_p, ctypes.c_long, ctypes.c_void_p]
+    _cf.CFRelease.argtypes = [ctypes.c_void_p]
+    priority = ctypes.c_long(90)  # (NSAccessibilityPriorityHigh)
+    made = [_cfstr("AXAnnouncementKey"), _cfstr(text), _cfstr("AXPriorityKey"),
+            _cf.CFNumberCreate(None, 4, ctypes.byref(priority)),  # (kCFNumberSInt64Type)
+            _cfstr("AXAnnouncementRequested")]
+    keys = (ctypes.c_void_p * 2)(made[0], made[2])
+    values = (ctypes.c_void_p * 2)(made[1], made[3])
+    callbacks = ctypes.c_void_p.in_dll(_cf, "kCFTypeDictionaryKeyCallBacks")
+    value_callbacks = ctypes.c_void_p.in_dll(_cf, "kCFTypeDictionaryValueCallBacks")
+    info = _cf.CFDictionaryCreate(None, keys, values, 2, ctypes.addressof(callbacks), ctypes.addressof(value_callbacks))
+    try:
+        post(app, made[4], info)
+    finally:
+        for item in [*made, info]:
+            if item:
+                _cf.CFRelease(item)
+    return True

@@ -356,10 +356,12 @@ def test_an_extension_only_fetches_across_sites_it_has_access_to(store):
     import pytest
     host = _host(store, [("site", {"host_permissions": ["https://api.allowed.example/*"]}), ("plain", {})])
     fetched = []
-    host._m_gm_xhr = lambda bridge, ext_id, details: fetched.append(details["url"]) or 1
+    host._m_gm_xhr = lambda bridge, ext_id, details, allowed=None: fetched.append(details["url"]) or 1
     for ext_id in ("site", "plain"):
         caller = PageBridge(host, FakePage(f"pbext://{ext_id}/bg.html"))
-        for url in ("https://api.allowed.example/v1", "http://192.168.1.1/admin"):
+        # (and an address that only looks like the host it may reach: "?" and "@" end a host)
+        for url in ("https://api.allowed.example/v1", "http://192.168.1.1/admin",
+                    "https://192.168.1.1?.api.allowed.example/", "https://192.168.1.1#.api.allowed.example/"):
             try:
                 host._m_net_fetch(caller, ext_id, {"url": url})
             except PermissionError:
@@ -384,3 +386,105 @@ def test_a_removed_or_turned_off_extensions_open_pages_can_do_nothing(store):
     host.remove_extension("demo")
     with pytest.raises(PermissionError):
         host.dispatch(caller, "storage.get", ["demo", "local", None])
+
+
+def test_a_wildcard_host_pattern_stops_at_the_end_of_the_host():
+    import re
+    from browser.ext.patterns import match_pattern
+    source = match_pattern("https://*.example.com/*")
+    assert re.search(source, "https://api.example.com/x") and re.search(source, "https://example.com/")
+    for url in ("https://192.168.1.1?.example.com/", "https://192.168.1.1#.example.com/",
+                "https://evil.test@x.example.com/", "https://evil.test/?.example.com/"):
+        assert not re.search(source, url), url
+    anything = match_pattern("*://*/*")
+    assert re.search(anything, "https://a.test/b")
+
+
+def test_active_tab_is_only_for_the_tab_you_invoked_it_on_and_never_your_files(store):
+    """activeTab was treated as standing access to whatever tab was current (an extension's timer could script every
+    page you looked at), and it reached file:// pages too."""
+    import pytest
+    from browser.models import Tab, TODAY
+
+    class View:
+        def __init__(self, page):
+            self._page = page
+
+        def page(self):
+            return self._page
+    host = _host(store, [("act", {"permissions": ["activeTab"]})])
+    space = store.active_space
+    bank = Tab("https://bank.example/")
+    bank.view = View(FakePage("https://bank.example/"))
+    notes = Tab("file:///Users/me/notes.txt")
+    notes.view = View(FakePage("file:///Users/me/notes.txt"))
+    store.add_tab(bank, TODAY, space)
+    store.add_tab(notes, TODAY, space)
+    host.browser.current_tab = bank
+    ext = host.extensions["act"]
+    assert not host._sees_tab("act", bank)
+    with pytest.raises(PermissionError):
+        host._scriptable_page("act", host._number(bank))  # (current, but never invoked)
+    host.grant_active_tab("act", bank)  # (you clicked its button on the bank's page)
+    assert host._sees_tab("act", bank) and host._scriptable_page("act", host._number(bank))
+    bank.url = "https://elsewhere.example/"  # (the tab went to another site: the grant's over)
+    assert not host._active_tab(ext, bank)
+    host.browser.current_tab = notes
+    host.grant_active_tab("act", notes)
+    with pytest.raises(PermissionError):
+        host._scriptable_page("act", host._number(notes))
+
+
+def test_an_extension_learns_no_page_addresses_it_has_no_access_to(store):
+    """sender.tab carried the top page's address and title to a content script's extension (in an ad's frame on a
+    bank's page), and a webRequest listener on an analytics host got every page you went to that loaded it. And any
+    extension could download any address, your files included, with no downloads permission."""
+    import pytest
+    host = _host(store, [("ads", {"host_permissions": ["*://*.analytics.example/*"],
+                                  "permissions": ["webRequest"]}), ("dl", {"permissions": ["downloads"]})])
+    sent = []
+
+    class Bridge:
+        def send(self, name, args):
+            sent.append(args[1])
+    bridge = Bridge()
+    host.bridges.add(bridge) if isinstance(host.bridges, set) else host.bridges.append(bridge)
+    host.web_request_listeners[1] = {"ext": "ads", "event": "onBeforeRequest", "urls": [r".*"], "types": None,
+                                     "tab": None, "headers": False, "body": False, "bridge": bridge,
+                                     "access": host.extensions["ads"].host_patterns}
+
+    class Info:
+        def requestUrl(self): return QUrl("https://t.analytics.example/collect")
+        def resourceType(self): return 0
+        def firstPartyUrl(self): return QUrl("https://bank.example/account")
+        def initiator(self): return QUrl("https://bank.example")
+        def requestMethod(self): return b"GET"
+    host.observe_request(Info())
+    assert sent and sent[0]["documentUrl"] is None and sent[0]["initiator"] is None
+    caller = PageBridge(host, FakePage("pbext://ads/bg.html"))
+    with pytest.raises(PermissionError):
+        host._m_downloads_download(caller, "ads", {"url": "https://a.example/f.zip"})  # (no downloads permission)
+    dl = PageBridge(host, FakePage("pbext://dl/bg.html"))
+    with pytest.raises(PermissionError):
+        host._m_downloads_download(dl, "dl", {"url": "file:///Users/me/secret.txt"})
+
+
+def test_a_page_cant_put_up_install_box_after_install_box_and_a_removed_userscript_can_do_nothing(store, monkeypatch):
+    """Any page sending you to a .user.js (again and again, or by a redirect) put up an install box each time. And a
+    userscript removed while its page was open kept its GM_ calls, writing its values back after they'd gone."""
+    from PyQt6.QtWebEngineCore import QWebEnginePage
+    from browser.ext import host as host_module
+    host = _host(store)
+    offered = []
+    monkeypatch.setattr(host_module.QTimer, "singleShot", lambda ms, fn: offered.append(fn))
+    url = QUrl("https://evil.example/x.user.js")
+    kinds = QWebEnginePage.NavigationType
+    assert not host._offer_install(url, kinds.NavigationTypeRedirect)  # (not chosen: it opens as text)
+    assert not host._offer_install(url, kinds.NavigationTypeOther)
+    assert host._offer_install(url, kinds.NavigationTypeLinkClicked)
+    assert not host._offer_install(url, kinds.NavigationTypeLinkClicked)  # (again straight away: not again)
+    assert len(offered) == 1
+    page = FakePage("https://site.com/")
+    _, token = host.world(USERSCRIPT, "gone-script")
+    host.world_call(page, _message(token, "gm.setValue", ["gone-script", "k", 1]))
+    assert "turned off or removed" in _answer(page)["error"]

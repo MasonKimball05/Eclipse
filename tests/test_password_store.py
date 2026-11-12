@@ -247,3 +247,55 @@ def test_a_key_that_isnt_the_files_is_treated_as_none(no_real_keychain):
         pw.logins()
     assert recovery.unlock("correct horse battery") == 1
     assert pw.logins()[0]["password"] == "s3cret" and not pw.needs_recovery()
+
+
+def test_changing_the_pin_before_recovering_loses_nothing(no_real_keychain):
+    """On a Mac a backup was restored to (the PIN's copies here, but not its key), Change PIN… sealed the copies
+    again with only what this Mac had: the backup's passwords key and every passkey's private key, only in those
+    copies, were gone for good. Making one passkey there did the same to the passkeys' copy."""
+    import os
+    from browser import passkey_store
+    pw.add("https://example.com", "me", "s3cret")
+    assert recovery.set_pin("correct horse battery")
+    vault_before = passkey_store._vault_path().read_bytes() if passkey_store._vault_path().exists() else None
+    copy_before = (pw._folder() / "recovery.json").read_bytes()
+    no_real_keychain.clear()  # (the new Mac: the files came over, the keys didn't)
+    no_real_keychain[pw.KEY_ACCOUNT] = os.urandom(32)  # (and it has a key of its own)
+    assert recovery.needs_entering()
+    assert not recovery.set_pin("a different pin entirely")  # (refused: Recover first)
+    assert (pw._folder() / "recovery.json").read_bytes() == copy_before
+    assert not passkey_store.add_to_vault("new-passkey", "AAAA")  # (the copy isn't this Mac's to write)
+    after = passkey_store._vault_path().read_bytes() if passkey_store._vault_path().exists() else None
+    assert after == vault_before
+    mine = no_real_keychain[pw.KEY_ACCOUNT]
+    assert recovery.unlock("correct horse battery") == 1 and pw.logins()[0]["password"] == "s3cret"
+    assert no_real_keychain[pw.KEY_ACCOUNT + "-before-recovery"] == mine  # (this Mac's own, kept aside)
+    assert not recovery.needs_entering() and recovery.set_pin("a different pin entirely")
+
+
+def test_a_login_is_only_for_its_own_port(no_real_keychain):
+    """localhost:3000's login was offered (and filled) on localhost:8080, another local server; example.com's on a
+    service at example.com:8443."""
+    pw.add("http://localhost:3000/login", "dev", "devpass")
+    pw.add("https://example.com/login", "me", "s3cret")
+    assert [e["username"] for e in pw.for_page("http://localhost:3000/x")] == ["dev"]
+    assert pw.for_page("http://localhost:8080/x") == []
+    assert [e["username"] for e in pw.for_page("https://example.com:443/x")] == ["me"]
+    assert pw.for_page("https://example.com:8443/x") == []
+
+
+def test_an_unreadable_logins_file_is_kept_not_started_over(data_dir, no_real_keychain):
+    """A logins file that couldn't be read (a bad byte, a read error) was set aside as .corrupt.json and treated as
+    none: the next save made a new file with one login in it, and every other saved password sat unread beside it."""
+    pw.add("https://example.com", "me", "s3cret")
+    path = data_dir / "passwords" / "logins.json"
+    good = path.read_bytes()
+    path.write_bytes(good[:20])  # (cut short)
+    with pytest.raises(pw.Locked):
+        pw.logins()
+    with pytest.raises(pw.Locked):
+        pw.add("https://other.com", "me", "new")  # (never written over)
+    assert path.read_bytes() == good[:20] and not list(path.parent.glob("*.corrupt*"))
+    assert pw.for_page("https://example.com") == []
+    path.write_bytes(good)
+    assert pw.logins()[0]["password"] == "s3cret"

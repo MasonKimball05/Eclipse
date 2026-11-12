@@ -26,10 +26,12 @@ def match_pattern(pattern: str) -> str | None:
     if scheme == "file":
         return None  # (as for <all_urls>: an extension never reaches the files on your Mac)
     scheme_re = "https?" if scheme == "*" else _escape(scheme)
+    # (a host stops at "/", "?", "#" or "@": "[^/]*" ran on through them, so https://192.168.1.1?.example.com/ matched
+    # *.example.com, and went to 192.168.1.1)
     if host == "*":
-        host_re = r"[^/]*"
+        host_re = r"[^/?#@]*"
     elif host.startswith("*."):
-        host_re = r"([^/]*\.)?" + _escape(host[2:])
+        host_re = r"([^/?#@]*\.)?" + _escape(host[2:])
     else:
         host_re = _escape(host)
     path_re = ".*".join(_escape(part) for part in path.split("*"))

@@ -101,7 +101,7 @@ struct FormView: View {
                     .font(.headline)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 20)
-                    .padding(.top, model.bool("sheet") ? 18 : 30)
+                    .padding(.vertical, model.bool("sheet") ? 16 : 24)  // (as much above as below: centered in its band)
             }
             Form {
                 ForEach(Array(sections.enumerated()), id: \.offset) { _, section in
@@ -150,7 +150,11 @@ struct FormView: View {
         }
         .onDisappear {  // (the change hook holds this view: let go of it, so the form's freed with its window)
             values.onChange = nil
-            pendingChange?.cancel()
+            if let work = pendingChange, !work.isCancelled {
+                work.perform()  // (the last change, made just before it closed: it still counts)
+                work.cancel()
+            }
+            pendingChange = nil
         }
         .onChange(of: (model.state["test_input"] as? JSON)?["n"] as? Int) { _ in takeInput() }
         .onChange(of: (model.state["set"] as? JSON)?["n"] as? Int) { _ in
@@ -185,9 +189,9 @@ struct FormView: View {
                 buttonView(button)
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 6)
-        .padding(.bottom, 16)
+        .controlSize(.large)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 16)  // (centered in the bar)
     }
 
     @ViewBuilder private func buttonView(_ button: JSON) -> some View {
@@ -427,8 +431,15 @@ struct FieldView: View {
                     .accessibilityElement()
                     .accessibilityLabel(option.str("label"))
                     .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
+                    .accessibilityAction { values.text[id] = option.str("value") }
                 }
             }
+            // The keyboard: Tab to the grid (one stop, not one per cell), the arrows move the choice (macOS 14 and later)
+            .focusable()
+            .modifier(GridKeys(columns: (field["columns"] as? NSNumber)?.intValue ?? 8, count: options.count,
+                               chosen: options.firstIndex { $0.str("value") == values.text[id] }) { index in
+                values.text[id] = options[index].str("value")
+            })
         case "hint":
             Text(field.str("text")).font(.callout).foregroundStyle(.secondary)
         case "block":  // (text to read and select, not change: a page's changes, say)
@@ -475,6 +486,52 @@ struct DayStyle: ToggleStyle {
             .contentShape(Rectangle())
             .onTapGesture { configuration.isOn.toggle() }
             .accessibilityAddTraits(configuration.isOn ? [.isButton, .isSelected] : .isButton)
+            .accessibilityAction { configuration.isOn.toggle() }
+            .focusable()  // (Tab to it, Space to turn it on or off: macOS 14 and later)
+            .modifier(SpaceToggles { configuration.isOn.toggle() })
+    }
+}
+
+/// Space or Return on a focused day's toggle.
+private struct SpaceToggles: ViewModifier {
+    let toggle: () -> Void
+
+    func body(content: Content) -> some View {
+        if #available(macOS 14.0, *) {
+            content
+                .onKeyPress(.space) { toggle(); return .handled }
+                .onKeyPress(.return) { toggle(); return .handled }
+        } else {
+            content
+        }
+    }
+}
+
+/// The arrows on a focused grid of choices: the choice moves, a row at a time up and down.
+private struct GridKeys: ViewModifier {
+    let columns: Int
+    let count: Int
+    let chosen: Int?
+    let choose: (Int) -> Void
+
+    func body(content: Content) -> some View {
+        if #available(macOS 14.0, *) {
+            content
+                .onKeyPress(.leftArrow) { move(-1) }
+                .onKeyPress(.rightArrow) { move(1) }
+                .onKeyPress(.upArrow) { move(-columns) }
+                .onKeyPress(.downArrow) { move(columns) }
+        } else {
+            content
+        }
+    }
+
+    @available(macOS 14.0, *)
+    private func move(_ by: Int) -> KeyPress.Result {
+        guard count > 0 else { return .ignored }
+        let next = (chosen ?? (by > 0 ? -1 : count)) + by
+        if (0..<count).contains(next) { choose(next) }
+        return .handled
     }
 }
 

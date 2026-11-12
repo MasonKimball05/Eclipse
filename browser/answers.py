@@ -55,6 +55,8 @@ def _eval(node):
 
 
 def _number(value) -> str:
+    if isinstance(value, complex):
+        raise ValueError("no real answer")  # ((-8)^(1/3): not "(1.0000000000000002+1.73…j)")
     if isinstance(value, float):
         if math.isinf(value) or math.isnan(value):
             raise ValueError("no answer")
@@ -73,8 +75,10 @@ def calculate(text: str) -> Answer | None:
     if m:
         value = float(m.group(1)) / 100 * float(m.group(2))
         return Answer(_number(value), f"{m.group(1)}% of {m.group(2)}", "math")
-    if re.fullmatch(r"\d{4}-\d{1,2}-\d{1,2}|(?:\d{3}-)?\d{3}-\d{4}|1-\d{3}-\d{3}-\d{4}", q):
-        return None  # a date (2024-10-26) or a phone number (555-1234), not a sum
+    if re.fullmatch(r"\d{4}-\d{1,2}-\d{1,2}|(?:\d{3}-)?\d{3}-\d{4}|1-\d{3}-\d{3}-\d{4}|\d{5}-\d{4}|"
+                    r"\d{1,2}/\d{1,2}/\d{2,4}|\d{1,2}-\d{1,2}-\d{2,4}|24/7", q):
+        # a date (2024-10-26, 10/26/2024), a phone number (555-1234), a ZIP+4 or "24/7": not a sum. ("1/3" is a sum)
+        return None
     q = re.sub(r"(\d+(?:\.\d+)?)\s*%(?!\s*[\d(])", r"(\1/100)", q)  # "20% * 50" (but "10 % 3" is a remainder)
     # Worth answering only if there's arithmetic in it: "2024" or "pi" alone isn't a question
     if not re.search(r"\d", q) or not re.search(r"[-+*/%(]|\b(?:" + "|".join(_FUNCS) + r")\b", q):
@@ -164,7 +168,9 @@ def _short(value: float) -> str:
     if value == 0:
         return "0"
     digits = max(0, 4 - int(math.floor(math.log10(abs(value)))) - 1)
-    text = f"{value:,.{min(digits, 6)}f}"
+    if digits > 6:
+        return f"{value:.4g}"  # (a tiny amount, 1 mg in tonnes: 1e-09, not "0")
+    text = f"{value:,.{digits}f}"
     return text.rstrip("0").rstrip(".") if "." in text else text
 
 

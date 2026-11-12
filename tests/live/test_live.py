@@ -223,6 +223,13 @@ def test_a_bad_certificate_can_be_visited_anyway(window, bad_https):
     card.anyway_btn.click()
     assert loaded(tab.view) and tab.view.url().toString() == f"{bad_https}/index.html"
     assert window.certificates.warning(tab.view) is None
+    # Trusted for its host, on any port (as Chromium does), in this profile only
+    host_other_port = bad_https.rsplit(":", 1)[0] + ":1/x"
+    assert window.certificates.overridden(host_other_port) and window.certificates.overridden(
+        host_other_port, tab.view.page().profile())
+    private = window.private.new_window()
+    assert not window.certificates.overridden(host_other_port, private.session.profile)
+    private.close()
 
 
 def _real_dictionary():
@@ -1374,6 +1381,44 @@ def test_the_top_row_never_runs_into_the_traffic_lights(window, site):
         assert reload_end <= bar.mapTo(window, QPoint(bar.width(), 0)).x(), width  # (and nothing falls off the end)
 
 
+def test_full_screen_keeps_the_top_row_at_the_top(window, site, monkeypatch):
+    """In full screen macOS moves the traffic lights into the menu bar's own window: measured from its corner as if
+    from ours, they read as near the bottom of the window, and the sidebar's top row (and all under it) went there."""
+    from browser import macos
+    if not macos._cocoa():
+        pytest.skip("macOS's own window buttons")
+    open_page(window, f"{site}/index.html")
+    native = macos._send(ctypes.c_void_p(int(window.winId())), "window")
+    real = macos._send
+
+    def in_menu_bar(receiver, selector, *args, **kwargs):  # (the buttons in another window, as in full screen)
+        if selector == "window" and getattr(receiver, "value", receiver) != int(window.winId()):
+            return int(native) + 1
+        return real(receiver, selector, *args, **kwargs)
+    monkeypatch.setattr(macos, "_send", in_menu_bar)
+    assert macos.traffic_lights(window) is None and macos.traffic_light_frames(window) == []
+    assert macos.shift_traffic_lights(window, 0, 5) is False  # (nor moved: macOS's to place there)
+    monkeypatch.setattr(macos, "_send", real)
+    # Full screen, with the lights measured from the menu bar's window
+    monkeypatch.setattr(window, "isFullScreen", lambda: True)
+    monkeypatch.setattr(macos, "traffic_lights", lambda w: (80, w.window().height() - 14))
+    bar = window.sidebar
+    bar.align_with_traffic_lights()
+    QApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest)
+    pause(0.2)
+    assert bar.toggle_btn.mapTo(bar, QPoint(0, 0)).y() < 40, bar.layout().contentsMargins().top()
+    assert bar.toggle_btn.mapTo(bar, QPoint(0, 0)).x() < 30  # (no room left for lights that aren't there)
+    # Out of full screen, the row goes back beside them
+    monkeypatch.setattr(window, "isFullScreen", lambda: False)
+    monkeypatch.undo()
+    window._align_sidebar_row()
+    QApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest)
+    pause(0.2)
+    lights_end, center = macos.traffic_lights(window)
+    toggle = bar.toggle_btn.mapTo(window, QPoint(0, 0))
+    assert toggle.x() >= lights_end + 8 and abs(toggle.y() + bar.toggle_btn.height() / 2 - center) <= 1
+
+
 def test_the_top_row_sits_as_far_from_the_top_as_the_bottom_bar_from_the_bottom(window, site):
     """macOS's spot for the traffic lights (16pt down) left the top row jammed against the top of the window next
     to the room the bottom bar has: they're DROP lower, the row centered on them, and macOS laying them out again
@@ -2284,11 +2329,11 @@ def test_no_password_is_offered_on_a_page_whose_certificate_you_trusted_anyway(w
     _stand_ins(monkeypatch)
     login = site.replace("127.0.0.1", "localhost") + "/login.html"
     password_store.add(login, "arkan@example.com", "correct horse")
-    monkeypatch.setattr(window.certificates, "overridden", lambda url: True)
+    monkeypatch.setattr(window.certificates, "overridden", lambda url, profile=None: True)
     tab = open_page(window, login)
     pause(1)
     assert window.passwords.card_for(tab.view) is None
-    monkeypatch.setattr(window.certificates, "overridden", lambda url: False)  # (the same page, trusted: offered)
+    monkeypatch.setattr(window.certificates, "overridden", lambda url, profile=None: False)  # (the same page, trusted: offered)
     tab.view.reload()
     assert loaded(tab.view)
     assert wait_until(lambda: window.passwords.card_for(tab.view) is not None, 5)
@@ -2314,7 +2359,7 @@ def test_no_passkey_answers_a_page_whose_certificate_you_trusted_anyway(window, 
     tab = open_page(window, site.replace("127.0.0.1", "localhost") + "/index.html")
     answers = []
     monkeypatch.setattr(window.passkeys, "_answer", lambda view, request_id, answer: answers.append(answer))
-    monkeypatch.setattr(window.certificates, "overridden", lambda url: True)
+    monkeypatch.setattr(window.certificates, "overridden", lambda url, profile=None: True)
     window.passkeys._asked(tab.view, 1, "get", {"rpId": "localhost"})
     assert answers == [{"use": "key"}]
 
@@ -2419,3 +2464,64 @@ def test_a_page_youre_building_keeps_its_watcher_as_its_address_changes(window, 
     assert wait_until(lambda: tab.view.url().fragment() == "settings", 3)
     pause(0.3)
     assert window.devmode._watchers.get(origin) is watcher
+
+
+def test_saving_on_another_part_of_a_site_makes_a_new_login_not_an_update(window, site, monkeypatch):
+    """Signing in on shop.example.com with an account also saved for example.com (another password) offered to
+    update that one: accepting replaced example.com's password with shop's, and it was lost."""
+    from browser import password_store
+    from browser.passwords import SaveCard
+    feature = window.passwords
+    shown = []
+    monkeypatch.setattr(feature, "_show", lambda view, card: shown.append(card))
+    monkeypatch.setattr(password_store, "logins", lambda: [
+        {"id": "a", "origin": "https://example.com", "username": "me@x.com", "password": "first"}])
+    view = open_page(window, f"{site}/index.html").view
+    feature._sent(view, "https://shop.example.com/login", "me@x.com", "second")
+    assert shown and isinstance(shown[0], SaveCard) and shown[0].existing is None  # (a new one, beside it)
+    shown.clear()
+    feature._sent(view, "https://example.com/login", "me@x.com", "third")  # (its own page: an update)
+    assert shown and shown[0].existing["id"] == "a"
+    shown.clear()
+    feature._sent(view, "https://shop.example.com/login", "me@x.com", "first")  # (saved already, on the site)
+    assert shown == []
+
+
+def test_a_strong_password_made_in_a_private_window_isnt_saved(window, site, monkeypatch):
+    """Use Strong Password in a private window, then signing up, wrote the login into your saved passwords, without
+    asking: a private window writes nothing down."""
+    from browser import password_store
+    feature = window.passwords
+    added = []
+    monkeypatch.setattr(password_store, "add", lambda *a, **k: added.append(a))
+    monkeypatch.setattr(feature, "_show", lambda view, card: None)
+    private = window.private.new_window(f"{site}/index.html")
+    assert wait_until(lambda: private.current is not None, 3)
+    feature._made["example.com"] = "Strong-Made-1!"
+    feature._sent(private.current, "https://example.com/signup", "me", "Strong-Made-1!")
+    assert added == []
+    private.close()
+
+
+def test_keys_dont_reach_rows_hidden_behind_an_answer_and_answer_links_are_web_only(window, site, monkeypatch):
+    """With an answer showing (the rows hidden), Return ran Ask Claude again and ↓ then Return ran a row you couldn't
+    see; and a link in an answer (which page text can shape) opened file:// addresses, under the open bar."""
+    from PyQt6.QtGui import QKeyEvent
+    open_page(window, f"{site}/index.html")
+    window.open_command_bar("new")
+    bar = window.command_bar
+    bar.input.setText("git")
+    bar.update_results()
+    ran = []
+    monkeypatch.setattr(bar, "_run_item", lambda item: ran.append(item))
+    bar.answer.show()
+    for key in (Qt.Key.Key_Down, Qt.Key.Key_Return):
+        QApplication.sendEvent(bar.input, QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier))
+    assert ran == []
+    opened = []
+    monkeypatch.setattr(window, "open_url", lambda url, *a, **k: opened.append(url))
+    bar.answer.anchorClicked.emit(QUrl("file:///Users/me/.ssh/config"))
+    assert opened == [] and bar.isVisible()
+    bar.answer.anchorClicked.emit(QUrl("https://example.com/source"))
+    assert opened == ["https://example.com/source"] and not bar.isVisible()
+    bar.answer.hide()

@@ -45,8 +45,9 @@ def edit_theme(browser, space):
                         "value": list(t["colors"]) or [space.color]},
                        {"id": "presets", "kind": "swatches", "label": "", "target": "colors",
                         "options": [{"value": c, "label": n} for n, c in PALETTE]},
-                       footer="Drag a dot to change its color. Double-click the field to add one (up to three, "
-                              "blended into a gradient); double-click a dot to take it out."),
+                       footer="Drag a dot to change its color, or Tab to it and use the arrows (Return chooses "
+                              "any color). Double-click the field to add one (up to three, blended into a gradient); "
+                              "double-click a dot, or press Delete, to take it out."),
          forms.section({"id": "intensity", "kind": "slider", "label": "Intensity", "min": 0, "max": 1,
                         "value": float(t["intensity"])},
                        {"id": "mode", "kind": "menu", "label": "Appearance", "style": "segmented", "value": t["mode"],

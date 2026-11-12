@@ -6,11 +6,12 @@
 import sys
 
 import qtawesome as qta
-from PyQt6.QtCore import QEvent, QObject, QSize, Qt, QTimer, QUrl
+from PyQt6 import sip
+from PyQt6.QtCore import QEvent, QObject, QRect, QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import QGuiApplication, QKeySequence, QShortcut
 from PyQt6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
-from . import clean_links, macos, motion, storage
+from . import clean_links, macos, motion, screens, storage
 from .command_bar import search_url, to_url
 from .content import RADIUS, Corner
 from .models import display_host
@@ -141,6 +142,8 @@ class LittleWindow(QWidget):
             view.loadProgress.connect(self._on_progress),
             view.loadFinished.connect(lambda _ok: self._on_progress(100)),
             page.windowCloseRequested.connect(self.close),
+            # A video's full screen button: it goes to a tab of its own, and fills the screen from there
+            page.fullScreenRequested.connect(self._full_screen),
             page.newWindowRequested.connect(lambda req: browser.handle_new_window(None, req, page.profile())),
         ]
         self.back_btn.clicked.connect(lambda: self.view and self.view.back())
@@ -170,8 +173,8 @@ class LittleWindow(QWidget):
         width, height = min(680, int(screen.width() * 0.5)), min(820, int(screen.height() * 0.82))
         others = sum(1 for w in self.browser._extra_windows if isinstance(w, LittleWindow))
         offset = 28 * (others % 6)
-        self.setGeometry(screen.center().x() - width // 2 + offset, screen.center().y() - height // 2 + offset,
-                         width, height)
+        self.setGeometry(screens.fit(QRect(screen.center().x() - width // 2 + offset,  # (the cascade kept on screen)
+                                           screen.center().y() - height // 2 + offset, width, height), screen))
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -273,6 +276,21 @@ class LittleWindow(QWidget):
             self._end_edit()
             self.view.setFocus()
 
+    def menu_action(self, text):
+        """The main menu's item `text`, chosen (by its keys, most likely) with this window in front: this window's,
+        where it has one (True). (Else the main window decides: _menu_for_front.)"""
+        view = self.view
+        actions = {"Close Tab": self.close, "Open Location…": self.edit_url, "Copy URL": self.copy_link,
+                   "Reload": lambda: view.reload(), "Back": lambda: view.back(), "Forward": lambda: view.forward(),
+                   "Zoom In": lambda: self._zoom(1), "Zoom Out": lambda: self._zoom(-1),
+                   "Actual Size": lambda: self._zoom(0), "Print…": lambda: self.browser.print_page(view)}
+        action = actions.get(text)
+        if action is None:
+            return False
+        if view is not None or text == "Close Tab":
+            action()
+        return True
+
     def copy_link(self):
         if self.view is not None and not self.view.url().isEmpty():
             QGuiApplication.clipboard().setText(clean_links.for_copy(self.view.url().toString(),
@@ -292,6 +310,18 @@ class LittleWindow(QWidget):
         self.toast.show()
         self.toast.raise_()
         QTimer.singleShot(1400, self.toast.hide)
+
+    def _full_screen(self, request):
+        view = self.view
+        if not request.toggleOn() or view is None:
+            request.accept()
+            return
+        self.promote()
+        if sip.isdeleted(view) or view.parentWidget() is None:
+            request.reject()  # (it opened again in another profile's tab: that one can go full screen)
+            return
+        QApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest)
+        self.browser._on_fullscreen(request, view)
 
     def promote(self):
         view, self.view = self.view, None

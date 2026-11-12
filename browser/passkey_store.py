@@ -265,9 +265,22 @@ def _reseal(new: bytes, old: bytes | None):
     _write_vault(new, {k: v for k, v in keys.items() if any(p["id"] == k for p in all_passkeys())})
 
 
+def _vault_opens(key: bytes) -> bool:
+    """Whether `key` opens the copy (or there's none yet): one it doesn't is a backup's, waiting for its PIN, and
+    written over, its passkeys would be gone."""
+    saved = storage.read_json(_vault_path())
+    if not saved:
+        return True
+    try:
+        recovery.unseal(key, saved, SEAL)
+        return True
+    except Exception:
+        return False
+
+
 def add_to_vault(passkey_id: str, der_b64: str) -> bool:
     key = recovery.key()
-    if key is None:
+    if key is None or not _vault_opens(key):
         return False
     keys = _open_vault(key)
     keys[passkey_id] = der_b64
@@ -276,7 +289,7 @@ def add_to_vault(passkey_id: str, der_b64: str) -> bool:
 
 
 def remove_from_vault(passkey_id: str):
-    if (key := recovery.key()) is not None:
+    if (key := recovery.key()) is not None and _vault_opens(key):
         keys = _open_vault(key)
         keys.pop(passkey_id, None)
         _write_vault(key, keys)

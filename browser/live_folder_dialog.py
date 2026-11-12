@@ -7,7 +7,8 @@ from PyQt6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QDialogButtonBox,
 
 from . import forms, keychain, prompts
 from .features import Feature
-from .live_folders import (DEFAULT_ROOT, GITHUB, LiveFolders, allow_here, allowed_here, feed_name, github_repo,
+from .live_folders import (DEFAULT_ROOT, GITHUB, LIMIT_CHOICES, MAX_ITEMS, REFRESH_CHOICES, LiveFolders, item_limit,
+                           refresh_minutes, allow_here, allowed_here, feed_name, github_repo,
                            mark_seen, token_account)
 from .models import walk_tabs
 from .theme import FittedLabel, stylesheet
@@ -105,6 +106,7 @@ class LiveFolderDialog(QDialog):
         self.json_auth = QComboBox()
         self.json_auth.addItem("My login in this browser (cookies)", "browser")
         self.json_auth.addItem("A token (kept in the Keychain)", "token")
+        self.json_auth.addItem("Nothing (a public address)", "none")
         self.json_header = QLineEdit("Authorization")
         self.json_token = QLineEdit()
         self.json_token.setEchoMode(QLineEdit.EchoMode.Password)
@@ -152,6 +154,18 @@ class LiveFolderDialog(QDialog):
         for form in (f, g, a, pl, c, r):
             form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
 
+        settings = QFormLayout()
+        self.refresh = QComboBox()
+        for minutes in REFRESH_CHOICES:
+            self.refresh.addItem(every(minutes), minutes)
+        self.refresh.setCurrentIndex(self.refresh.findData(refresh_minutes({})))
+        self.limit = QComboBox()
+        for n in LIMIT_CHOICES:
+            self.limit.addItem(f"{n} items", n)
+        self.limit.setCurrentIndex(self.limit.findData(MAX_ITEMS))
+        settings.addRow("Refresh", self.refresh)
+        settings.addRow("Show at most", self.limit)
+        layout.addLayout(settings)
         self.name = QLineEdit()
         self.name.setPlaceholderText("Folder name (optional)")
         layout.addWidget(self.name)
@@ -178,6 +192,10 @@ class LiveFolderDialog(QDialog):
         index = next((i for i, k in enumerate(KINDS) if k[0] == kind), 0)
         self.kind_group.button(index).setChecked(True)
         self.name.setText(preset.get("name", ""))
+        self.refresh.setCurrentIndex(self.refresh.findData(refresh_minutes(preset)))
+        self.limit.setCurrentIndex(self.limit.findData(item_limit(preset)))
+        if kind == "github" and preset.get("query") in GITHUB:
+            self.github_query.setCurrentIndex(max(0, self.github_query.findData(preset["query"])))
         if kind == "feed":
             self.feed_url.setText(preset.get("url", ""))
         elif kind == "json":
@@ -185,7 +203,7 @@ class LiveFolderDialog(QDialog):
             self.json_items.setText(preset.get("items", ""))
             self.json_title.setText(preset.get("title", "title"))
             self.json_link.setText(preset.get("link", "url"))
-            self.json_auth.setCurrentIndex(1 if preset.get("auth") == "token" else 0)
+            self.json_auth.setCurrentIndex(max(0, self.json_auth.findData(preset.get("auth", "browser"))))
             self.json_header.setText(preset.get("header", "Authorization"))
         elif kind == "page":
             self.page_url.setText(preset.get("url", ""))
@@ -204,15 +222,56 @@ class LiveFolderDialog(QDialog):
                 "json_auth": self.json_auth.currentData(), "json_header": self.json_header.text(),
                 "json_token": self.json_token.text(), "page_url": self.page_url.text(),
                 "page_selector": self.page_selector.text(), "calendar_url": self.calendar_url.text(),
-                "repos_root": self.repos_root.text()}
+                "repos_root": self.repos_root.text(), "refresh": self.refresh.currentData(),
+                "limit": self.limit.currentData()}
 
     def result_live(self) -> tuple[dict, str, str | None] | None:
         return live_from(self.values())
 
 
+# What a source's settings are when they're not set (a folder from an older version, or an app's suggestion, can
+# leave them out): comparing with these, an edit that leaves them as they were doesn't count as a new source
+SOURCE_DEFAULTS = {"items": "", "title": "title", "link": "url", "auth": "browser", "selector": "", "root": "",
+                   "header": "Authorization"}
+
+
+def source_value(live: dict, key: str):
+    value = live.get(key)
+    if key == "header" and live.get("auth") != "token":
+        return None  # (a header's only used with a token)
+    return SOURCE_DEFAULTS.get(key) if value in (None, "") and key in SOURCE_DEFAULTS else value
+
+
+def every(minutes: int) -> str:
+    return f"Every {minutes} minutes" if minutes < 60 else "Every hour" if minutes == 60 else \
+        f"Every {minutes // 60} hours"
+
+
+def _choice(value, choices, default) -> int:
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return default
+    return value if value in choices else default
+
+
 def live_from(v: dict) -> tuple[dict, str, str | None] | None:
     """(live settings, folder name, token to keep in the Keychain) from the form's values, or None if something's
     missing."""
+    result = _source_from(v)
+    if result is None:
+        return None
+    live, name, token = result
+    refresh = _choice(v.get("refresh"), REFRESH_CHOICES, refresh_minutes({}))
+    limit = _choice(v.get("limit"), LIMIT_CHOICES, MAX_ITEMS)
+    if refresh != refresh_minutes({}):  # (kept only when it isn't the default)
+        live["refresh"] = refresh
+    if limit != MAX_ITEMS:
+        live["limit"] = limit
+    return live, name, token
+
+
+def _source_from(v: dict) -> tuple[dict, str, str | None] | None:
     text = lambda key: str(v.get(key) or "").strip()  # noqa: E731
     kind = v.get("kind") if v.get("kind") in [k for k, _t, _d in KINDS] else "feed"
     name = text("name")
@@ -229,7 +288,8 @@ def live_from(v: dict) -> tuple[dict, str, str | None] | None:
         if not url.startswith(("http://", "https://")):
             return None
         live = {"kind": "json", "url": url, "items": text("json_items"), "title": text("json_title") or "title",
-                "link": text("json_link") or "url", "auth": "token" if v.get("json_auth") == "token" else "browser"}
+                "link": text("json_link") or "url",
+                "auth": v.get("json_auth") if v.get("json_auth") in ("token", "none") else "browser"}
         token = None
         if live["auth"] == "token":
             live["header"] = text("json_header") or "Authorization"
@@ -255,7 +315,7 @@ def live_sections(preset: dict | None = None) -> list[dict]:
     kind = p.get("kind") if p.get("kind") in [k for k, _t, _d in KINDS] else "feed"
     when = lambda *kinds: {"id": "kind", "is": list(kinds)}  # noqa: E731
     given = lambda k, key, default="": p.get(key, default) if kind == k else default  # noqa: E731
-    auth = "token" if given("json", "auth") == "token" else "browser"
+    auth = given("json", "auth") if given("json", "auth") in ("token", "none") else "browser"
     return [
         forms.section(
             {"id": "kind", "kind": "menu", "label": "Follow", "value": kind,
@@ -265,7 +325,7 @@ def live_sections(preset: dict | None = None) -> list[dict]:
             {"id": "feed_url", "kind": "text", "label": "Address", "value": given("feed", "url"),
              "placeholder": "https://example.com/feed.xml, example.com, or a GitHub repo", "shown_when": when("feed")},
             {"id": "github_query", "kind": "menu", "label": "Show", "shown_when": when("github"),
-             "value": next(iter(GITHUB)),
+             "value": given("github", "query") if given("github", "query") in GITHUB else next(iter(GITHUB)),
              "options": [{"value": key, "label": "Everything, in sub-folders" if key == "overview" else name}
                          for key, (name, _args) in GITHUB.items()]},
             {"id": "json_url", "kind": "text", "label": "API address", "value": given("json", "url"),
@@ -280,7 +340,8 @@ def live_sections(preset: dict | None = None) -> list[dict]:
              "fields in braces: https://app.example/items/{id}/"},
             {"id": "json_auth", "kind": "menu", "label": "Sign in with", "value": auth, "shown_when": when("json"),
              "options": [{"value": "browser", "label": "My login in this browser (cookies)"},
-                         {"value": "token", "label": "A token (kept in the Keychain)"}]},
+                         {"value": "token", "label": "A token (kept in the Keychain)"},
+                         {"value": "none", "label": "Nothing (a public address)"}]},
             {"id": "json_header", "kind": "text", "label": "Header", "value": given("json", "header", "Authorization"),
              "shown_when": when("json"), "enabled_when": {"id": "json_auth", "is": ["token"]}},
             {"id": "json_token", "kind": "secret", "label": "Token", "shown_when": when("json"),
@@ -298,13 +359,19 @@ def live_sections(preset: dict | None = None) -> list[dict]:
             {"id": "repos_root", "kind": "text", "label": "Repos folder",
              "value": given("repos", "root") or "~/projects/GitHub", "shown_when": when("repos")},
             {"kind": "hint", "text": "Each item opens the repo on GitHub.", "shown_when": when("repos")}),
+        forms.section(
+            {"id": "refresh", "kind": "menu", "label": "Refresh", "value": str(refresh_minutes(p)),
+             "options": [{"value": str(m), "label": every(m)} for m in REFRESH_CHOICES]},
+            {"id": "limit", "kind": "menu", "label": "Show at most", "value": str(item_limit(p)),
+             "options": [{"value": str(n), "label": f"{n} items"} for n in LIMIT_CHOICES]},
+            footer="For a folder of sub-folders, at most that many in each."),
         forms.section({"id": "name", "kind": "text", "label": "Folder name", "value": p.get("name", ""),
                        "placeholder": "Optional"}),
     ]
 
 
 class LiveFoldersFeature(Feature):
-    """Live Folders: pinned folders that fill themselves from a feed or GitHub, refreshed every half hour, new
+    """Live Folders: pinned folders that fill themselves from a feed or GitHub, refreshed every half hour (or as often as each is set to), new
     items bold with a count on the folder until you open them."""
     name = "live_folders"
 
@@ -327,7 +394,7 @@ class LiveFoldersFeature(Feature):
         form = forms.open_form(window, "New Live Folder", live_sections(preset),
                                [{"id": "cancel", "label": "Cancel", "role": "cancel"},
                                 {"id": "create", "label": "Create", "role": "default"}],
-                               lambda _, values: self._made(live_from(values)), width=540, height=520)
+                               lambda _, values: self._made(live_from(values)), width=540, height=620)
         if form is not None:
             return form
         dialog = LiveFolderDialog(window, preset)
@@ -347,6 +414,77 @@ class LiveFoldersFeature(Feature):
         if name:
             live["named"] = True
         self.create_live_folder(live, name or (feed_name(live["url"]) if live.get("url") else "Live Folder"), token)
+        return None
+
+    # What a Live Folder follows: changed, its items are some other feed's, and go (the rest it keeps: what you've
+    # seen, when it last looked)
+    SOURCE_KEYS = ("kind", "url", "query", "items", "title", "link", "selector", "root", "auth", "header")
+
+    def edit_live_folder(self, folder):
+        """The folder's settings, in the New Live Folder form, filled in as they are; saved, it follows what's
+        there now. (A token folder's token is kept unless a new one's typed.)"""
+        window = self.window
+        preset = {**folder.live, "name": folder.name if folder.live.get("named") else ""}
+        had_token = folder.live.get("auth") == "token"
+        form = forms.open_form(window, f"Edit “{folder.name}”", live_sections(preset),
+                               [{"id": "cancel", "label": "Cancel", "role": "cancel"},
+                                {"id": "save", "label": "Save", "role": "default"}],
+                               lambda _, values: self._edited(folder, values, had_token), width=540, height=620)
+        if form is not None:
+            return form
+        dialog = LiveFolderDialog(window, preset)
+        dialog.setWindowTitle(f"Edit “{folder.name}”")
+        while True:
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return None
+            problem = self._edited(folder, dialog.values(), had_token)
+            if problem is None:
+                return None
+            window.toast(problem)
+
+    def _edited(self, folder, values, had_token=False):
+        """The edit form's values put into `folder`: None, or what's missing (the form says so, and stays open)."""
+        window = self.window
+        if window.store.locate(folder) is None:
+            return None  # (deleted while the form was open)
+        values = dict(values)
+        keep_token = had_token and values.get("json_auth") == "token" and not str(values.get("json_token") or "").strip()
+        if keep_token:
+            values["json_token"] = "kept"  # (the one in the Keychain stays: live_from only wants to see there's one)
+        result = live_from(values)
+        if result is None:
+            return "Fill in the address (and a token, if you chose one)."
+        live, name, token = result
+        if keep_token:
+            token = None
+        old = folder.live
+        same_source = all(source_value(old, k) == source_value(live, k) for k in self.SOURCE_KEYS)
+        kept = {k: v for k, v in old.items() if k not in self.SOURCE_KEYS and k not in ("named", "refresh", "limit")} if same_source else {}
+        folder.live = {**kept, **live}
+        if name:
+            folder.name = name[:40]
+            folder.live["named"] = True
+        if not same_source:
+            # (another feed's items, not this one's: the old ones go, and the refresh fills it again)
+            current = window.current_tab
+            on_screen = [current, *(window.store.split_of(current) or [])] if current is not None else []
+            gone = list(walk_tabs(folder.children))
+            for tab in gone:
+                window.store.remove_from_split(tab)
+                window._remove_view(tab)
+            folder.children = []
+            if current is not None and any(current is t for t in gone):
+                window._activate_fallback()  # (you were reading one of them: not a blank page on a tab that's gone)
+            elif any(t is s for t in gone for s in on_screen):
+                window._relayout_split()
+        self.folders.changed(folder)  # (a refresh still out answers for the old settings)
+        if old.get("auth") == "token" and live.get("auth") != "token":
+            keychain.delete(token_account(folder))  # (signing in with cookies now: the token goes from the Keychain)
+        if token and not self.set_token(folder, token):
+            window.toast("Couldn't keep the token in the Keychain: set it from the folder's menu")
+        allow_here(folder)  # (set up here, now)
+        window.store._changed()
+        self._refresh(folder)
         return None
 
     def create_live_folder(self, live, name, token=None):
@@ -480,6 +618,7 @@ class LiveFoldersFeature(Feature):
         if not folder.live:
             return
         window = self.window
+        window._act(menu, "ph.pencil-simple", "Edit Live Folder…", lambda: self.edit_live_folder(folder))
         window._act(menu, "ph.arrows-clockwise", "Refresh Now", lambda: self._refresh(folder))
         window._act(menu, "ph.checks", "Mark All as Seen", lambda: self._mark_seen(folder, folder))
         if folder.live.get("auth") == "token":

@@ -112,7 +112,9 @@ class RecipesFeature(Feature):
         if not tabs:
             window.toast(f"“{recipe['name']}” has no pages to open")
             return []
+        tabs = list({id(t): t for t in tabs}.values())  # (two addresses for one open page: it's there once)
         if recipe.get("split") and len(tabs) >= 2:
+            store.remove_from_split(tabs[0])  # (its own split, just the recipe's pages: not one it was already in)
             for tab in tabs[1:MAX_PANES]:
                 store.add_to_split(tabs[0], tab, MAX_PANES)
         else:

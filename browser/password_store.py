@@ -79,7 +79,10 @@ def needs_recovery() -> bool:
 
 def _opens(key: bytes | None) -> bool:
     """Whether `key` opens the saved logins (another Mac's folder copied over this one's: a key, but not theirs)."""
-    saved = storage.read_json(_logins_path())
+    try:
+        saved = _read_logins()
+    except Unreadable:
+        return False
     if key is None or not saved:
         return key is not None
     try:
@@ -89,8 +92,22 @@ def _opens(key: bytes | None) -> bool:
         return False
 
 
+class Unreadable(Locked):
+    """logins.json is there but can't be read: left as it is (never set aside and started over, which lost every
+    saved password but the next), and treated as locked."""
+
+
+def _read_logins() -> dict | None:
+    try:
+        return json.loads(_logins_path().read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as error:
+        raise Unreadable() from error
+
+
 def logins() -> list[dict]:
-    saved = storage.read_json(_logins_path())
+    saved = _read_logins()
     if not saved:
         return []
     key = _key()
@@ -304,6 +321,16 @@ def same_site(a: str, b: str) -> bool:
     return False
 
 
+def port_of(url: QUrl) -> int:
+    return url.port(443 if url.scheme() == "https" else 80)
+
+
+def same_port(saved_origin: str, page: QUrl) -> bool:
+    """A login's port is its page's: localhost:3000's isn't another local server's (localhost:8080), and
+    example.com's isn't a service on example.com:8443."""
+    return port_of(QUrl(saved_origin)) == port_of(page)
+
+
 def for_page(url: str) -> list[dict]:
     """The logins for a page: its own site's first, then its subdomains'. Only for a page over https (or this
     Mac's own), and an http login only for an http page."""
@@ -317,7 +344,7 @@ def for_page(url: str) -> list[dict]:
     host = q.host().lower()
     if q.scheme() == "http" and not (host == "localhost" or host.endswith(".localhost")):
         return []  # (a password typed into a page anyone on the network can read: never filled)
-    found = [e for e in entries if related(QUrl(e["origin"]).host(), host)]
+    found = [e for e in entries if related(QUrl(e["origin"]).host(), host) and same_port(e["origin"], q)]
     return sorted(found, key=lambda e: (QUrl(e["origin"]).host().removeprefix("www.") != host.removeprefix("www."),
                                         -(e.get("last_used") or e.get("created") or 0)))
 
@@ -325,6 +352,8 @@ def for_page(url: str) -> list[dict]:
 # --- The recovery copy -----------------------------------------------------------------------------------
 
 def _reseal(new: bytes, old: bytes | None, key: bytes | None = None):
+    if key is None and needs_recovery():
+        return  # (this Mac's key doesn't open the logins here: the copy holds theirs, and mustn't be written over)
     if (key := key or secure_store.load(KEY_ACCOUNT)) is not None:
         storage.write_json(_folder() / "recovery.json", {"version": 1, **recovery.seal(new, key, KEY_SEAL)},
                            private=True)
@@ -340,7 +369,12 @@ def _restore(recovery_key: bytes) -> int:
         key = recovery.unseal(recovery_key, saved, KEY_SEAL)
     except Exception:
         return 0
-    secure_store.store(KEY_ACCOUNT, key)
+    if (mine := secure_store.load(KEY_ACCOUNT)) is not None and mine != key:
+        # This Mac's own key, for the passwords it had before the backup came (kept aside in before-restore): kept
+        # too, not just written over
+        secure_store.store(KEY_ACCOUNT + "-before-recovery", mine)
+    if not secure_store.store(KEY_ACCOUNT, key):
+        return 0
     try:
         return len(logins())
     except Exception:

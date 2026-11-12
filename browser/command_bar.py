@@ -2,6 +2,7 @@
 # history, archived tabs and app commands. There is no "new tab page" — a tab
 # only exists once you pick something here.
 
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -13,7 +14,7 @@ from PyQt6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPix
 from PyQt6.QtWidgets import (QApplication, QFrame, QLabel, QLineEdit, QListWidget,
                              QListWidgetItem, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
-from . import motion
+from . import macos, motion
 from .answers import answer
 
 COPIED_FRESH_SECONDS = 5 * 60
@@ -86,7 +87,9 @@ def use_custom_sites(entries: list[dict]):
 
 
 def site_url(site: str, terms: str) -> str:
-    return SITE_SEARCHES[site][1].format(QUrl.toPercentEncoding(terms.strip()).data().decode())
+    # (every {}: a shortcut of yours with the words in it twice raised on each key typed with one)
+    return SITE_SEARCHES[site][1].replace("{}", "\0").format().replace(
+        "\0", QUrl.toPercentEncoding(terms.strip()).data().decode())
 
 
 def site_for_tab(text: str) -> str | None:
@@ -166,7 +169,10 @@ MIN_ROWS = 3  # (however short the window)
 BOTTOM_ROOM = 16  # (kept clear below the panel)
 
 _DOMAIN = re.compile(r"^([\w-]+\.)+[a-z]{2,}(:\d+)?([/?#].*)?$", re.IGNORECASE)
-_LOCAL = re.compile(r"^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?([/?#].*)?$", re.IGNORECASE)
+# This Mac's own servers, as dev tools name them (app.localhost:5173, myapp.test), an IPv6 address, or a machine's
+# bare name with a port (myserver:8080): http, as they rarely have certificates
+_LOCAL = re.compile(r"^(([\w-]+\.)*localhost|127\.0\.0\.1|\[[0-9a-f:.]+\]|([\w-]+\.)+test|[\w-]+:\d+)(:\d+)?([/?#].*)?$",
+                    re.IGNORECASE)
 # A router or a machine on your network: 192.168.1.1, 10.0.0.5:8080/admin (http: they rarely have https)
 _IPV4 = re.compile(r"^((25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(25[0-5]|2[0-4]\d|1?\d?\d)(:\d+)?([/?#].*)?$")
 _LAN = re.compile(r"^[\w-]+(\.[\w-]+)*\.(local|lan|home\.arpa|internal)(:\d+)?([/?#].*)?$", re.IGNORECASE)
@@ -179,6 +185,9 @@ _SCHEME = re.compile(r"^(https?|file|about|chrome|view-source|data):", re.IGNORE
 def to_url(text: str) -> str | None:
     """Return a URL if the text looks like one, otherwise None (meaning: search for it)."""
     text = text.strip()
+    if text.startswith(("/", "~/")) and os.path.exists(os.path.expanduser(text)):
+        # A file on this Mac: opened, not sent to a search engine (its folders and your name with it)
+        return QUrl.fromLocalFile(os.path.expanduser(text)).toString()
     if not text or " " in text:
         return None
     if _SCHEME.match(text):
@@ -220,6 +229,7 @@ class Result:
     keep_open: bool = False  # e.g. "Ask Claude": the answer appears inside the bar
 
 
+SAY_MS = 250  # (the highlighted row, said once the typing or arrowing settles)
 GLIDE_MS = 150  # the highlight moving to the next row (shorter, most of it went by in a frame or two: a jump)
 
 
@@ -352,6 +362,9 @@ class CommandBar(QWidget):
         self.list.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.list.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.list.itemClicked.connect(self._run_item)
+        # VoiceOver says the highlighted row: the keyboard stays in the box above, so it never heard the list
+        self._say = QTimer(self, singleShot=True, interval=SAY_MS, timeout=self._say_current)
+        self.list.currentRowChanged.connect(lambda _row: self._say.start())
         self.highlight_y = None  # where the highlight is while it glides between rows (None: on its row)
         layout.addWidget(self.input)
         layout.addWidget(self.divider)
@@ -506,23 +519,27 @@ class CommandBar(QWidget):
             if key == Qt.Key.Key_Backspace and self.site is not None and not self.input.text():
                 self._set_site(None)
                 return True
+            if self.answer.isVisible() and key in (Qt.Key.Key_Down, Qt.Key.Key_Up, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                # The results are hidden behind an answer: the keys aren't for a row you can't see (Return ran Ask
+                # Claude again, a second paid request; ↓ then Return ran whatever was under it)
+                return True
             if key in (Qt.Key.Key_Down, Qt.Key.Key_Up):
                 step = 1 if key == Qt.Key.Key_Down else -1
                 if self.list.count():
                     self._glide_to((self.list.currentRow() + step) % self.list.count())
                 return True
             if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-                # ⌘↩: Browse for Me with whatever is typed
-                query = self.input.text().strip()
+                # ⌘↩: Browse for Me with whatever is typed (not the address it's autocompleted to)
+                query = self._typed().strip()
                 claude = self.browser.feature("claude")
                 if query and claude is not None and claude.available():
                     self.close_bar()
                     claude.browse_for_me(query)
                 return True
             if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and event.modifiers() & Qt.KeyboardModifier.ShiftModifier \
-                    and self.site is None and self.input.text().strip():
-                # ⇧↩: Instant Links, straight to the best page for it
-                go = self._open(instant_url(self.input.text()))
+                    and self.site is None and self._typed().strip():
+                # ⇧↩: Instant Links, straight to the best page for it (for what was typed)
+                go = self._open(instant_url(self._typed()))
                 self.close_bar()
                 go()
                 return True
@@ -814,6 +831,17 @@ class CommandBar(QWidget):
     def _copy_answer(self, instant):
         QApplication.clipboard().setText(instant.text)
         self.browser.toast(f"Copied {instant.text}")
+
+    def said_text(self) -> str:
+        item = self.list.currentItem()
+        if item is None:
+            return ""
+        extra = item.data(Qt.ItemDataRole.AccessibleDescriptionRole)
+        return f"{item.text()}, {extra}" if extra else item.text()
+
+    def _say_current(self):
+        if self.isVisible() and (text := self.said_text()):
+            macos.announce(text)
 
     def _show(self, results):
         self._settle_highlight()  # (new results: the highlight starts on its row)

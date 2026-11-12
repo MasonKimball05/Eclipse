@@ -9,7 +9,7 @@ from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkReques
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QStackedWidget, QTextBrowser,
                              QToolButton, QVBoxLayout, QWidget)
 
-from . import motion, shortcuts
+from . import macos, motion, shortcuts
 from .models import display_host
 
 RADIUS = 10
@@ -45,6 +45,19 @@ class Corner(QWidget):
                    self.browser.theme.gradient(window.width(), window.height(), offset.x(), offset.y()))
 
 
+def _open_answer_link(browser, view, url):
+    """A link in an answer: a web page only (the answer can be shaped by page text: a file:// link to your files,
+    say), opened as a tab you can see, the command bar it's in closed."""
+    if url.scheme() not in ("http", "https"):
+        return
+    bar = view.parentWidget()
+    while bar is not None and not hasattr(bar, "close_bar"):
+        bar = bar.parentWidget()
+    if bar is not None:
+        bar.close_bar()
+    browser.open_url(url.toString())
+
+
 def answer_browser(browser, margin=12) -> QTextBrowser:
     # Markdown view for Claude's answers; links open as new tabs
     view = QTextBrowser()
@@ -52,7 +65,7 @@ def answer_browser(browser, margin=12) -> QTextBrowser:
     view.setObjectName("Answer")
     view.setOpenLinks(False)
     view.setFrameShape(QFrame.Shape.NoFrame)
-    view.anchorClicked.connect(lambda url: browser.open_url(url.toString()))
+    view.anchorClicked.connect(lambda url: _open_answer_link(browser, view, url))
     view.hide()
     return view
 
@@ -220,6 +233,7 @@ class FindBar(QFrame):
             super().keyPressEvent(event)
 
 
+TOAST_ACTION_MS = 8000  # (a toast with a button, Undo say: time to read it and decide; held while you're on it)
 SLOW_LOAD_MS = 2500  # (a page still loading after this long gets the sweeping highlight)
 SWEEP_MS = 1300
 PREVIEW_IMAGE_BYTES = 3_000_000  # (a page's preview picture: anything bigger isn't one)
@@ -449,6 +463,9 @@ class ContentFrame(QFrame):
         self._toast_do = None
         self.toast.hide()
         self._toast_timer = QTimer(self, singleShot=True, interval=1800, timeout=self._hide_toast)
+        # Its button waits while the pointer or the keyboard is on it (⌥⇧⌘A reaches it: prompt_keys)
+        self.toast.installEventFilter(self)
+        self.toast_button.installEventFilter(self)
 
         self.find_bar = FindBar(browser, self)
         self.preview_card = PreviewCard(browser, self)
@@ -563,19 +580,60 @@ class ContentFrame(QFrame):
     def show_toast(self, text, action=None, label="Undo"):
         """A short message at the bottom of the page. With `action`, it has a button (Undo, say) and
         stays a little longer to give you time for it."""
+        if action is None and self.toast_button.hasFocus():
+            self.browser.focus_current()  # (the keyboard was on the last one's button, which goes now: the page)
         self.toast_text.setText(shortcuts.for_here(text))  # (Windows' keys and names, off a Mac)
         self._toast_do = action
         self.toast_button.setText(label)
         self.toast_button.setVisible(action is not None)
         # (clicks go through a plain message, to whatever's under it)
         self.toast.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, action is None)
-        self._toast_timer.setInterval(5000 if action is not None else 1800)
+        self._toast_timer.setInterval(TOAST_ACTION_MS if action is not None else 1800)
         self.toast.layout().setContentsMargins(14, 6, 8 if action is not None else 14, 6)
         self.toast.adjustSize()
         self.toast.move((self.width() - self.toast.width()) // 2, self.height() - self.toast.height() - 20)
         self.toast.raise_()
         motion.fade(self.toast, True)
         self._toast_timer.start()
+        macos.announce(f"{self.toast_text.text()}. {label}: {shortcuts.for_here('⌥⇧⌘A')}" if action is not None
+                       else self.toast_text.text())  # (VoiceOver says it)
+
+    def eventFilter(self, obj, event):
+        if obj is self.toast or obj is self.toast_button:
+            return self._toast_event(obj, event)
+        return super().eventFilter(obj, event)
+
+    def toast_waiting(self) -> bool:
+        """A toast with a button is up, for ⌥⇧⌘A to reach."""
+        return self._toast_do is not None and self.toast.isVisible() and self.toast_button.isVisible()
+
+    def focus_toast(self) -> bool:
+        if not self.toast_waiting():
+            return False
+        self.toast_button.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.toast_button.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self._toast_timer.stop()  # (it waits while the keyboard's on it)
+        return True
+
+    def _toast_held(self) -> bool:
+        return self.toast.underMouse() or self.toast_button.hasFocus()
+
+    def _toast_event(self, obj, event):
+        t = event.type()
+        if t in (QEvent.Type.Enter, QEvent.Type.FocusIn):
+            self._toast_timer.stop()  # (held while you're on it)
+        elif t in (QEvent.Type.Leave, QEvent.Type.FocusOut):
+            if self._toast_do is not None and self.toast.isVisible() and not self._toast_held():
+                self._toast_timer.start()
+        elif t == QEvent.Type.KeyPress and obj is self.toast_button:
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self.toast_button.click()
+                return True
+            if event.key() == Qt.Key.Key_Escape:
+                self._hide_toast()
+                self.browser.focus_current()
+                return True
+        return False
 
     def _toast_action(self):
         action, self._toast_do = self._toast_do, None
@@ -584,6 +642,8 @@ class ContentFrame(QFrame):
             action()
 
     def _hide_toast(self):
+        if self.toast_button.hasFocus():
+            self.browser.focus_current()  # (the keyboard was on it: back to the page)
         self._toast_do = None
         self._toast_timer.stop()
         motion.fade(self.toast, False, motion.NORMAL)

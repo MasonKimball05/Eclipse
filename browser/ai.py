@@ -66,6 +66,12 @@ class Request(QObject):
         self.finished.connect(self._mark_done)
         self.failed.connect(self._mark_done)
 
+    def still_coming(self):
+        """Text arrived: the wait's for the next of it, not the whole answer (a long one, still streaming at 90
+        seconds, was cut off and replaced by "took too long")."""
+        if not self.done:
+            self._timer.start()
+
     def _mark_done(self, *_):
         self.done = True
         self.worker = None  # its process exits (and is deleted) once the answer is in
@@ -148,6 +154,7 @@ class Worker(QObject):
             if inner.get("type") == "content_block_delta" and delta.get("type") == "text_delta":
                 self._text += delta.get("text", "")
                 request.partial.emit(self._text)
+                request.still_coming()
         elif event.get("type") == "result":
             self.request = None
             if event.get("is_error"):

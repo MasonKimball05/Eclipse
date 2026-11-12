@@ -12,7 +12,7 @@ def test_boosts_match_sites_and_collect_zaps(store):
     assert boost.zapped == ["div.ad"]
     assert len(store.settings["boosts"]) == 2
     source = BoostManager._script(boost).sourceCode()
-    assert '"news.com"' in source and "div.ad" in source and "new Function" in source
+    assert '"news.com"' in source and "div.ad" in source and "new Function" not in source
     assert site_of("https://www.Example.com/page") == "example.com"
 
 

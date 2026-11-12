@@ -12,14 +12,14 @@
 import sys
 
 import qtawesome as qta
-from PyQt6.QtCore import QObject, QSize, Qt, QTimer, QUrl
+from PyQt6.QtCore import QObject, QRect, QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import QKeySequence, QPainter, QShortcut
 from PyQt6.QtWebEngineCore import QWebEngineNewWindowRequest, QWebEngineProfile
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QStackedWidget,
                              QToolButton, QVBoxLayout, QWidget)
 
 from .webview import harden, look_like_chrome
-from . import macos, shortcuts, spelling
+from . import macos, screens, shortcuts, spelling
 from .command_bar import search_url, to_url
 from .content import RADIUS, Corner
 from .models import display_host
@@ -288,6 +288,26 @@ class PrivateWindow(QWidget):
         if view is self.current:
             self.select(self.views[min(i, len(self.views) - 1)])
 
+    def menu_action(self, text):
+        """The main menu's item `text`, chosen (by its keys, most likely) with this window in front: this window's,
+        where it has one (True). (Else the main window decides: _menu_for_front.)"""
+        page = self.current
+        on_page = lambda act: (lambda: page is not None and act(page))  # noqa: E731
+        actions = {"New Tab": lambda: self.new_tab(), "Close Tab": lambda: self.close_tab(page),
+                   "Open Location…": self.focus_url, "Reload": on_page(lambda v: v.reload()),
+                   "Hard Reload": on_page(lambda v: v.page().triggerAction(v.page().WebAction.ReloadAndBypassCache)),
+                   "Back": on_page(lambda v: v.back()), "Forward": on_page(lambda v: v.forward()),
+                   "Zoom In": lambda: self.zoom(1), "Zoom Out": lambda: self.zoom(-1), "Actual Size": lambda: self.zoom(0),
+                   "Next Tab": lambda: self.cycle(1), "Previous Tab": lambda: self.cycle(-1),
+                   "Last Tab": lambda: self._jump(9),
+                   "Print…": on_page(lambda v: self.session.browser.print_page(v)),
+                   **{f"Tab {n}": (lambda n=n: self._jump(n)) for n in range(1, 9)}}
+        action = actions.get(text)
+        if action is None:
+            return False
+        action()
+        return True
+
     def cycle(self, step):
         if self.current in self.views:
             self.select(self.views[(self.views.index(self.current) + step) % len(self.views)])
@@ -370,8 +390,10 @@ class PrivateWindow(QWidget):
         main = self.browser.geometry()
         width, height = int(main.width() * 0.85), int(main.height() * 0.85)
         offset = 30 * (len(self.session.windows) % 5)
-        self.setGeometry(main.center().x() - width // 2 + offset, main.center().y() - height // 2 + offset,
-                         width, height)
+        # (on the screen the middle of the main window is on, all of it: not across two displays, nor under the Dock)
+        area = screens.area_at(main.center(), self.browser)
+        self.setGeometry(screens.fit(QRect(main.center().x() - width // 2 + offset,
+                                           main.center().y() - height // 2 + offset, width, height), area))
 
     def showEvent(self, event):
         super().showEvent(event)

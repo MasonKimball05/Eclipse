@@ -12,7 +12,7 @@ from PyQt6.QtNetwork import QNetworkReply, QNetworkRequest
 from PyQt6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QHBoxLayout, QInputDialog,
                              QLabel, QMenu, QMessageBox, QPushButton, QVBoxLayout, QWidget)
 
-from .. import brand
+from .. import brand, screens
 from ..features import Feature
 from ..theme import stylesheet
 from ..webview import WebView
@@ -320,11 +320,11 @@ class ExtensionPopup(QFrame):
             self.show()
 
     def _place(self):
-        screen = self.screen().availableGeometry() if self.screen() else None
+        screen = screens.area_at(self.anchor, self)  # (the screen you clicked on, not the window's)
         x, y = self.anchor.x(), self.anchor.y()
         if screen is not None:
-            x = min(x, screen.right() - self.width() - 8)
-            y = min(y, screen.bottom() - self.height() - 8)
+            x = max(min(x, screen.right() - self.width() - 8), screen.left() + 8)
+            y = max(min(y, screen.bottom() - self.height() - 8), screen.top() + 8)
         self.move(x, y)
 
 
@@ -751,13 +751,14 @@ class ExtensionsFeature(Feature):
     def click_extension(self, ext, button=None):
         from PyQt6.QtCore import QPoint
         window = self.window
+        self.host.grant_active_tab(ext.id, window.current_tab)  # (activeTab: you invoked it, on this tab)
         if ext.popup:
             button = button or self.puzzle
             anchor = button.mapToGlobal(QPoint(0, button.height() + 4))
             ExtensionPopup(window, ext, anchor)  # shows itself once sized
         else:  # no popup: the extension handles the click itself (chrome.action.onClicked)
             tab = window.current_tab
-            self.host.broadcast("action.clicked:" + ext.id, [self.host.tab_info(tab) if tab else None],
+            self.host.broadcast("action.clicked:" + ext.id, [self.host.tab_info(tab, ext.id) if tab else None],
                                 only_extension=ext.id)
 
     # --- Shortcuts, menus, commands, Settings ------------------------------------------------------------
@@ -790,7 +791,8 @@ class ExtensionsFeature(Feature):
             self.click_extension(ext)
             return
         tab = self.window.current_tab
-        self.host.broadcast("commands:" + ext.id, [name, self.host.tab_info(tab) if tab else None],
+        self.host.grant_active_tab(ext.id, tab)  # (its shortcut: invoked, as a click is)
+        self.host.broadcast("commands:" + ext.id, [name, self.host.tab_info(tab, ext.id) if tab else None],
                             only_extension=ext.id)
 
     def menus(self, add, menus, bar):

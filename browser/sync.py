@@ -54,6 +54,9 @@ def sync_folder() -> Path | None:
     return base / FOLDER if base is not None else None
 
 
+LOCAL_LIVE_KEYS = {"seen", "refreshed"}  # (a Live Folder's own on each Mac: never synced)
+FIRST_SYNC_WAITS = 15  # (looks: about five minutes, for iCloud to bring down the other Macs' copies)
+
 def device_name() -> str:
     name = socket.gethostname().removesuffix(".local").replace("-", " ")
     return name[:60] or "This computer"
@@ -65,7 +68,9 @@ def _node(n) -> dict:
     if isinstance(n, Folder):
         d = {"type": "folder", "id": n.id, "name": n.name}
         if n.live:
-            d["live"] = {k: v for k, v in n.live.items() if k != "seen"}  # (its items fill themselves on each Mac)
+            # (its items fill themselves on each Mac: what it's seen, and when it last looked, are each Mac's own. Sent,
+            # every refresh was an edit of its Space, and that Space went back and forth, over newer edits)
+            d["live"] = {k: v for k, v in n.live.items() if k not in LOCAL_LIVE_KEYS}
         else:
             d["children"] = [_node(c) for c in n.children]
         return d
@@ -91,7 +96,9 @@ def _without_titles(data):
     if isinstance(data, list):
         return [_without_titles(d) for d in data]
     if isinstance(data, dict):
-        return {k: _without_titles(v) for k, v in data.items() if not (k == "title" and "url" in data)}
+        # (a tab's title: not a JSON Live Folder's "title" setting, which has a url too, and a kind)
+        return {k: _without_titles(v) for k, v in data.items()
+                if not (k == "title" and "url" in data and "kind" not in data)}
     return data
 
 
@@ -125,13 +132,22 @@ def new_state() -> dict:
     return {"device": new_id(), "known": {}, "deleted": {}}
 
 
-def note_local(state: dict, items: dict, now: float) -> bool:
-    """What changed here since last time (each changed item, or deleted one, stamped `now`). True if anything."""
+def note_local(state: dict, items: dict, now: float, elsewhere=frozenset()) -> bool:
+    """What changed here since last time (each changed item, or deleted one, stamped `now`, or just after the change
+    it replaces if that's later: another Mac's clock running fast stamped its change ahead, and an edit here, stamped
+    earlier, was put back to it at once). True if anything.
+
+    An item this Mac has never synced that another device has (`elsewhere`: a first sync, Keep Both, a backup
+    restored) isn't stamped: stamped now, a week-old copy beat the other Mac's newer one. Theirs comes, and from then
+    on it's synced as usual."""
     changed = False
     for key, data in items.items():
         h = digest(data)
-        if state["known"].get(key, {}).get("hash") != h:
-            state["known"][key] = {"hash": h, "modified": now}
+        known = state["known"].get(key)
+        if known is None and key in elsewhere:
+            continue
+        if (known or {}).get("hash") != h:
+            state["known"][key] = {"hash": h, "modified": max(now, (known or {}).get("modified", now) + 0.001)}
             state["deleted"].pop(key, None)
             changed = True
     for key in [k for k in state["known"] if k not in items]:
@@ -143,11 +159,13 @@ def note_local(state: dict, items: dict, now: float) -> bool:
 
 def device_file(state: dict, items: dict, now: float) -> dict:
     return {"format": FORMAT, "version": 1, "device": state["device"], "name": device_name(), "written": now,
-            "items": {k: {"modified": state["known"][k]["modified"], "data": d} for k, d in items.items()},
+            # (not an item another device has that this one hasn't taken in yet: theirs comes first, note_local)
+            "items": {k: {"modified": state["known"][k]["modified"], "data": d} for k, d in items.items()
+                      if k in state["known"]},
             "deleted": dict(state["deleted"])}
 
 
-def merge(state: dict, remotes: list[dict]) -> dict:
+def merge(state: dict, remotes: list[dict], here=frozenset()) -> dict:
     """What to change here from the other devices' files: {"apply": {key: data}, "delete": [keys]}, newest change
     of each item winning. The state is updated as if it's done (so the next look doesn't do it again)."""
     best = {}  # key → (modified, data or None for deleted, device)
@@ -165,9 +183,9 @@ def merge(state: dict, remotes: list[dict]) -> dict:
         if when <= mine:
             continue
         if data is None:
-            if key in state["known"]:
+            if key in state["known"] or key in here:  # (or here, never synced: a Space restored that's gone since)
                 plan["delete"].append(key)
-                del state["known"][key]
+                state["known"].pop(key, None)
             state["deleted"][key] = when
         else:
             h = digest(data)
@@ -329,22 +347,46 @@ class Sync(QObject):
         folder = sync_folder()
         if not self.on() or folder is None:
             return
+        if not self.state["known"] and self._still_downloading(folder):
+            return  # (a first sync: the other Macs' copies, still coming down from iCloud, are waited for)
         now = time.time()
-        if note_local(self.state, snapshot(self.store), now) or not (folder / f"{self.state['device']}.json").exists():
+        remotes = [] if send_only else self.others()
+        elsewhere = {key for r in remotes for key in [*(r.get("items") or {}), *(r.get("deleted") or {})]}
+        elsewhere -= set(self.state.get("claim", []))  # (Keep Both's combined Favorites: this Mac's, to send)
+        if note_local(self.state, snapshot(self.store), now, elsewhere) or \
+                not (folder / f"{self.state['device']}.json").exists():
             self._write(folder, now)
+        self.state.pop("claim", None)
         if send_only:
             storage.write_json(self._state_path(), self.state)
             return
-        remotes = self.others()
         self.devices = [r["name"] for r in remotes if r.get("name")]
-        plan = merge(self.state, remotes)
+        here = set(snapshot(self.store))
+        plan = merge(self.state, remotes, here)
         if plan["apply"] or plan["delete"]:
             self._back_up()
             self.apply(plan)
-            note_local(self.state, snapshot(self.store), now)  # (what's here now is what came: not a change of ours)
+            # What's here now is what came (with this Mac's own tabs a copy can't carry put back): the change it
+            # came with, not one of ours, so it keeps that change's time. Stamped now, it went back to the Mac it
+            # came from and undid that Mac's next edit
+            after = snapshot(self.store)
+            for key in plan["apply"]:
+                if key in after and key in self.state["known"]:
+                    self.state["known"][key]["hash"] = digest(after[key])
+            note_local(self.state, after, now, elsewhere)
             self._write(folder, now)
         storage.write_json(self._state_path(), self.state)
         self.last = now
+
+    def _still_downloading(self, folder) -> bool:
+        """Other devices' copies still only placeholders here (iCloud hasn't brought them down yet), for a few minutes
+        at most: looked at before they're here, this Mac's Spaces and Favorites (a new Mac's starter ones) were
+        stamped as just changed, and replaced the real ones everywhere."""
+        waiting = folder.is_dir() and any(folder.glob(".*.json.icloud"))
+        if not waiting:
+            return False
+        self._waited = getattr(self, "_waited", 0) + 1
+        return self._waited <= FIRST_SYNC_WAITS
 
     def first_look(self) -> dict | None:
         """Turning sync on: if another device already syncs, {"name", "spaces"} of the one that wrote last, to
@@ -374,6 +416,7 @@ class Sync(QObject):
             used = {t.id for t in self.store.all_tabs()}
             came = build_nodes([d for d in theirs if d["url"] not in have], {}, {}, used)
             self.store.favorites = list(self.store.favorites) + came
+        self.state["claim"] = [FAVORITES]  # (both Macs' Favorites, now: sent as this Mac's change, not replaced)
         self.store._changed()
         self.window.apply_theme()
 
@@ -417,15 +460,19 @@ class Sync(QObject):
                          for f in _folders(s.pinned) if f.live}
         pool = dict(before)
         avoid = {t.id for s in store.spaces for t in walk_tabs(s.today)}
+        # (and tabs staying where they are, below: a tab moved there on another Mac, still where it was in a Space
+        # this Mac changed meanwhile, was made again with the same id, two tabs of one id)
         # Tabs staying where they are (in Spaces and Favorites nothing changed in) aren't free to be reused
         changed = set(plan["apply"]) | set(plan["delete"])
         for space in store.spaces:
             if f"space:{space.id}" not in changed:
                 for t in walk_tabs(space.pinned):
                     pool.pop(t.id, None)
+                    avoid.add(t.id)
         if FAVORITES not in changed:
             for t in store.favorites:
                 pool.pop(t.id, None)
+                avoid.add(t.id)
         for key, data in plan["apply"].items():
             if key == FAVORITES:
                 kept = local_only(store.favorites)
@@ -480,7 +527,7 @@ def local_only(nodes) -> list:
             if isinstance(node, Folder):
                 if not node.live:
                     walk(node.children, node.id)
-            elif _url(node.url) is None:
+            elif _url(node.home_url or node.url) is None:  # (as it's synced: its pinned address, not where it is)
                 found.append((node, folder_id, i))
     walk(nodes, None)
     return found

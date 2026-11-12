@@ -15,14 +15,16 @@ class Mac:
 
     def look(self, now):
         """What run() does, minus the window: note changes here, write them, take the others'."""
-        sync.note_local(self.state, self.items, now)
+        remotes = sync.read_remotes(self.folder, self.state["device"])
+        elsewhere = {k for r in remotes for k in [*(r.get("items") or {}), *(r.get("deleted") or {})]}
+        sync.note_local(self.state, self.items, now, elsewhere)
         (self.folder / f"{self.state['device']}.json").write_text(
             json.dumps(sync.device_file(self.state, self.items, now)))
-        plan = sync.merge(self.state, sync.read_remotes(self.folder, self.state["device"]))
+        plan = sync.merge(self.state, remotes, set(self.items))
         for key in plan["delete"]:
             self.items.pop(key, None)
         self.items.update(plan["apply"])
-        sync.note_local(self.state, self.items, now)  # (what came isn't a change of this Mac's)
+        sync.note_local(self.state, self.items, now, elsewhere)  # (what came isn't a change of this Mac's)
         return plan
 
 
@@ -168,3 +170,56 @@ def test_sync_state_brought_from_another_mac_gets_its_own_device():
     sync.own_state(state, "MAC-B")  # (the folder, on another Mac)
     assert state["device"] != device and state["known"] == known and state["machine"] == "MAC-B"
     assert sync.own_state(state, None) is state  # (where there's no telling: left as it is)
+
+
+def test_an_edit_here_isnt_undone_by_a_mac_whose_clock_runs_fast(tmp_path):
+    """Mac B's clock an hour fast: its change was stamped ahead, and an edit on A after it, stamped earlier, was put
+    back to B's at A's next look."""
+    a, b = _two(tmp_path)
+    b.items["space:w"] = _space("Work (B)", "b.example")
+    b.look(3700)  # (an hour ahead)
+    a.look(200)
+    assert a.items["space:w"]["name"] == "Work (B)"
+    a.items["space:w"] = _space("Work (A, later)", "a.example")
+    a.look(300)  # (really after B's: stamped just after it, not at 300)
+    a.look(310)
+    assert a.items["space:w"]["name"] == "Work (A, later)"
+    b.look(3710)
+    assert b.items["space:w"]["name"] == "Work (A, later)"
+
+
+def test_a_restored_or_new_macs_old_copy_doesnt_beat_the_newer_one(tmp_path):
+    """A week-old backup restored on a new Mac (the same Spaces), then sync turned on: each was stamped as just
+    changed, and replaced the other Mac's newer copies everywhere."""
+    a, _b = _two(tmp_path)
+    a.items["space:w"] = _space("Work (newer)", "new.example")
+    a.look(500)
+    old = Mac(tmp_path, {"space:w": _space("Work (old)", "old.example"), FAVORITES: [], "order": ["w"]})
+    old.look(600)  # (a fresh sync state: its copy is older, whatever the clock says)
+    assert old.items["space:w"]["name"] == "Work (newer)"
+    a.look(610)
+    assert a.items["space:w"]["name"] == "Work (newer)"
+
+
+def test_a_live_folders_refresh_and_what_its_seen_arent_synced():
+    """Each refresh stamped the folder's last look into its Space: every refresh was an edit, sent back and forth
+    over newer ones. And a JSON Live Folder's title setting was taken for a page title, never synced."""
+    from browser.models import Folder
+    folder = Folder("Feed", [], "f1", True, {"kind": "json", "url": "https://api.example/x", "title": "name",
+                                             "seen": ["a"], "refreshed": 123.0})
+    node = sync._node(folder)
+    assert "refreshed" not in node["live"] and "seen" not in node["live"]
+    renamed = dict(node, live={**node["live"], "title": "label"})
+    assert sync.digest(node) != sync.digest(renamed)
+
+
+def test_a_restored_backup_doesnt_delete_whats_been_made_since_everywhere(tmp_path, monkeypatch):
+    """Restoring a backup kept sync's memory of the Spaces since: missing here, they were sent as deleted, from every
+    Mac. A restore now forgets what sync knew, so the next look takes the others' copies instead."""
+    from browser import backup, storage
+    monkeypatch.setattr(storage, "data_dir", lambda: tmp_path)
+    storage.write_json(tmp_path / "sync-state.json", {"device": "d1", "known": {"space:new": {"hash": "h",
+                                                     "modified": 5.0}}, "deleted": {"space:x": 1.0}})
+    backup._forget_what_sync_knew(tmp_path)
+    state = storage.read_json(tmp_path / "sync-state.json")
+    assert state["device"] == "d1" and state["known"] == {} and state["deleted"] == {}

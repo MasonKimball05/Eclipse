@@ -100,6 +100,16 @@ def _script(name, source, world, point=QWebEngineScript.InjectionPoint.DocumentC
     return script
 
 
+
+INSTALL_OFFER_GAP_S = 3.0  # (a second .user.js offer this soon after one isn't put up)
+
+def _site_origin(url: str) -> str:
+    """A web page's origin (scheme, host and port), for activeTab: "" for anything else."""
+    q = QUrl(url)
+    if q.scheme() not in ("http", "https"):
+        return ""
+    return f"{q.scheme()}://{q.host().lower()}:{q.port(443 if q.scheme() == 'https' else 80)}"
+
 class PageBridge(QObject):
     """One page's connection to the runtime."""
     event = pyqtSignal(str, str)  # (kind, JSON payload) → listeners in the page
@@ -298,6 +308,8 @@ class ExtensionHost(QObject):
 
         self.extensions: dict[str, ChromeExtension] = {}
         self._removed: set[str] = set()  # (removed while Eclipse runs: their pages still open can do nothing)
+        self._active_grants: dict[str, tuple] = {}  # (activeTab: ext id → the tab you invoked it on, and its site)
+        self._offered_install = -INSTALL_OFFER_GAP_S  # (when a userscript was last offered to install)
         for record in self.store.settings.get("extensions", []):
             folder = chrome.extensions_dir() / record["id"]
             try:
@@ -355,7 +367,7 @@ class ExtensionHost(QObject):
         page.setWebChannel(channel, world.value)
         page.setProperty("pbx_world", world.value)
         if not extension_page:
-            page.navigation_filter = lambda url, main: self._before_navigation(page, url, main)
+            page.navigation_filter = lambda url, main, kind=None: self._before_navigation(page, url, main, kind)
             page.extension_messages = lambda message: self.world_call(page, message)
             # A new document starts fresh worlds (their runtimes say hello again)
             page.loadStarted.connect(lambda: self._drop_bridges(page, worlds_only=True))
@@ -486,18 +498,31 @@ class ExtensionHost(QObject):
             return reported.scheme() == "about"
         return _origin(reported) == origin
 
-    def _before_navigation(self, page, url: QUrl, main_frame: bool) -> bool:
+    def _before_navigation(self, page, url: QUrl, main_frame: bool, kind=None) -> bool:
         if not main_frame:
             return True
+        if url.scheme() in ("http", "https", "file") and url.path().endswith(".user.js") and self._offer_install(url, kind):
+            return False  # (the page stays as it was: its bridge too)
         # Extension pages run their code in the main world, so the bridge has to move there
         world = MAIN if url.scheme() == "pbext" else ISOLATED
         channel = page.webChannel()
         if channel is not None and page.property("pbx_world") != world.value:
             page.setWebChannel(channel, world.value)
             page.setProperty("pbx_world", world.value)
-        if url.scheme() in ("http", "https", "file") and url.path().endswith(".user.js"):
-            QTimer.singleShot(0, lambda: self.browser.feature("extensions").installer.userscript_from_url(url.toString()))
+        return True
+
+    def _offer_install(self, url: QUrl, kind) -> bool:
+        """A .user.js link: offered as a userscript to install, if you clicked it or typed it, and not just offered
+        it (a page sending you to one again and again, or a redirect, put up install box after install box). Else it
+        opens as the text it is."""
+        from PyQt6.QtWebEngineCore import QWebEnginePage
+        chosen = kind is None or kind in (QWebEnginePage.NavigationType.NavigationTypeLinkClicked,
+                                          QWebEnginePage.NavigationType.NavigationTypeTyped)
+        now = time.monotonic()
+        if not chosen or now - self._offered_install < INSTALL_OFFER_GAP_S:
             return False
+        self._offered_install = now
+        QTimer.singleShot(0, lambda: self.browser.feature("extensions").installer.userscript_from_url(url.toString()))
         return True
 
     def _external_call(self, page, call_id, method, args_json):
@@ -662,6 +687,10 @@ class ExtensionHost(QObject):
                 raise PermissionError("GM_* functions are for userscripts")
             if isinstance(bridge, WorldBridge) and kind == EXT and not method.startswith(CONTENT_SCRIPT_METHODS):
                 raise PermissionError(f"content scripts can't use {method}")
+            if kind == USERSCRIPT and not getattr(self.scripts.get(owner), "enabled", False):
+                # (as for an extension, a userscript in a page that was open as you removed it or turned it off:
+                # its GM_ calls went on, and GM_setValue wrote its values file back after it was deleted)
+                raise PermissionError("that userscript is turned off or removed")
         if method.startswith("dnr.") and method[4:] in DNR_METHODS:
             ext = self.extensions.get(owner)
             if ext is None or not ext.has_permission("declarativeNetRequest", "declarativeNetRequestWithHostAccess"):
@@ -761,7 +790,12 @@ class ExtensionHost(QObject):
             sender["id"] = ext_id  # websites have no extension id
         tab = self._tab_of(bridge.page)
         if tab is not None:
-            sender["tab"] = self.tab_info(tab)
+            # (without where the tab is, unless the extension may know: a content script in an ad's frame told its
+            # extension the address and title of the bank's page around it)
+            sender["tab"] = self.tab_info(tab, ext_id if not isinstance(bridge, ExternalBridge) else None)
+            if isinstance(bridge, ExternalBridge):
+                for key in self.PRIVATE_TAB_FIELDS:
+                    sender["tab"].pop(key, None)
         return sender
 
     def _deliver(self, origin, recipients, ext_id, message, kind="message:") -> int:
@@ -960,6 +994,20 @@ class ExtensionHost(QObject):
 
     PRIVATE_TAB_FIELDS = ("url", "title", "favIconUrl", "pendingUrl")
 
+    def grant_active_tab(self, ext_id, tab):
+        """You invoked the extension (its toolbar button, a menu item of its, its shortcut) on `tab`: with activeTab,
+        it may see and script that tab, until the tab goes to another site (as in Chrome). Not before: activeTab
+        on whatever tab was current let an extension read every page you looked at."""
+        if tab is not None:
+            self._active_grants[ext_id] = (tab, _site_origin(tab.url or ""))
+
+    def _active_tab(self, ext, tab) -> bool:
+        grant = self._active_grants.get(ext.id) if ext.has_permission("activeTab") else None
+        if grant is None or tab is None or grant[0] is not tab:
+            return False
+        origin = _site_origin(tab.url or "")
+        return bool(origin) and origin == grant[1]
+
     def _sees_tab(self, ext_id, tab) -> bool:
         """Whether this extension may know where a tab is and what it's called: as in Chrome, with the tabs
         permission, host access to its page, or activeTab on the tab you're on. Without, every extension had every
@@ -967,7 +1015,7 @@ class ExtensionHost(QObject):
         ext = self.extensions.get(ext_id)
         if ext is None:
             return False
-        if ext.has_permission("tabs") or (ext.has_permission("activeTab") and tab is self.browser.current_tab):
+        if ext.has_permission("tabs") or self._active_tab(ext, tab):
             return True
         return (tab.url or "").startswith(("http://", "https://")) and ext.has_host_access(tab.url)
 
@@ -1120,6 +1168,12 @@ class ExtensionHost(QObject):
             if not matches(url, listener["urls"]) or not matches(url, listener["access"]):
                 continue  # only sites the extension asked for, and has host access to
             event = dict(details)
+            if not page or not matches(page, listener["access"]):
+                # (the page it's for, and where it came from, only for a site it has access to: an analytics host's
+                # requests told it every page you went to that loaded it)
+                event["documentUrl"] = None
+                if event["initiator"] and not matches(event["initiator"] + "/", listener["access"]):
+                    event["initiator"] = None
             if listener["headers"] and listener["event"] != "onBeforeRequest":
                 event["requestHeaders"] = [{"name": bytes(k).decode(), "value": bytes(v).decode()}
                                            for k, v in info.httpHeaders().items()]
@@ -1200,7 +1254,9 @@ class ExtensionHost(QObject):
             item["checked"] = checked
             self._save_menus(ext_id)
         tab = self._tab_of(page)
-        self.broadcast("menus.clicked:" + ext_id, [info, self.tab_info(tab) if tab else None], only_extension=ext_id)
+        self.grant_active_tab(ext_id, tab)  # (you chose its item on this page)
+        self.broadcast("menus.clicked:" + ext_id, [info, self.tab_info(tab, ext_id) if tab else None],
+                       only_extension=ext_id)
 
     def badge_text(self, ext, url="") -> str:
         """What the toolbar shows: the extension's own badge, or its block count if it asked for that."""
@@ -1231,11 +1287,12 @@ class ExtensionHost(QObject):
         url = page.url()
         if ext is None or url.scheme() == "pbext" and url.host() != ext_id:
             raise PermissionError("can't run code in another extension's pages")
-        if url.scheme() in ("http", "https", "file"):
+        if url.scheme() in ("http", "https"):
             spec = bytes(url.toEncoded()).decode()
-            on_active_tab = ext.has_permission("activeTab") and self._tab_of(page) is self.browser.current_tab
-            if not (ext.has_host_access(spec) or on_active_tab):
+            if not (ext.has_host_access(spec) or self._active_tab(ext, self._tab_of(page))):
                 raise PermissionError(f"no host permission for {url.host()}")
+        elif url.scheme() == "file":
+            raise PermissionError("can't run code in your files")  # (no host pattern matches them; nor activeTab)
         elif url.scheme() != "pbext":
             raise PermissionError(f"can't run code in {url.scheme()}: pages")
         return page
@@ -1294,8 +1351,16 @@ class ExtensionHost(QObject):
         return f"{ext_id}#offscreen" in self.backgrounds
 
     def _m_downloads_download(self, bridge, ext_id, options):
-        # Goes through the browser's normal download handling (and its Downloads window)
+        # Goes through the browser's normal download handling (and its Downloads window). Only with the downloads
+        # permission, and only from the web: your files, or another extension's, aren't its to copy
+        ext = self.extensions.get(ext_id)
+        if ext is None or not ext.has_permission("downloads"):
+            raise PermissionError("downloads needs the \"downloads\" permission")
         url = bridge.page.url().resolved(QUrl(options.get("url", "")))
+        text = url.toString()
+        own_blob = text.startswith((f"blob:pbext://{ext_id}/", "blob:http://", "blob:https://"))
+        if not (url.scheme() in ("http", "https", "data") or url.scheme() == "blob" and own_blob):
+            raise PermissionError(f"can't download {url.scheme()}: addresses")
         bridge.page.download(url, Path(options.get("filename") or "").name)
         return next(self._ids)
 
@@ -1350,7 +1415,7 @@ class ExtensionHost(QObject):
     def _m_gm_notification(self, bridge, script_id, title, text):
         self.browser.toast(f"{title} — {text}" if text else title)
 
-    def _m_gm_xhr(self, bridge, script_id, details):
+    def _m_gm_xhr(self, bridge, script_id, details, allowed=None):
         # GM_xmlhttpRequest exists to get around the same-origin rule, so it's made from Python. Only to the web:
         # Python could read file:// too, and a script that builds its address from the page would hand your files
         # to whatever page tricked it
@@ -1359,7 +1424,8 @@ class ExtensionHost(QObject):
             raise PermissionError("only http and https addresses can be fetched")
         request = QNetworkRequest(url)
         request.setAttribute(QNetworkRequest.Attribute.RedirectPolicyAttribute,
-                             QNetworkRequest.RedirectPolicy.NoLessSafeRedirectPolicy)
+                             QNetworkRequest.RedirectPolicy.UserVerifiedRedirectPolicy if allowed is not None
+                             else QNetworkRequest.RedirectPolicy.NoLessSafeRedirectPolicy)
         for name, value in (details.get("headers") or {}).items():
             request.setRawHeader(name.encode(), str(value).encode())
         if details.get("timeout"):
@@ -1370,6 +1436,9 @@ class ExtensionHost(QObject):
         request_id = next(self._ids)
         self._xhrs[request_id] = reply
         reply.finished.connect(lambda: self._xhr_done(bridge, request_id, reply))
+        if allowed is not None:  # (each redirect checked too: a site it may reach sending it on to one it may not)
+            reply.redirected.connect(lambda to: reply.redirectAllowed.emit() if to.scheme() in ("http", "https")
+                                     and allowed(bytes(to.toEncoded()).decode()) else reply.abort())
         return request_id
 
     def _m_net_fetch(self, bridge, ext_id, details):
@@ -1378,10 +1447,10 @@ class ExtensionHost(QObject):
         if bridge.extension_id is None:
             raise PermissionError("only extension pages can fetch across sites")
         ext = self.extensions.get(ext_id)
-        url = str(details.get("url", ""))
+        url = bytes(QUrl(str(details.get("url", ""))).toEncoded()).decode()  # (checked as it will be sent)
         if ext is None or not ext.has_host_access(url):
             raise PermissionError(f"no host permission for {QUrl(url).host() or url}")
-        return self._m_gm_xhr(bridge, ext_id, details)
+        return self._m_gm_xhr(bridge, ext_id, {**details, "url": url}, allowed=ext.has_host_access)
 
     def _xhr_done(self, bridge, request_id, reply):
         self._xhrs.pop(request_id, None)
@@ -1444,6 +1513,8 @@ class ExtensionHost(QObject):
 
     def remove_extension(self, ext_id):
         self._removed.add(ext_id)
+        self._dirty_storage.discard(ext_id)  # (a change it made just now isn't written back once it's gone)
+        self._ext_storage.pop(ext_id, None)
         self.stop_background(ext_id)
         ext = self.extensions.pop(ext_id, None)
         self._save_records()

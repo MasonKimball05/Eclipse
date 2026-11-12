@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton,
 
 import qtawesome as qta
 
-from . import macos, motion, passkey_store, recovery
+from . import macos, motion, passkey_store, recovery, prompt_keys
 from .permissions import ARM_MS
 
 R = QWebEngineWebAuthUxRequest
@@ -280,6 +280,7 @@ class PageCard(QFrame):
         if self.view.isVisible() and not self.isVisible() and not getattr(self, "_shown_once", False):
             self._shown_once = True
             motion.fade(self, True, motion.NORMAL)
+            prompt_keys.shown(self)  # (VoiceOver says it; ⌥⇧⌘A reaches it)
         else:
             self.setVisible(self.view.isVisible())
         self.raise_()
@@ -517,7 +518,7 @@ class Passkeys(QObject):
         url = view.url()
         # (nor a page whose certificate you trusted anyway: it may not be that site at all, and a passkey's answer,
         # signed for the real site, could be passed on to it)
-        secure = passkey_store.secure(url) and not self.browser.certificates.overridden(url)
+        secure = passkey_store.secure(url) and not self.browser.certificates.overridden(url, view.page().profile())
         if conditional and not secure:
             return
         if not secure:

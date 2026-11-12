@@ -22,7 +22,7 @@ import re
 import secrets
 import time
 
-from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QObject, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QImage
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineScript
 
@@ -155,8 +155,13 @@ READ = r"""
     try { el = document.querySelector(SELECTOR); } catch (e) {}
     if (!el && WAS) {  // moved about: the deepest element that still starts the way it did
       const start = WAS.trim().slice(0, 40);
-      const all = [...document.body.querySelectorAll('*')].filter((e) => (e.innerText || '').includes(start));
-      el = all.length ? all[all.length - 1] : null;
+      // (not a script's or style's text: a page's data, as JSON in a script after its content, would match)
+      const skip = new Set(['SCRIPT', 'STYLE', 'TEMPLATE', 'NOSCRIPT']);
+      const all = [...document.body.querySelectorAll('*')].filter((e) => !skip.has(e.tagName) &&
+                                                                    (e.textContent || '').includes(start));
+      // the deepest: one with no match inside it (of those, the first)
+      el = all.find((e) => !all.some((o) => o !== e && e.contains(o))) || null;
+      el = el && (el.innerText || '').includes(start) ? el : null;
     }
     return el ? {text: read(el)} : {error: "The part of the page you're watching isn't there any more"};
   }
@@ -443,7 +448,7 @@ class PageWatchFeature(Feature):
                 window.toast("Couldn't tell which part of the page that is: try Watch for Changes on the tab")
                 return
             watch = self.watcher.add(url, (tab.label if tab is not None else view.title()) or display_host(url),
-                                     found["selector"], found.get("text") or "")
+                                     found["selector"], found.get("text") or None)  # (nothing yet: not "")
             window.toast(f"Watching that part of {display_host(url)} · you'll hear when it changes"
                          if watch is not None else "You're already watching that")
             self._refresh_settings()
@@ -528,7 +533,7 @@ class PageWatchFeature(Feature):
                     a.addWidget(changes)
                 a.addWidget(remove)
                 title = w["title"] + (" (a part of it)" if w["selector"] else "")
-                rows.append(settings._row(title, detail(w), actions))
+                rows.append(settings._row(title, detail(w), actions, plain=True))  # (the page's own words)
             if not rows:
                 empty = QLabel("Nothing watched yet. Right-click a tab and choose Watch for Changes…, or select part "
                                "of a page, right-click it and choose Watch This.")
@@ -567,6 +572,7 @@ def show_changes(parent, watch, browser=None):
     dialog.setWindowTitle(f"Changes · {watch['title']}")
     v = QVBoxLayout(dialog)
     heading = QLabel(watch["summary"] or "What changed")
+    heading.setTextFormat(Qt.TextFormat.PlainText)  # (the page's own words)
     heading.setWordWrap(True)
     v.addWidget(heading)
     text = QPlainTextEdit(diff)

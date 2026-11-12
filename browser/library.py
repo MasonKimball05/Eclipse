@@ -238,9 +238,17 @@ class LibraryWindow(FadesIn, QWidget):
                      "source": a} for a in store.archive]
         folder = storage.data_dir() / ("notes" if self.section == "notes" else "browse")
         entries = []
+        def modified(path):
+            try:
+                return path.stat().st_mtime
+            except OSError:
+                return 0.0  # (gone since the folder was listed: skipped below)
         for path in sorted(folder.glob("*.md" if self.section == "notes" else "*.html"),
-                           key=lambda p: p.stat().st_mtime, reverse=True) if folder.exists() else []:
-            text = path.read_text(errors="replace")
+                           key=modified, reverse=True) if folder.exists() else []:
+            try:
+                text = path.read_text(errors="replace")
+            except OSError:
+                continue  # (deleted or renamed as the list was made: sync, or an editor saving)
             if self.section == "notes":
                 first = next((l.strip().lstrip("#*-• ").strip() for l in text.splitlines() if l.strip()), "")
                 title, url, sub = first or "Untitled Note", "note:" + path.stem, f"{len(text.split())} words"
@@ -248,7 +256,7 @@ class LibraryWindow(FadesIn, QWidget):
                 match = re.search(r"<title>(.*?)</title>", text, re.S)
                 title = (match.group(1) if match else path.stem).replace("✦", "").strip()
                 url, sub = QUrl.fromLocalFile(str(path)).toString(), f"{text.count('class=\"source\"')} sources"
-            entries.append({"url": url, "title": title, "ts": path.stat().st_mtime, "subtitle": sub, "path": path})
+            entries.append({"url": url, "title": title, "ts": modified(path), "subtitle": sub, "path": path})
         return entries
 
     def matching(self, query: str) -> list[dict]:
@@ -311,6 +319,9 @@ class LibraryWindow(FadesIn, QWidget):
         if existing is not None and (url.startswith("note:") or url.startswith("file:")):
             self.browser.activate_tab(existing)  # notes and answers already open: just go there
         elif self.section == "archive":
+            if entry["source"] not in self.store.archive:
+                self.refresh()  # (brought back already, from the sidebar: not a second tab of it)
+                return
             self.browser.restore_archived(entry["source"])  # (into its own Space, and out of the archive)
             self.refresh()
             self.browser.bring_to_front()

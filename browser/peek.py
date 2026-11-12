@@ -7,9 +7,10 @@
 # frame by frame. Opened some other way (no click to grow from), it rises into place instead.
 
 import qtawesome as qta
-from PyQt6.QtCore import QEasingCurve, QObject, QPoint, QRect, QRectF, QSize, Qt, QUrl
+from PyQt6 import sip
+from PyQt6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QRect, QRectF, QSize, Qt, QUrl
 from PyQt6.QtGui import QColor, QCursor, QPainter, QPainterPath
-from PyQt6.QtWidgets import (QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QToolButton, QVBoxLayout,
+from PyQt6.QtWidgets import (QApplication, QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QToolButton, QVBoxLayout,
                              QWidget)
 
 from . import motion
@@ -83,6 +84,8 @@ class PeekOverlay(QWidget):
             view.urlChanged.connect(lambda u: self.host.setText("Peek  ·  " + (display_host(u.toString())
                                                                                 or u.toString()))),
             view.page().windowCloseRequested.connect(self.close_peek),
+            # A video's full screen button: it goes to a tab of its own, and fills the screen from there
+            view.page().fullScreenRequested.connect(self._full_screen),
             view.page().newWindowRequested.connect(lambda req: self.browser.handle_new_window(None, req, profile)),
         ]
         self.card_layout.addWidget(view, 1)
@@ -165,6 +168,18 @@ class PeekOverlay(QWidget):
             self.view.deleteLater()
             self.view = None
             self.browser.focus_current()
+
+    def _full_screen(self, request):
+        view = self.view
+        if not request.toggleOn() or view is None:
+            request.accept()
+            return
+        self.promote()
+        if sip.isdeleted(view) or view.parentWidget() is None:
+            request.reject()  # (it opened again in another profile's tab: that one can go full screen)
+            return
+        QApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest)
+        self.browser._on_fullscreen(request, view)
 
     def promote(self):
         view, self.view = self.view, None

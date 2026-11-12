@@ -232,7 +232,7 @@ class SettingsWindow(FadesIn, QWidget):
                 line.setVisible(not row.isHidden())
         return card
 
-    def _row(self, title, description, control=None) -> QWidget:
+    def _row(self, title, description, control=None, plain=False) -> QWidget:
         row = QWidget()
         h = QHBoxLayout(row)
         h.setContentsMargins(0, 10, 0, 10)
@@ -241,11 +241,15 @@ class SettingsWindow(FadesIn, QWidget):
         text.setSpacing(2)
         title, description = shortcuts.for_here(title), shortcuts.for_here(description)  # (Windows' keys, off a Mac)
         label = QLabel(title)
+        if plain:  # (words from a web page, never HTML)
+            label.setTextFormat(Qt.TextFormat.PlainText)
         label.setObjectName("SettingTitle")
         text.addWidget(label)
         desc = None
         if description:
             desc = QLabel(description)
+            if plain:
+                desc.setTextFormat(Qt.TextFormat.PlainText)
             desc.setObjectName("Hint")
             desc.setWordWrap(True)
             text.addWidget(desc)
@@ -1116,6 +1120,12 @@ class SettingsWindow(FadesIn, QWidget):
             profile.clearAllVisitedLinks()
             for permission in profile.listAllPermissions():  # (camera, location, notifications you'd allowed)
                 permission.reset()
+            # Camera and microphone answers, and apps sites may open without asking, are kept by Eclipse, not the
+            # profile (for every profile at once): they go too, or a site you'd let use the camera still could
+            from . import external_links, permissions
+            self.store.settings.pop(permissions.SETTING, None)
+            self.store.settings.pop(external_links.SETTING, None)
+            self.store.schedule_save()
             # Pages' own storage (a login kept there, offline copies) is open while Chromium runs: it goes the next
             # time the profile opens. Only cookies went before, so some sites stayed signed in
             storage.ask_to_clear_site_data(Path(profile.persistentStoragePath()))

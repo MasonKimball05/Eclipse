@@ -153,6 +153,8 @@ def hop_quicklinks(path=HOP_QUICKLINKS, builtin=None) -> list[dict]:
              for _name, url, keywords in builtin.values() for kw in keywords}
     out = []
     for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue  # (a stray string or null in the file: skipped, not every shortcut lost)
         keyword, url = str(row.get("keyword", "")).strip().lower(), str(row.get("url", ""))
         if not keyword or "{query}" not in url or not url.startswith(("http://", "https://")):
             continue
@@ -160,6 +162,11 @@ def hop_quicklinks(path=HOP_QUICKLINKS, builtin=None) -> list[dict]:
             continue
         out.append({"name": row.get("name") or keyword, "keyword": keyword, "url": url.replace("{query}", "%s")})
     return out
+
+
+def _said_error(data):
+    """The error homebase's answer says, if it's an object that says one (it could be a list, or nothing)."""
+    return data.get("error") if isinstance(data, dict) else None
 
 
 # --- Homebase ----------------------------------------------------------------------------------------
@@ -244,9 +251,11 @@ class Homebase(QObject):
             reply.deleteLater()
             if done:
                 try:
-                    done(json.loads(data) if data else {}, None if ok else reply.errorString())
+                    answer = json.loads(data) if data else {}
                 except ValueError:
                     done(None, "homebase didn't answer with JSON")
+                    return
+                done(answer, None if ok else reply.errorString())  # (outside the try: its own errors are its own)
         reply.finished.connect(finished)
 
     def refresh(self):
@@ -285,7 +294,7 @@ class Homebase(QObject):
         """start / stop / restart an app."""
         def answered(data, error):
             if done:
-                done(error or (data or {}).get("error"))
+                done(error or _said_error(data))
             QTimer.singleShot(1500, self.refresh)
         self._request(f"/api/apps/{name}/{action}", "POST", done=answered)
 
@@ -298,7 +307,7 @@ class Homebase(QObject):
 
     def add_away_task(self, project, task, done):
         def answered(data, error):
-            done(error or (data or {}).get("error"))
+            done(error or _said_error(data))
         self._request("/api/away/tasks", "POST", {"project": project, "task": task}, done=answered)
 
     def logs(self, name, done):
@@ -348,8 +357,12 @@ class ParliamentBadge(QObject):
 
         def failed(_message):
             self._busy = False
-        self.browser.feature("live_folders").folders.read_in_page(profile, url, "document.body ? document.body.innerText : ''",
-                                               got, failed, settle_ms=100)
+        live = self.browser.feature("live_folders")
+        if live is None:
+            self._busy = False  # (no Live Folders to read it with: nothing to show, and nothing left waiting)
+            return
+        live.folders.read_in_page(profile, url, "document.body ? document.body.innerText : ''", got, failed,
+                                  settle_ms=100)
 
     def _show(self, count):
         badge = (str(count) if count < 100 else "99+") if count else None

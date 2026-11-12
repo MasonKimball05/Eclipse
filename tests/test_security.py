@@ -126,7 +126,7 @@ class _Folders:
     """LiveFolders' refresh, without a window: records which reader it reached."""
     def __init__(self):
         from browser.live_folders import LiveFolders
-        self._busy, self.reached, self.finished = set(), [], []
+        self._busy, self._tried, self._asked, self.reached, self.finished = set(), {}, {}, [], []
         self.refresh = LiveFolders.refresh.__get__(self)
         self._json = lambda folder, done: self.reached.append("json")
         self._repos = lambda root, done: self.reached.append("repos")

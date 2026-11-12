@@ -214,9 +214,9 @@ struct RowView: View {
 
     var body: some View {
         if let control, control.str("type") == "toggle", control.str("text").isEmpty {
-            ToggleControl(control: control) { label }
+            ToggleControl(control: control) { label }.id(control.controlId)  // (its own state: see ControlView)
         } else if let control, control.str("type") == "menu" {
-            MenuControl(control: control) { label }
+            MenuControl(control: control) { label }.id(control.controlId)
         } else if let control, ["group", "list", "textarea"].contains(control.str("type")),
                   control.str("axis") != "h" {
             VStack(alignment: .leading, spacing: 10) {  // (too big to sit beside the title: under it)
@@ -299,6 +299,9 @@ struct ControlView: View {
         content
             .disabled(!enabled)
             .help(control.str("tip"))
+            // Its own control's: rows are drawn by place, so a row added above would hand this one's state (text being
+            // typed, a switch just flipped) to the control that moved into its place, and send it with that one's id
+            .id(id)
     }
 
     @ViewBuilder var content: some View {
@@ -496,9 +499,52 @@ struct ListControl: View {
                     .background(RoundedRectangle(cornerRadius: 6).fill(row.flag("selected") ? AnyShapeStyle(.tint)
                                                                        : AnyShapeStyle(.clear)))
                     .contentShape(Rectangle())
-                    .onTapGesture(count: 2) { model.act("select_row", ["id": control.controlId, "value": index, "open": true]) }
-                    .onTapGesture { model.act("select_row", ["id": control.controlId, "value": index]) }
+                    .onTapGesture(count: 2) { open(index) }
+                    .onTapGesture { select(index) }
+                    // (VoiceOver: a row it can choose, and open)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(row.str("text"))
+                    .accessibilityAddTraits(row.flag("selected") ? [.isButton, .isSelected] : .isButton)
+                    .accessibilityAction { select(index) }
+                    .accessibilityAction(named: "Open") { open(index) }
             }
+        }
+        // The keyboard: Tab to the list, ↑ ↓ to choose a row, Return to open it (macOS 14 and later)
+        .focusable()
+        .modifier(ListKeys(step: { step($0) }, open: { if let at = selected { open(at) } }))
+        .accessibilityElement(children: .contain)
+    }
+
+    private var rows: [JSON] { control.list("rows") }
+    private var selected: Int? { rows.firstIndex { $0.flag("selected") } }
+
+    // (its words go too: the list can have changed since it was drawn, and Python finds the row by them then)
+    private func text(_ index: Int) -> String { rows.indices.contains(index) ? rows[index].str("text") : "" }
+    private func select(_ index: Int) {
+        model.act("select_row", ["id": control.controlId, "value": index, "text": text(index)])
+    }
+    private func open(_ index: Int) {
+        model.act("select_row", ["id": control.controlId, "value": index, "text": text(index), "open": true])
+    }
+
+    private func step(_ by: Int) {
+        guard !rows.isEmpty else { return }
+        select(Swift.min(Swift.max((selected ?? (by > 0 ? -1 : rows.count)) + by, 0), rows.count - 1))
+    }
+}
+
+private struct ListKeys: ViewModifier {
+    let step: (Int) -> Void
+    let open: () -> Void
+
+    func body(content: Content) -> some View {
+        if #available(macOS 14.0, *) {
+            content
+                .onKeyPress(.upArrow) { step(-1); return .handled }
+                .onKeyPress(.downArrow) { step(1); return .handled }
+                .onKeyPress(.return) { open(); return .handled }
+        } else {
+            content
         }
     }
 }
@@ -509,6 +555,7 @@ struct KeysControl: View {
     let control: JSON
     @State private var recording = false
     @State private var monitor: Any?
+    @State private var window: NSWindow?  // (the window it's recording in: keys typed in any other aren't its)
 
     static let named: [UInt16: String] = [
         123: "left", 124: "right", 125: "down", 126: "up", 36: "return", 76: "return", 48: "tab", 49: "space",
@@ -524,7 +571,13 @@ struct KeysControl: View {
 
     func start() {
         recording = true
+        window = NSApp.keyWindow
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            // Typed in another window (the browser's, ⌘T, say): that window's key, as ever, and recording stops
+            guard let window, event.window === window else {
+                stop()
+                return event
+            }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             let key = KeysControl.named[event.keyCode] ?? (event.charactersIgnoringModifiers ?? "").lowercased()
             if key == "escape" && flags.intersection([.command, .option, .control, .shift]).isEmpty {
@@ -543,5 +596,6 @@ struct KeysControl: View {
         recording = false
         if let monitor { NSEvent.removeMonitor(monitor) }
         monitor = nil
+        window = nil
     }
 }

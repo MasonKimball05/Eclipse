@@ -389,6 +389,11 @@ class SwipeNavigator(QObject):
         key = id(view)
         if phase == Qt.ScrollPhase.ScrollBegin:
             self._gliding.discard(key)
+            old = self._gestures.get(key)
+            if old is not None and old.slide is not None and not sip.isdeleted(old.slide):
+                # Its fingers-up never came (the page's renderer swapped mid-swipe, say): decided now, rather than
+                # its picture left over the page for good
+                self._release(view, old)
             self._settle_now(view)  # the last swipe, if it's still settling: done, before this one starts
             self._gestures[key] = _Gesture()
             return

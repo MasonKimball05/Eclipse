@@ -157,7 +157,20 @@ final class PageWindow: NSObject, NSWindowDelegate {
         }
         applyLook()
         window.delegate = self
-        window.center()
+        place()
+    }
+
+    /// On the screen you're using (the one with the browser window in front), not the first one: center() goes by
+    /// the window's own screen, and a window not yet anywhere is on the laptop's, so with the browser on a monitor
+    /// Settings, the Library and the rest opened on the other display. Never bigger than that screen, either.
+    private func place() {
+        guard let area = (NSScreen.main ?? window.screen)?.visibleFrame else { window.center(); return }
+        var frame = window.frame
+        frame.size.width = min(frame.width, area.width)
+        frame.size.height = min(frame.height, area.height)
+        frame.origin.x = area.midX - frame.width / 2
+        frame.origin.y = area.minY + (area.height - frame.height) * 2 / 3  // (a little above the middle, as center())
+        window.setFrame(frame, display: false)
     }
 
     func applyLook() {

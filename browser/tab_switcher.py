@@ -11,6 +11,7 @@ from PyQt6.QtCore import QEvent, QRectF, Qt, QTimer
 from PyQt6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPainterPath
 from PyQt6.QtWidgets import QApplication, QWidget
 
+from . import macos
 from .models import display_host
 from .sidebar import tab_icon
 
@@ -65,6 +66,11 @@ class TabSwitcher(QWidget):
             QApplication.instance().installEventFilter(self)
         self.index = (self.index + direction) % len(self.tabs)
         self.update()
+        macos.announce(self.said_text())  # (VoiceOver: the page keeps the keyboard, so it heard nothing)
+
+    def said_text(self) -> str:
+        tab = self.tabs[self.index]
+        return f"{tab.label}, {self.index % len(self.tabs) + 1} of {len(self.tabs)}"
 
     def _check_keys(self):
         if not QGuiApplication.queryKeyboardModifiers() & CONTROL:

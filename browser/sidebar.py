@@ -1686,6 +1686,9 @@ class ListFade(QWidget):
         painter.end()
 
 
+TOP_MARGIN = 9  # (the top row's room above it, until it lines up with the traffic lights)
+
+
 class Sidebar(QWidget):
     native = None  # (the Space part drawn by SwiftUI instead: sidebar_native.py, use_native)
 
@@ -1698,7 +1701,7 @@ class Sidebar(QWidget):
         self.setMaximumWidth(420)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 9, 4, 10)
+        layout.setContentsMargins(10, TOP_MARGIN, 4, 10)
         layout.setSpacing(8)
 
         # Top row: room for the macOS traffic lights, then the navigation buttons.
@@ -1918,6 +1921,15 @@ class Sidebar(QWidget):
     def align_with_traffic_lights(self, at: QPoint | None = None):
         """Center the top-row buttons on the traffic lights, just to their right (like Arc). `at`: where
         the sidebar will be in the window, if that isn't where it is yet (the hidden one, about to slide out)."""
+        window = self.window()
+        if window.isFullScreen() or getattr(window, "_fullscreen", False):
+            # (full screen: the lights are up in the menu bar, not beside the row; lined up with where they were,
+            # the row went to the bottom of the window)
+            margins = self.layout().contentsMargins()
+            self.layout().setContentsMargins(margins.left(), TOP_MARGIN, margins.right(), margins.bottom())
+            self._lights_gap.changeSize(0, 0, QSizePolicy.Policy.Fixed)  # (and no room left for them beside it)
+            self.layout().invalidate()
+            return
         lights = macos.traffic_lights(self)
         if lights is None:
             return

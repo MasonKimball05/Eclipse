@@ -116,3 +116,21 @@ def test_screen_choices_list_screens_then_windows():
                               windowsModel=lambda: Model(["Notes", None]))
     assert screen_choices(request) == [("screen:0", "Screen: Built-in Display"), ("window:0", "Window: Notes"),
                                        ("window:1", "Window: Window 2")]
+
+
+def test_a_settings_list_click_lands_on_the_row_clicked_even_if_the_list_changed(qapp):
+    """A Settings list (site permissions, say) changed between being drawn and the click: the click picked whatever
+    row was in that place now, and Remove then removed that one."""
+    from PyQt6.QtWidgets import QListWidget
+    from browser.settings_native import NativeSettings
+    widget = QListWidget()
+    widget.addItems(["a.example", "b.example", "c.example"])
+    opened = []
+    widget.itemDoubleClicked.connect(lambda item: opened.append(item.text()))
+    widget.insertItem(0, "new.example")  # (arrived after the list was drawn)
+    NativeSettings._do(None, widget, "select_row", {"value": 1, "text": "c.example"})
+    assert widget.currentItem().text() == "c.example"
+    NativeSettings._do(None, widget, "select_row", {"value": 0, "text": "a.example", "open": True})
+    assert opened == ["a.example"]
+    NativeSettings._do(None, widget, "select_row", {"value": 2, "text": "gone.example"})
+    assert widget.currentItem().text() == "a.example"  # (it's gone: nothing chosen in its place)

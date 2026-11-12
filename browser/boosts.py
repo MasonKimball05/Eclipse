@@ -67,6 +67,7 @@ class Boost:
 # hides that element and reports a CSS selector for it back to the browser.
 ZAP_SCRIPT = r"""
 (() => {
+  window.__pbZapToken = '__TOKEN__';  // (started again while running: the new go's token, the same picker)
   if (window.__pbZap) return;
   window.__pbZap = true;
   const box = document.createElement('div');
@@ -100,7 +101,7 @@ ZAP_SCRIPT = r"""
     e.preventDefault(); e.stopPropagation();
     const sel = selector(e.target);
     e.target.style.setProperty('display', 'none', 'important');
-    console.log('ECLIPSE_ZAP:' + '__TOKEN__' + sel);
+    console.log('ECLIPSE_ZAP:' + window.__pbZapToken + sel);
   };
   const stop = (e) => {
     if (e.key !== 'Escape') return;
@@ -108,7 +109,7 @@ ZAP_SCRIPT = r"""
     document.removeEventListener('click', click, true);
     document.removeEventListener('keydown', stop, true);
     box.remove(); banner.remove(); window.__pbZap = false;
-    console.log('ECLIPSE_ZAP_DONE' + '__TOKEN__');
+    console.log('ECLIPSE_ZAP_DONE' + window.__pbZapToken);
   };
   document.addEventListener('mousemove', move, true);
   document.addEventListener('click', click, true);
@@ -166,6 +167,8 @@ class BoostManager(QObject):
         for boost in self.boosts:
             if boost.enabled:
                 scripts.insert(self._script(boost))
+                if boost.js.strip():
+                    scripts.insert(self._js_script(boost))
 
     @staticmethod
     def _script(boost: Boost) -> QWebEngineScript:
@@ -180,15 +183,49 @@ class BoostManager(QObject):
           const style = document.createElement('style');
           style.dataset.boost = {json.dumps(boost.id)};
           style.textContent = {json.dumps(css)};
-          const add = () => (document.head || document.documentElement).appendChild(style);
+          const add = () => {{
+            (document.head || document.documentElement).appendChild(style);
+            // A site that allows no inline styles (its Content Security Policy) leaves that empty: a constructed
+            // style sheet, which it can't refuse, instead
+            if (style.textContent.trim() && !(style.sheet && style.sheet.cssRules.length)) {{
+              try {{
+                const sheet = new CSSStyleSheet();
+                sheet.replaceSync(style.textContent);
+                document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+              }} catch (e) {{ console.error('Boost error:', e); }}
+            }}
+          }};
           document.documentElement ? add() : document.addEventListener('DOMContentLoaded', add);
-          // new Function() keeps a syntax error in your JS from also breaking the CSS above
-          const run = () => {{ try {{ new Function({json.dumps(boost.js)})(); }} catch (e) {{ console.error('Boost error:', e); }} }};
-          document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', run) : run();
         }})();
         """
         script = QWebEngineScript()
         script.setName(SCRIPT_PREFIX + boost.id)
+        script.setSourceCode(source)
+        script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+        script.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
+        script.setRunsOnSubFrames(False)
+        return script
+
+
+    @staticmethod
+    def _js_script(boost: Boost) -> QWebEngineScript:
+        """The Boost's JavaScript, a script of its own: a syntax error in it doesn't stop the CSS. Put into the page as
+        it is, not run with eval (new Function), which a site's Content Security Policy can forbid: GitHub's does."""
+        source = f"""
+        (() => {{
+          const site = location.hostname.replace(/^www\\./, '');
+          const target = {json.dumps(boost.site)};
+          if (site !== target && !site.endsWith('.' + target)) return;
+          const run = () => {{
+            try {{
+{boost.js}
+            }} catch (e) {{ console.error('Boost error:', e); }}
+          }};
+          document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', run) : run();
+        }})();
+        """
+        script = QWebEngineScript()
+        script.setName(SCRIPT_PREFIX + boost.id + "-js")
         script.setSourceCode(source)
         script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
         script.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
@@ -315,8 +352,15 @@ class BoostsFeature(Feature):
         self.boosts.attach(profile)
 
     def url_changed(self, tab, url):
-        if tab is self.zap_tab:
+        if tab is self.zap_tab and not self._same_page(tab):
             self.zap_tab = None  # navigating away ends Zap (the new page has no picker)
+
+    @staticmethod
+    def _same_page(tab) -> bool:
+        """The address changed without leaving the page (a #section, or the page setting it as you scroll): the
+        picker's still there."""
+        view = tab.view
+        return view is not None and not view.page().isLoading()
 
     def view_destroyed(self, tab):
         if tab is self.zap_tab:

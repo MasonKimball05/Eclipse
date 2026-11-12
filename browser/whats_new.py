@@ -11,11 +11,27 @@ from .shortcuts import for_here
 from .motion import FadesIn
 from .theme import quiet_scrollbars, stylesheet
 
-EDITION = 29
+EDITION = 30
 SETTING = "whats_new_seen"
 
 NOTES = """
 ## This week
+
+- **Edit a Live Folder**: right-click one and choose Edit Live Folder… to change what it follows, its name, how
+  often it refreshes (every 5 minutes to every 4 hours) and how many items it shows (10 to 100).
+- **Pages get their own shortcuts**: a web app's keys work as it means them, as in Chrome: ⌘S saves in Google
+  Docs, ⌘K searches in Slack or Notion. Keys like ⌘T, ⌘W, ⌘L and switching tabs are always Eclipse's.
+- **Private and Little windows keep their keys**: a menu shortcut there works in that window, not on the main
+  window behind it.
+- **More from the keyboard and VoiceOver**: ⌥⇧⌘A goes to a card a page put up (a permission, say) or a toast's
+  Undo; the mini player has a View › Mini Player menu; theme colors move with the arrow keys or open the color
+  panel; Settings lists work with the arrows; and VoiceOver says the cards, toasts and the highlighted row in the
+  command bar and ⌃Tab.
+- **Better in full screen and on a second display**: the sidebar's buttons stay at the top in full screen; leaving
+  a full-screen video puts the window back as it was; Settings and the Library open on the screen you're using; and
+  the mini player follows you to every desktop.
+
+## Lately
 
 - **Drag tabs in the sidebar**: rearranging tabs by dragging them works again, and feels like Arc's. The tabs part
   to make room where yours will go, a closed folder opens when you hold a tab over it, and you can drag a tab out
@@ -35,8 +51,6 @@ NOTES = """
 - **Fixes all over**: sync keeps pinned notes and sketches, and Keep Both keeps both Macs' Favorites; backups
   include your saved addresses; ⌘Q quits with a Little window open; Clear Cookies & Site Data clears sites'
   stored data too; updating a saved password no longer adds a second one; and many smaller fixes.
-
-## Lately
 
 - **Opens again**: Eclipse 26.1.3.0 and 26.1.3.1 quit as soon as they were opened, so they couldn't update
   themselves either. If yours won't open, download this version from the releases page and drag it over the old
