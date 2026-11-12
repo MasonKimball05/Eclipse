@@ -52,3 +52,27 @@ def test_a_cancelled_video_download_leaves_nothing_of_its_own_behind(tmp_path):
     found = leftovers([str(video), str(audio), str(final)])
     assert sorted(found) == sorted(made)
     assert all(p.exists() for p in yours)  # (its finished file, and anything else there, is left alone)
+
+
+def test_a_tar_archive_keeps_its_whole_extension(tmp_path):
+    """Only ".gz" was kept: "project-1.2.tar.gz" became "Project Source Archive.gz", which unpacked to a file
+    with no extension where it was a folder."""
+    from browser.tidy_downloads import new_path
+    archive = tmp_path / "project-1.2.tar.gz"
+    archive.write_text("x")
+    assert new_path(archive, "Project Source Archive").name == "Project Source Archive.tar.gz"
+    assert new_path(archive, "Project Source Archive.tar.gz").name == "Project Source Archive.tar.gz"
+    plain = tmp_path / "scan 3.pdf"
+    plain.write_text("x")
+    assert new_path(plain, "Lease Agreement").name == "Lease Agreement.pdf"
+
+
+def test_a_big_pdf_isnt_read_for_its_name(tmp_path, monkeypatch):
+    """Read as it finished, on the window's own thread: a big or scanned PDF froze the window while it loaded."""
+    from browser import tidy_downloads
+    big = tmp_path / "scan.pdf"
+    big.write_bytes(b"%PDF-1.4\n" + b"0" * 64)
+    monkeypatch.setattr(tidy_downloads, "MAX_PDF_BYTES", 32)
+    loaded = []
+    monkeypatch.setattr(tidy_downloads, "QPdfDocument", lambda parent: loaded.append(1))
+    assert tidy_downloads.excerpt(big) == "" and not loaded

@@ -16,9 +16,14 @@ TRACKING = {
     "fbclid", "gclid", "gclsrc", "dclid", "gbraid", "wbraid", "msclkid", "yclid", "twclid", "ttclid",
     "igshid", "igsh", "mc_cid", "mc_eid", "mkt_tok", "_hsenc", "_hsmi", "__hssc", "__hstc", "__hsfp",
     "hsctatracking", "oly_anon_id", "oly_enc_id", "vero_id", "vero_conv", "_openstat", "rb_clickid",
-    "s_kwcid", "ef_id", "srsltid", "ref_src", "ref_url", "wt_mc", "wt.mc_id", "spm",
+    "s_kwcid", "ef_id", "srsltid", "ref_src", "wt_mc", "wt.mc_id", "spm",
+    # Google Ads and Analytics' cross-site tag, LinkedIn's, Facebook's shares, Klaviyo's, Pinterest's, Impact's
+    "gad_source", "gad_campaignid", "_gl", "li_fat_id", "mibextid", "_kx", "epik", "irclickid",
+    # Matomo's, by name: as "pk_", a site's own "?pk__in=1,2" (a list filtered by id) went too
+    "pk_campaign", "pk_kwd", "pk_keyword", "pk_source", "pk_medium", "pk_content", "pk_cid", "pk_vid",
 }
-TRACKING_PREFIXES = ("utm_", "pk_", "mtm_", "hsa_")
+# (not "ref_url": some sites send you back there after you sign in)
+TRACKING_PREFIXES = ("utm_", "mtm_", "hsa_")
 # Names that are tracking tags only on these sites
 SITE_TRACKING = {
     "youtube.com": {"si", "pp"}, "youtu.be": {"si"}, "music.youtube.com": {"si"},

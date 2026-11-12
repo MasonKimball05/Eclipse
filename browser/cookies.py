@@ -59,7 +59,8 @@ SOURCE = r"""
   let clicks = 0;
   const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0 &&
     getComputedStyle(el).visibility !== 'hidden'; };
-  const label = (el) => (el.innerText || el.value || el.getAttribute('aria-label') || '')
+  // (textContent, not innerText: that lays the page out again for every button and link it's asked of)
+  const label = (el) => (el.textContent || el.value || el.getAttribute('aria-label') || '')
     .toLowerCase().replace(/[’']/g, '').replace(/[^\p{L}\p{N} ]+/gu, ' ').replace(/\s+/g, ' ').trim();
   const safe = (el) => {
     if (el.tagName !== 'A') return true;
@@ -103,9 +104,16 @@ SOURCE = r"""
     let tries = 0;
     const tick = () => { if (!attempt() && ++tries < 30) setTimeout(tick, tries < 10 ? 500 : 1500); };
     tick();
-    // A banner that shows up later (after scrolling, say) still gets answered
-    new MutationObserver(() => { if (clicks < 3) { clearTimeout(window.__pbCookiesLater);
-      window.__pbCookiesLater = setTimeout(attempt, 300); } }).observe(document.documentElement, {childList: true, subtree: true});
+    // A banner that shows up later (after scrolling, say) still gets answered: for the first two minutes. Watched
+    // for good, a busy page with none (a feed, a dashboard, ads turning over) had every button and link read again
+    // after each change, in every frame, for as long as it was open
+    const watch = new MutationObserver(() => {
+      if (clicks >= 3) { watch.disconnect(); return; }
+      clearTimeout(window.__pbCookiesLater);
+      window.__pbCookiesLater = setTimeout(attempt, 300);
+    });
+    watch.observe(document.documentElement, {childList: true, subtree: true});
+    setTimeout(() => watch.disconnect(), 120000);
   };
   document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', start) : start();
 })();

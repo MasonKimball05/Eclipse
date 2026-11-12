@@ -375,3 +375,28 @@ def test_undoing_a_clear_doesnt_bring_back_a_tab_reopened_since(store):
     store.add_tab(Tab("https://a.com"))  # (a reopened from the archive: a new tab for it)
     store.restore_today(space, shape)
     assert sorted(t.url for t in walk_tabs(space.today)) == ["https://a.com", "https://b.com"]
+
+
+def test_history_is_kept_in_a_file_of_its_own_saved_less_often(store):
+    """In the session file, the whole history (most of a couple of MB) was written again after every page and every
+    title change. A session saved as a title changes no longer carries it; history goes to its own file."""
+    import json
+    store.record_history("https://a.example/", "A")
+    store.save()
+    assert "history" not in json.loads(store.path.read_text())
+    assert store._history_timer.isActive()  # (its own, slower save)
+    store.flush()
+    assert [h["url"] for h in json.loads(store.history_path.read_text())["history"]] == ["https://a.example/"]
+    again = Store(store.path)
+    assert [h["url"] for h in again.history] == ["https://a.example/"]
+
+
+def test_history_from_before_comes_over_from_the_session_file(store):
+    import json
+    store.path.write_text(json.dumps({"spaces": [], "history": [{"url": "https://old.example/", "title": "Old",
+                                                                   "ts": 1.0, "visits": 1}]}))
+    store.history_path.unlink(missing_ok=True)
+    moved = Store(store.path)
+    assert [h["url"] for h in moved.history] == ["https://old.example/"]
+    moved.flush()
+    assert json.loads(moved.history_path.read_text())["history"][0]["url"] == "https://old.example/"

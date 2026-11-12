@@ -68,6 +68,7 @@ class PeekOverlay(QWidget):
         btn.setObjectName("IconButton")
         btn.setProperty("icon_name", icon)
         btn.setToolTip(tip)
+        btn.setAccessibleName(tip)  # (an icon alone says nothing to VoiceOver)
         btn.setIconSize(QSize(15, 15))
         btn.setFixedSize(26, 26)
         btn.clicked.connect(slot)

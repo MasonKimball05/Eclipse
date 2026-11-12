@@ -95,6 +95,9 @@ def _delete(obj):
         sip.delete(obj)
 
 
+MRU_KEPT = 300  # (tabs remembered in the order you last used them, for ⌃Tab)
+
+
 class MainWindow(QMainWindow):
     PAGE_MIN = PAGE_MIN  # (for features laying things out beside the page: the web panel)
 
@@ -772,6 +775,18 @@ class MainWindow(QMainWindow):
         self.emit("audible_changed", tab)
 
     def _on_url(self, tab, url):
+        if self.reader.is_open_for(tab) and \
+                url.adjusted(QUrl.UrlFormattingOption.RemoveFragment) != getattr(self.reader, "page_url", None):
+            # The page under it went somewhere else (back, a redirect, a link in it): left up, Reader went on showing
+            # the article from before over it. (Not a #section of the same page)
+            self.reader.close_reader()
+        blocked = getattr(tab.view.page(), "eclipse_blocked", None) if isinstance(tab.view, QWebEngineView) else None
+        if blocked and url.scheme() in ("data", "about", ""):
+            # Space Rules' blocked page, drawn in its place: the tab keeps where it was going (saved as the page's own
+            # address, it was lost, Open Anyway the only thing that still had it)
+            url = QUrl(blocked)
+        elif blocked:
+            tab.view.page().eclipse_blocked = None
         tab.url = url.toString()
         tab.changed.emit()
         if tab is self.current_tab:
@@ -856,6 +871,7 @@ class MainWindow(QMainWindow):
         if tab is self.current_tab:
             self.content.set_progress(100)
             self.sidebar.update_nav()
+        self.mini_player.page_loaded(tab)  # (a floated tab that went to a new page: its video again, or back)
         self.emit("load_finished", tab, ok)
 
     def handle_new_window(self, source_tab, request, profile=None):
@@ -918,6 +934,12 @@ class MainWindow(QMainWindow):
     def _on_fullscreen(self, request, view=None):
         if request.toggleOn() and view is not None and not view.isVisible():
             request.reject()  # (only the page you're looking at: one in the background can't take over the screen)
+            return
+        floated = self.mini_player.tab
+        if request.toggleOn() and view is not None and floated is not None and view is floated.view:
+            # (the mini player's video, double-clicked: accepted, this window went full screen, showing another tab,
+            # its sidebar gone, and the video stayed small in its corner)
+            request.reject()
             return
         request.accept()
         self._fullscreen_view = view if request.toggleOn() else None
@@ -988,6 +1010,9 @@ class MainWindow(QMainWindow):
                                        f"from {host} anyway?\n\nOnly download it if you trust where it came from.",
                                        action="Download")
         now, key = time.monotonic(), id(page)
+        # (the pages done with let go: kept, the table grew with every page that downloaded, and a new page given
+        # an old one's number was taken for it)
+        self._recent_downloads = {k: v for k, v in self._recent_downloads.items() if v and now - v[-1] < 8}
         recent = [t for t in self._recent_downloads.get(key, []) if now - t < 8]
         self._recent_downloads[key] = recent + [now]
         if recent:
@@ -1189,6 +1214,10 @@ class MainWindow(QMainWindow):
         for window in self.private.windows:  # (private windows' tabs, and Little windows' pages, too)
             views += list(getattr(window, "views", []))
         views += [getattr(window, "view", None) for window in self._extra_windows]
+        # (and the web panel's sites and a Peek: left out, they kept the old look till they next loaded a page)
+        panel = getattr(self.feature("web_panel"), "panel", None) if self.feature("web_panel") else None
+        views += [site.view for site in getattr(panel, "sites", [])]
+        views.append(getattr(self.peek, "view", None))
         for view in views:
             if isinstance(view, QWebEngineView) and not sip.isdeleted(view):
                 dark_pages.apply(view.page(), self.store.settings)
@@ -1328,8 +1357,13 @@ class MainWindow(QMainWindow):
         if tab.id in self._mru:
             self._mru.remove(tab.id)
         self._mru.insert(0, tab.id)
+        del self._mru[MRU_KEPT:]  # (every tab ever looked at, closed or not, otherwise)
 
         split = self.store.split_of(tab)
+        if split and not all(any(t is v for v in self.store.visible_tabs()) for t in split):
+            # A Favorite's split made in another Space: shown here, that Space's tab came along beside it, and
+            # clicking into it took the window back there. Here, the Favorite alone
+            split = None
         for shown in split or [tab]:
             self.mini_player.release(shown)  # a split partner floating in the mini player comes back too
             self._wake(shown)
@@ -1464,6 +1498,15 @@ class MainWindow(QMainWindow):
         if not self._closed:
             return
         data, space_id = self._closed.pop(index)
+        url = data.get("url") or ""
+        if url.startswith(("note:", "easel:")):
+            # Open in a tab already (from the Library, since): that one, never a second editor on the same file,
+            # where the one saved last wrote over the other's changes
+            already = next((t for t in self.store.all_tabs() if t.url == url), None)
+            if already is not None:
+                if activate:
+                    self.activate_tab(already)
+                return
         tab = Tab.from_dict(data)
         space = self.store.space(space_id) or self.store.active_space
         self.store.add_tab(tab, TODAY, space, 0)
@@ -1514,6 +1557,8 @@ class MainWindow(QMainWindow):
         self.store.move_tab(node, kind, None if kind == FAVORITES else self.store.active_space, index, folder)
         if isinstance(node, Tab) and loc and loc[0] == TODAY and kind == PINNED:
             self.emit("tab_pinned", node)
+        for tab in [node] if isinstance(node, Tab) else list(walk_tabs(node.children)):
+            self._profile_follows(tab)
 
     def move_tabs(self, tabs, kind, index=None, folder=None):
         """Several picked tabs dropped together: in their order, where the drop line was."""
@@ -1547,11 +1592,12 @@ class MainWindow(QMainWindow):
         section.set_tabs(space.pinned if kind == PINNED else space.today, refresh=False)
         self.sidebar.update_selection()
 
-    def new_folder(self, tab=None):
+    def new_folder(self, tab=None, space=None):
+        """A new folder in Pinned: of `space` (the one whose menu it was asked from), or the one you're in."""
         def named(name):
             if not name.strip():
                 return
-            folder = self.store.add_folder(self.store.active_space, name.strip())
+            folder = self.store.add_folder(space or self.store.active_space, name.strip())
             if tab is not None and self.store.locate(tab):
                 self.move_tab(tab, PINNED, None, folder)
         prompts.ask_text(self, "New Folder", "Folder name:", named, action="Create")
@@ -1642,6 +1688,10 @@ class MainWindow(QMainWindow):
         if not loc:
             return
         space = self.store.active_space
+        if loc[0] == FAVORITES:
+            # (not a pinned tab: taken for one, ⌃D put it in Today, its name and home page gone, archived in a day)
+            self.toast("Favorites stay put: remove it from Favorites to move it")
+            return
         if loc[0] == TODAY:
             self.store.move_tab(tab, PINNED, loc[1], len(loc[1].pinned))
             self.toast("Pinned")
@@ -1659,6 +1709,21 @@ class MainWindow(QMainWindow):
             self.store.move_tab(tab, PINNED, self.store.active_space)
         else:
             self.store.move_tab(tab, FAVORITES)
+        self._profile_follows(tab)
+
+    def _profile_follows(self, tab):
+        """A tab moved somewhere with another profile (into Favorites, which use the default one, or out of them
+        into a Space with its own): its page made again there. Kept, it went on with the other profile's logins,
+        a work account showing in every Space, until it happened to reload."""
+        view = tab.view
+        if not isinstance(view, QWebEngineView) or view.page().profile() is self.profile_for_tab(tab):
+            return
+        if view.page().profile().isOffTheRecord():
+            return  # (a private window's: never moved by these)
+        current = tab is self.current_tab
+        self._destroy_view(tab)
+        if current:
+            self.activate_tab(tab)
 
     def move_to_space(self, tab, space):
         located = self.store.locate(tab)
@@ -1706,6 +1771,7 @@ class MainWindow(QMainWindow):
         current = self.current_tab
         archived = []
         for tab in tabs:
+            self.store.remove_from_split(tab)  # (left in it, a gone tab took one of its four places)
             self._remove_view(tab)
             entry = self.store.archive_tab(tab, space)
             if entry is not None:  # (exactly these: an empty tab adds none, so a count would take older ones)
@@ -1736,6 +1802,7 @@ class MainWindow(QMainWindow):
                                                                 and t.view.page().recentlyAudible())]
         stale = self.store.stale_today_tabs(exclude=[*on_screen, *busy])
         for tab, space in stale:
+            self.store.remove_from_split(tab)  # (left in it, a gone tab took one of its four places)
             self._remove_view(tab)
             self.store.archive_tab(tab, space)
         if stale:
@@ -2060,7 +2127,8 @@ class MainWindow(QMainWindow):
     def open_external(self, url):
         """A link clicked in another app (or passed on the command line). Like Arc, it opens in a
         Little window by default; promote it with ⌘O if you want to keep it."""
-        space = self.store.space(route(self.store.settings.get("air_traffic", []), url)) if url else None
+        space = self.store.space(route(self.store.settings.get("air_traffic", []), url,
+                                       {s.id for s in self.store.spaces})) if url else None
         if not url:
             self.bring_to_front()
         elif space is not None:  # Air Traffic Control sends it to a particular Space
@@ -2301,6 +2369,10 @@ class MainWindow(QMainWindow):
         """Background pages that could be let go: never the current tab, visible split panes, a tab you asked to
         keep awake, or one playing audio, on a call, or allowed to notify you (asleep, it couldn't)."""
         keep_awake = self.store.split_of(self.current_tab) or [self.current_tab] if self.current_tab else []
+        # (and the one the Now Playing card plays, paused: frozen or asleep, the card's Play did nothing)
+        playing = getattr(getattr(self.feature("now_playing"), "player", None), "tab", None)
+        if playing is not None:
+            keep_awake = [*keep_awake, playing]
         for tab in self.store.all_tabs():
             view = tab.view
             if not isinstance(view, QWebEngineView) or any(tab is t for t in keep_awake) or view.isVisible():
@@ -2425,8 +2497,9 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, f"Back Up {brand.NAME}", f"{folder}/{name}", "Backups (*.zip)")
         if not path:
             return
-        # Everything on disk first: the session, open notes, extensions' storage
+        # Everything on disk first: the session (and history), open notes, extensions' storage
         self.store.save()
+        self.store.save_history()
         for tab in self.store.all_tabs():
             _save_editor(tab.view)
         self.emit("before_backup")  # (extensions' storage, say)
@@ -2486,7 +2559,13 @@ class MainWindow(QMainWindow):
         if isinstance(leaving and leaving.view, QWebEngineView) and leaving.view.isVisible():
             picture = leaving.view.grab()
             self._left_picture = (leaving.id, picture)
-        tab = self.store.find_tab(self.store.active_space.active_tab_id)
+        space = self.store.active_space
+        tab = self.store.find_tab(space.active_tab_id)
+        if space.active_tab_id and tab not in self.store.visible_tabs():
+            # Its tab's gone from it (moved to another Space, say): the one used last that's still here, not the empty
+            # start page
+            own = {t.id: t for t in list(walk_tabs(space.pinned)) + list(walk_tabs(space.today))}
+            tab = next((own[i] for i in self._mru if i in own), None)
         if tab in self.store.visible_tabs():
             self.activate_tab(tab)
             if picture is not None and tab is not leaving:
@@ -2696,6 +2775,18 @@ class MainWindow(QMainWindow):
         menu.addMenu(sub)
         return sub
 
+    def restore_archived(self, entry):
+        """An archived tab back: in Today of the Space it was archived from (or this one, if that's gone), and out of
+        the archive. Opened as a new tab in whatever Space you were in, it stayed in the archive (a second click made
+        a second tab), in a Space with another profile, maybe."""
+        space = self.store.space(entry.get("space_id")) or self.store.active_space
+        tab = Tab(entry["url"], entry.get("title") or "")
+        self.store.archive = [a for a in self.store.archive if a != entry]
+        self.store.add_tab(tab, TODAY, space, 0)
+        if space is not self.store.active_space:
+            self.switch_space(space)
+        self.activate_tab(tab)
+
     def show_archive_menu(self, pos):
         menu = self._menu()
         header = menu.addAction("Archived Tabs")
@@ -2703,7 +2794,7 @@ class MainWindow(QMainWindow):
         for entry in self.store.archive[:15]:
             title = entry["title"] if len(entry["title"]) < 48 else entry["title"][:47] + "…"
             menu.addAction(storage.favicon(entry["url"]) or dot_icon(self.theme.accent.name()), title,
-                           lambda url=entry["url"]: self.open_url(url))
+                           lambda e=entry: self.restore_archived(e))
         if not self.store.archive:
             empty = menu.addAction("Nothing archived yet")
             empty.setEnabled(False)
@@ -3027,6 +3118,7 @@ class MainWindow(QMainWindow):
             self._note_scroll(tab)
         self.store.window_geometry = bytes(self.saveGeometry().toBase64()).decode()
         self.store.save()
+        self.store.save_history()
         # The red button (a close from the window system, not from quitting): on a Mac, Eclipse stays open, in
         # the Dock and the menu bar, and the window comes back from the Dock as you left it
         if event.spontaneous() and self.keeps_running():

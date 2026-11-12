@@ -229,3 +229,19 @@ def test_arcs_live_folders_imported_plain_are_offered_live_once(fake_arc, store,
     plain.live = None
     feature.ready()
     assert len(asked) == 1
+
+
+def test_importing_from_arc_again_keeps_your_own_empty_spaces_and_today_tabs(fake_arc, store):
+    """Every import dropped empty Spaces (one you'd just made went too), and a Space imported again was replaced
+    whole, its Today tabs gone."""
+    from browser.models import Tab
+    store.is_new = False
+    arc_import.apply(store, arc_import.read_arc())
+    mine = store.add_space("Made since", "#22aa66")  # (empty, and yours)
+    imported = next(s for s in store.spaces if s.id.startswith("arc-"))
+    kept = Tab("https://reading.example/", "Reading")
+    store.add_tab(kept, space=imported)
+    arc_import.apply(store, arc_import.read_arc())  # (imported again)
+    assert mine in store.spaces
+    again = store.space(imported.id)
+    assert any(t.url == "https://reading.example/" for t in again.today)

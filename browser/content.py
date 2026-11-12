@@ -89,9 +89,9 @@ class FindBar(QFrame):
         self.count = QLabel("")
         self.ask_hint = QLabel("↩ Ask Claude")
         self.ask_hint.hide()
-        self.prev_btn = self._button("ph.caret-up", lambda: self.find(backward=True))
-        self.next_btn = self._button("ph.caret-down", lambda: self.find())
-        self.close_btn = self._button("ph.x", self.close_bar)
+        self.prev_btn = self._button("ph.caret-up", lambda: self.find(backward=True), "Previous Match")
+        self.next_btn = self._button("ph.caret-down", lambda: self.find(), "Next Match")
+        self.close_btn = self._button("ph.x", self.close_bar, "Close Find")
         row.addWidget(self.input, 1)
         row.addWidget(self.ask_hint)
         row.addWidget(self.count)
@@ -102,8 +102,11 @@ class FindBar(QFrame):
         outer.addWidget(self.answer)
         self.hide()
 
-    def _button(self, icon, slot):
+    def _button(self, icon, slot, name=""):
         btn = QToolButton()
+        # (an icon alone says nothing to VoiceOver: "button, button, button")
+        btn.setAccessibleName(name)
+        btn.setToolTip(name)
         btn.setObjectName("IconButton")
         btn.setFixedSize(24, 24)
         btn.setProperty("icon_name", icon)
@@ -132,6 +135,10 @@ class FindBar(QFrame):
         self._cancel()
         self.browser.find_in_page("")
         self._closing = True
+        # (the page has the keys again: left in the bar sliding away, Space or the arrows searched again, and after,
+        # wherever Qt put the focus)
+        self.input.clearFocus()
+        self.browser.focus_current()
 
         def gone():
             if self._closing:

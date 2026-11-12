@@ -15,6 +15,7 @@
 import hashlib
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -92,6 +93,32 @@ def _without_titles(data):
     if isinstance(data, dict):
         return {k: _without_titles(v) for k, v in data.items() if not (k == "title" and "url" in data)}
     return data
+
+
+def machine_id() -> str | None:
+    """This Mac's own hardware id (None where it can't be had)."""
+    if sys.platform != "darwin":
+        return None
+    try:
+        out = subprocess.run(["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"], capture_output=True, text=True,
+                             timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    found = re.search(r'"IOPlatformUUID" = "([^"]+)"', out)
+    return found.group(1) if found else None
+
+
+def own_state(state: dict, machine: str | None) -> dict:
+    """The sync state, as this Mac's. Brought over from another (Migration Assistant, a copied data folder), it had
+    that Mac's device id: both wrote the same file, each skipped it as its own, and they never merged. A new id
+    here, keeping what it knows of the items (started over, everything here would count as just changed, and win
+    over the other Mac's newer changes)."""
+    if machine is None:
+        return state
+    if state.get("machine") not in (None, machine):
+        state["device"] = new_id()
+    state["machine"] = machine
+    return state
 
 
 def new_state() -> dict:
@@ -272,7 +299,7 @@ class Sync(QObject):
         super().__init__(window)
         self.window = window
         self.store = window.store
-        self.state = storage.read_json(self._state_path()) or new_state()
+        self.state = own_state(storage.read_json(self._state_path()) or new_state(), machine_id())
         self.last = None  # (when it last synced, and with which devices)
         self.devices: list[str] = []
         self._backed_up = False

@@ -75,7 +75,20 @@ _waiting: list = []  # [(parent, ask)]
 
 def _busy() -> bool:
     from . import forms
+    # An alert whose window has gone (closed, or put away) is in nobody's way: if its sheet never said it closed
+    # (whether macOS says so then isn't sure), every question after it waited, unasked, till Eclipse was restarted
+    _open.difference_update([page for page in _open if page.id and not _still_up(page)])
     return forms.answering() or any(page.id for page in _open)
+
+
+def _still_up(page) -> bool:
+    top = getattr(page, "asked_from", None)
+    if top is None:
+        return True
+    if sip.isdeleted(top):
+        return False
+    mirror = getattr(top, "native_page", None)
+    return top.isVisible() or (mirror is not None and mirror.is_open())
 
 
 def run_waiting():
@@ -112,6 +125,7 @@ def _alert(parent, spec: dict, on_button) -> "native.NativePage | None":
     page = native.NativePage(spec)
     if not page.id:
         return None  # (the window has a sheet up already, say: Qt's asks instead)
+    page.asked_from = parent.window()  # (where its sheet is: gone, it's in nobody's way, _busy)
     _open.add(page)
     page.action.connect(lambda name, event: on_button(event.get("index", -1), event.get("text", ""))
                         if name == "button" else None)

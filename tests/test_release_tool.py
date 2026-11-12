@@ -175,3 +175,30 @@ def test_a_rehearsal_puts_the_release_together_and_opens_it_without_signing_or_p
     assert "assemble(" in inspect.getsource(release.release)  # (the real one checks the same, then signs)
     # Signed for this Mac only: no Apple timestamp, no team to check
     assert release.LAUNCH_SECONDS >= 10
+
+
+def test_only_a_commit_on_main_on_github_can_be_published(monkeypatch):
+    """Any pushed branch would do: a feature branch published became every copy's update."""
+    import subprocess
+    release = _release()
+    monkeypatch.setattr(release, "git", lambda *args: "abc123" if args[0] == "rev-parse" else "")
+    monkeypatch.setattr(release.subprocess, "run", lambda args, **k: subprocess.CompletedProcess(args, 1))
+    assert "main" in (release.publishable() or "")
+    monkeypatch.setattr(release.subprocess, "run", lambda args, **k: subprocess.CompletedProcess(args, 0))
+    assert release.publishable() is None
+
+
+def test_the_release_opens_signed_as_it_ships_and_publishes_only_what_it_was_built_from():
+    """The only launch check was on this Mac's own signature, which the hardened runtime's rules don't apply to; and
+    the commit was read at the end, after several minutes of notarizing, whatever had changed since."""
+    import inspect
+    release = _release()
+    flow = inspect.getsource(release.release)
+    assert flow.index("sign_all(app, identity)") < flow.index("check_launches(app)") < flow.index("notarize(")
+    assert flow.index("head = git(") < flow.index("assemble(")
+    publishing = flow[flow.index("if publishing:\n        #"):]
+    assert "publishable()" in publishing and "BUILT_FROM" in publishing and "publish(archive, build, version, dmg, head)" in publishing
+    assert "BUILT_FROM" in inspect.getsource(release.publish_built)
+    assert "built_from_here()" in inspect.getsource(release.assemble)
+    # (and what the app says, written to a file: into a pipe nothing read, a chatty app stopped, and looked open)
+    assert "subprocess.PIPE" not in inspect.getsource(release.check_launches)

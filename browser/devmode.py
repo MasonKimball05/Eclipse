@@ -36,7 +36,13 @@ def is_dev_url(url: str) -> bool:
     """A page you're working on: a local server, a .test/.localhost name, or a file."""
     q = QUrl(url)
     if q.scheme() == "file":
-        return True
+        # Not Eclipse's own (Browse for Me's answers, in its data folder): taken for yours, each answer tab watched
+        # the answers' folder, and the next answer written reloaded them all, back to the top
+        from . import storage
+        try:
+            return not Path(q.toLocalFile()).resolve().is_relative_to(storage.data_dir().resolve())
+        except (OSError, ValueError):
+            return True
     if q.scheme() not in ("http", "https"):
         return False
     host = q.host().lower()
@@ -231,6 +237,12 @@ class DevMode(QObject):
                                                              self._release(key)))
 
     def _url_changed(self, view, url):
+        # Still the same place (an app changing its address as you go, a #section): its watcher stays. Stopped and
+        # started again each time, a fresh one walked the whole project again, and a save in between was missed
+        if id(view) in self._users.get(origin_of(url), ()):
+            if view is self.browser._current_view():
+                self.update_for_current()
+            return
         self._release(id(view))  # whatever it was watching before
         if not view.page().profile().isOffTheRecord():
             self._ensure_watch(url, id(view))

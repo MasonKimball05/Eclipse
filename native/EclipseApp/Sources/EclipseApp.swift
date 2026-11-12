@@ -28,10 +28,10 @@ struct RootView: View {
         Group {
             if !store.hasFolder {
                 WelcomeView()
+            } else if let problem = store.problem {
+                ProblemView(text: problem)  // (before the Spaces kept from before: behind them, it was never seen)
             } else if let synced = store.synced {
                 SpacesView(synced: synced)
-            } else if let problem = store.problem {
-                ProblemView(text: problem)
             } else {
                 ProgressView("Reading your Spaces…")
             }

@@ -154,15 +154,36 @@ def prepare(found: dict, bundle: Path, progress=None) -> tuple[Path | None, str]
     return app, ""
 
 
-# Run by /bin/sh once this process has quit: $0 the pid, $1 this copy, $2 the new one, $3 where the old goes
-SWAP = ('while kill -0 "$0" 2>/dev/null; do sleep 0.2; done; '
-        'rm -rf "$3"; '
-        'if mv "$1" "$3"; then mv "$2" "$1" || mv "$3" "$1"; fi; '
-        'exec /usr/bin/open -n "$1"')
+STARTED = "started"  # (in work_dir: the new copy writes it once it's been running a few seconds, UpdatesFeature)
+
+# Run by /bin/sh once this process has quit: $0 the pid, $1 this copy, $2 the new one, $3 where the old goes, $4 the
+# file the new copy writes once it's started. Then:
+#   - another copy still running from here (a link clicked in Mail as this one quit): nothing's swapped (moved, the
+#     copy running from it went on from a folder that was then deleted)
+#   - the new copy not started in a minute and a half, and not running: the old one's put back (one that quit as it
+#     opened, as 26.1.3.0 did, left nothing to go back to: its first act was to delete the old copy)
+SWAP = ('open="${ECLIPSE_OPEN:-/usr/bin/open}"; wait="${ECLIPSE_SWAP_WAIT:-450}"; '
+        'while kill -0 "$0" 2>/dev/null; do sleep 0.2; done; '
+        'i=0; while pgrep -f "$1/Contents/" >/dev/null && [ $i -lt 300 ]; do sleep 0.2; i=$((i+1)); done; '
+        'if pgrep -f "$1/Contents/" >/dev/null; then exit 0; fi; '
+        'rm -rf "$3" "$4"; '
+        'if mv "$1" "$3"; then mv "$2" "$1" || { mv "$3" "$1"; exec "$open" -n "$1"; }; else exec "$open" -n "$1"; fi; '
+        '"$open" -n "$1"; '
+        'i=0; while [ ! -e "$4" ] && [ $i -lt "$wait" ]; do sleep 0.2; i=$((i+1)); done; '
+        'if [ ! -e "$4" ] && ! pgrep -f "$1/Contents/" >/dev/null; then '
+        'rm -rf "$1"; mv "$3" "$1" && exec "$open" -n "$1"; fi')
 
 
 def swap_command(bundle: Path, new: Path, pid: int) -> list[str]:
-    return ["/bin/sh", "-c", SWAP, str(pid), str(bundle), str(new), str(work_dir() / "old.app")]
+    return ["/bin/sh", "-c", SWAP, str(pid), str(bundle), str(new), str(work_dir() / "old.app"),
+            str(work_dir() / STARTED)]
+
+
+def mark_started():
+    """This copy has been running a while: if it's the one an update just put in place, it's kept."""
+    folder = work_dir()
+    if folder.exists():
+        (folder / STARTED).touch()
 
 
 def tidy():

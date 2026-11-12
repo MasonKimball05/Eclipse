@@ -114,3 +114,20 @@ def test_eclipses_own_links_on_the_command_line_go_to_eclipse_not_a_little_windo
     window.features = {}
     receiver.open_link("eclipse-browser://nothing")
     assert window.toasts and "doesn't know" in window.toasts[-1]
+
+
+def test_a_link_handed_over_while_eclipse_quits_isnt_lost(qapp, monkeypatch):
+    """The running Eclipse went on listening while it quit, with nothing reading: a second launch handed its link
+    over, stepped aside, and the link never opened. Stopped, it listens no more, and the second launch opens it."""
+    import uuid
+    from PyQt6.QtNetwork import QLocalServer
+    from browser import app as module
+    name = "eclipse-test-" + uuid.uuid4().hex[:8]
+    monkeypatch.setattr(module, "_server_name", lambda: name)
+    server = QLocalServer()
+    assert server.listen(name)
+    receiver = module.LinkReceiver.__new__(module.LinkReceiver)
+    receiver.server = server
+    assert module._hand_off(["https://a.example/"])  # (listening: taken)
+    receiver.stop()  # (quitting)
+    assert not module._hand_off(["https://b.example/"])

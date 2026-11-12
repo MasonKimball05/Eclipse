@@ -153,3 +153,18 @@ def test_a_pinned_pages_changing_title_isnt_a_change_to_sync():
     assert not sync.note_local(state, {"space:w": space}, 2)
     space["pinned"][0]["custom_title"] = "Mail"  # (renamed by you: that is one)
     assert sync.note_local(state, {"space:w": space}, 3)
+
+
+def test_sync_state_brought_from_another_mac_gets_its_own_device():
+    """Copied over with the data folder (Migration Assistant), both Macs had one device id: they wrote the same file,
+    each skipped it as its own, and never merged. What it knows of the items stays, so nothing counts as changed."""
+    state = sync.new_state()
+    sync.note_local(state, {"space:w": _space("Work", "mail.example")}, 1)
+    known, device = dict(state["known"]), state["device"]
+    sync.own_state(state, "MAC-A")
+    assert state["device"] == device  # (first seen here: the same Mac)
+    sync.own_state(state, "MAC-A")
+    assert state["device"] == device
+    sync.own_state(state, "MAC-B")  # (the folder, on another Mac)
+    assert state["device"] != device and state["known"] == known and state["machine"] == "MAC-B"
+    assert sync.own_state(state, None) is state  # (where there's no telling: left as it is)

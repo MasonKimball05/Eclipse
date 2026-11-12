@@ -352,8 +352,12 @@ def check_launches(app: Path, seconds: int = LAUNCH_SECONDS):
     with tempfile.TemporaryDirectory() as data:
         env = {"HOME": str(Path.home()), "PATH": "/usr/bin:/bin", "QT_QPA_PLATFORM": "offscreen",
                "ECLIPSE_DATA_DIR": data, "PYTHONDONTWRITEBYTECODE": "1"}  # (nothing new in the bundle to sign)
-        opened = subprocess.Popen([app / "Contents" / "MacOS" / NAME], env=env, stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, text=True)
+        # (what it says goes to a file: into a pipe nothing reads, a chatty app stopped once the pipe was full, and
+        # a stopped app looks like one still open at the end)
+        said_file = Path(data) / "said.txt"
+        with said_file.open("w") as said_to:
+            opened = subprocess.Popen([app / "Contents" / "MacOS" / NAME], env=env, stdout=said_to,
+                                      stderr=subprocess.STDOUT, text=True)
         try:
             opened.wait(timeout=seconds)
         except subprocess.TimeoutExpired:
@@ -368,7 +372,7 @@ def check_launches(app: Path, seconds: int = LAUNCH_SECONDS):
         errors = Path(data) / "logs" / "errors.log"
         logged = errors.read_text().strip() if errors.exists() else ""
         if quit_by_itself or logged:
-            said = (opened.stdout.read() if opened.stdout else "")[-1500:]
+            said = said_file.read_text(errors="replace")[-1500:]
             why = f"it quit by itself (exit {opened.returncode})" if quit_by_itself else "it logged errors"
             raise SystemExit(f"The app doesn't open as built: {why}\n{logged[-2500:] or said}")
 
@@ -543,8 +547,11 @@ def publishable() -> str | None:
     if loose := git("ls-files", "--others", "--exclude-standard", "--", "browser", "main.py"):
         return "these files aren't committed (git add them first): " + ", ".join(loose.split()[:5])
     head = git("rev-parse", "HEAD")
-    if not head or not git("branch", "-r", "--contains", head):
-        return "the commit isn't pushed to GitHub"
+    git("fetch", "--quiet", "origin", "main")  # (what's on GitHub now, not what was last fetched)
+    if not head or subprocess.run(["git", "merge-base", "--is-ancestor", head, "origin/main"], cwd=ROOT,
+                                  capture_output=True).returncode != 0:
+        # (on main, not just pushed: a feature branch published became every copy's update)
+        return "the commit isn't on main on GitHub (merged and pushed)"
     return None
 
 
@@ -641,19 +648,20 @@ def draft_of(tag: str) -> bool:
     return found.returncode == 0 and found.stdout.strip() == "true"
 
 
-def publish(archive: Path, build: str, version: str, dmg: Path | None = None):
+def publish(archive: Path, build: str, version: str, dmg: Path | None = None, commit: str | None = None):
     """The release on GitHub: the zip (what updates download) and the DMG (what people download)."""
     tag = f"release-{build}"
+    commit = commit or git("rev-parse", "HEAD")  # (tagged at the commit it was built from)
     files = [archive, *([dmg] if dmg and dmg.exists() else [])]
     print(f"Publishing {tag} on GitHub…")
     if draft_of(tag):  # (an earlier try stopped partway, its upload cut off: that draft's finished, not doubled)
         print("Finishing the draft an earlier try left (uploading again)…")
         run("gh", "release", "upload", tag, *files, "--clobber")
         run("gh", "release", "edit", tag, "--draft=false", "--latest", "--tag", tag,
-            "--target", git("rev-parse", "HEAD"), "--title", f"{NAME} {version}", "--notes", release_notes())
+            "--target", commit, "--title", f"{NAME} {version}", "--notes", release_notes())
     else:
         run("gh", "release", "create", tag, *files,
-            "--target", git("rev-parse", "HEAD"), "--title", f"{NAME} {version}", "--notes", release_notes())
+            "--target", commit, "--title", f"{NAME} {version}", "--notes", release_notes())
     print(f"Published: every release copy of {NAME} will offer it within a day")
 
 
@@ -678,6 +686,11 @@ def publish_built():
         raise SystemExit("The release in dist/ isn't notarized: build it with --notarize PROFILE")
     if why := publishable():
         raise SystemExit(f"Can't publish: {why}")
+    recorded = app / "Contents" / "Resources" / "app" / BUILT_FROM
+    if not recorded.exists() or recorded.read_text() != git("rev-parse", "HEAD"):
+        # (the Swift pages, the packages and the app's own setup too, which comparing the code below can't see)
+        raise SystemExit("The release in dist/ wasn't built from this commit, all of it: "
+                         "build it again with --notarize PROFILE --publish")
     if different := differences(app / "Contents" / "Resources" / "app", ROOT):
         raise SystemExit("The release in dist/ was built from different code than this commit (" +
                          ", ".join(different[:5]) + "): build it again with --notarize PROFILE --publish")
@@ -686,6 +699,17 @@ def publish_built():
     if dmg.exists() and subprocess.run(["xcrun", "stapler", "validate", str(dmg)], capture_output=True).returncode:
         raise SystemExit("The DMG in dist/ isn't notarized: build it again with --notarize PROFILE")
     publish(archive, info["CFBundleVersion"], info["CFBundleShortVersionString"], dmg)
+
+
+BUILT_FROM = "built-from.txt"  # (in the app's code folder: the commit it was built from, and whether that was all)
+
+
+def built_from_here() -> str:
+    """The commit checked out, and "+changes" if the checkout has anything not in it (what a build copies in is
+    the files as they are, not the commit)."""
+    changed = git("status", "--porcelain", "--untracked-files=no") or \
+        git("ls-files", "--others", "--exclude-standard", "--", "browser", "main.py", "native", "tools")
+    return git("rev-parse", "HEAD") + ("+changes" if changed else "")
 
 
 def assemble(app: Path, version: str, build: str) -> str:
@@ -701,7 +725,11 @@ def assemble(app: Path, version: str, build: str) -> str:
     print("Copying Python, Qt and Eclipse in…")
     copy_python(contents)
     copy_packages(contents)
+    built_from = built_from_here()
     copy_app(contents)
+    if built_from_here() != built_from:
+        raise SystemExit("The checkout changed while Eclipse was being copied in: build it again")
+    (contents / "Resources" / "app" / BUILT_FROM).write_text(built_from)
     for link in [p for p in app.rglob("*") if p.is_symlink() and not p.exists()]:
         link.unlink()  # (a link to something left out: the signature can't seal what isn't there)
     print("Bringing in the libraries they need…")
@@ -745,6 +773,7 @@ def release(identity: str, notary_profile: str | None, install: bool, publishing
         raise SystemExit("A release needs the Developer ID Application certificate (none of the team's is here)")
     if publishing and (why := publishable()):
         raise SystemExit(f"Can't publish: {why}")
+    head = git("rev-parse", "HEAD")
     # The version people see (26.1.3.0), and the build number updates compare (the minute it was built)
     version, build = next_version(kind, published_versions()), time.strftime("%Y%m%d%H%M")
     print(f"{NAME} {version} (build {build})")
@@ -756,6 +785,10 @@ def release(identity: str, notary_profile: str | None, install: bool, publishing
     sign_all(app, identity)
     size = sum(f.stat().st_size for f in app.rglob("*") if f.is_file() and not f.is_symlink()) // 1_000_000
     print(f"Signed: {app} ({size} MB)")
+    # Opened again, as signed: the check before was on this Mac's own signature, which macOS's stricter rules for a
+    # real one (the hardened runtime: which libraries may load, what the app may do) don't apply to
+    print("Opening it again, signed as it ships…")
+    check_launches(app)
     print("Making the DMG…")
     dmg = make_dmg(app, identity)
     if notary_profile:
@@ -777,7 +810,13 @@ def release(identity: str, notary_profile: str | None, install: bool, publishing
         subprocess.run([build_app.LSREGISTER, "-f", str(APP)], check=False)
         print(f"Installed {APP}")
     if publishing:
-        publish(archive, build, version, dmg)
+        # (still what it was built from: a commit or an edit since, while it was signed and notarized, and the
+        # release would be tagged at code it doesn't have)
+        if (why := publishable()) or git("rev-parse", "HEAD") != head or \
+                (app / "Contents" / "Resources" / "app" / BUILT_FROM).read_text() != head:
+            raise SystemExit(f"Can't publish: {why or 'the checkout changed while it was being built'} "
+                             "(the release in dist/ is kept: build it again)")
+        publish(archive, build, version, dmg, head)
     print(f"\nShare {dmg}: it opens on Macs with Apple silicon and macOS {minimum} or later.")
     return app
 

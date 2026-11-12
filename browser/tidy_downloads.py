@@ -13,6 +13,7 @@ from .page_actions import not_reserved
 
 TEXT_TYPES = {".txt", ".md", ".csv", ".json", ".html", ".htm", ".xml", ".log", ".tsv"}
 EXCERPT_CHARS = 1500
+MAX_PDF_BYTES = 25_000_000  # (named from its page and address alone above this: reading it would hold up the window)
 MAX_NAME = 80
 
 
@@ -21,6 +22,8 @@ def excerpt(path: Path) -> str:
     suffix = path.suffix.lower()
     try:
         if suffix == ".pdf":
+            if path.stat().st_size > MAX_PDF_BYTES:
+                return ""  # (read here, as it finishes: a big or scanned one froze the window while it loaded)
             doc = QPdfDocument(None)
             if doc.load(str(path)) != QPdfDocument.Error.None_ or doc.pageCount() == 0:
                 return ""
@@ -55,6 +58,7 @@ def clean_name(reply: str) -> str | None:
     if not name or name.upper() == "KEEP":
         return None
     name = re.sub(r"\.[A-Za-z0-9]{2,4}$", "", name)          # drop an extension Claude added anyway
+    name = re.sub(r"\.tar$", "", name, flags=re.IGNORECASE)    # (the rest of one: "Archive.tar.gz")
     name = re.sub(r'[/\\:*?"<>|\x00-\x1f]', " ", name)        # characters macOS or other systems won't take
     # Nor ones that change how the rest reads: a right-to-left override makes "Invoice\u202efdp.command" show as
     # "Invoicedmmoc.pdf" (and zero-width ones hide things)
@@ -72,6 +76,13 @@ def unique_path(folder: Path, stem: str, suffix: str, current: Path | None = Non
     return candidate
 
 
+def full_suffix(path: Path) -> str:
+    """The file's extension, all of it: ".tar.gz" is one (only ".gz" kept, a renamed archive unpacked to a file
+    with none, where it was a folder)."""
+    parts = path.suffixes
+    return "".join(parts[-2:]) if len(parts) >= 2 and parts[-2].lower() == ".tar" else path.suffix
+
+
 def new_path(path: Path, reply: str) -> Path | None:
     """Where Claude's name for the file puts it, or None to leave it. Never a name that makes it something that
     runs when opened: the reply can be steered by the page and the file's own text, and a file with no extension
@@ -79,9 +90,10 @@ def new_path(path: Path, reply: str) -> Path | None:
     asks."""
     from .downloads import risky
     stem = clean_name(reply)
-    if stem is None or stem == path.stem:
+    suffix = full_suffix(path)
+    if stem is None or stem == path.name[:len(path.name) - len(suffix)]:
         return None
-    target = unique_path(path.parent, not_reserved(stem), path.suffix, current=path)
+    target = unique_path(path.parent, not_reserved(stem), suffix, current=path)
     return None if risky(target.name) and not risky(path.name) else target
 
 

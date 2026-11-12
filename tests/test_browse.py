@@ -36,3 +36,26 @@ def test_rendered_page_escapes_query_and_titles():
     page = render_page("<b>q</b>", [("https://a.com", "<img src=x>")], "", "Searching…", "#123456")
     assert "<b>q</b>" not in page and "<img src=x>" not in page
 
+
+
+def test_a_cancelled_or_failed_search_starts_nothing_after(qapp):
+    """A search reply landing after Cancel started reading pages for a run no one was watching; and one that never
+    loaded (offline) was said as "no results"."""
+    from PyQt6.QtCore import QObject
+    from browser import browse
+    run = browse.BrowseForMe.__new__(browse.BrowseForMe)
+    QObject.__init__(run)
+    run.sources, run._texts, run._candidates, run._next, run._pages, run._readers = [], {}, [], 0, [], []
+    run._request, run._stopped, run._searched = None, False, False
+    told = []
+    run.failed.connect(told.append)
+    run.cancel()
+    run._got_results([{"url": "https://example.com/a", "title": "A"}])
+    assert run._readers == [] and not run._searched
+    fresh = browse.BrowseForMe.__new__(browse.BrowseForMe)
+    QObject.__init__(fresh)
+    fresh.sources, fresh._texts, fresh._candidates, fresh._next, fresh._pages, fresh._readers = [], {}, [], 0, [], []
+    fresh._request, fresh._stopped, fresh._searched = None, False, False
+    fresh.failed.connect(told.append)
+    fresh._search_loaded(None, False)
+    assert told == ["Couldn't reach the search: check your connection."] and fresh._stopped

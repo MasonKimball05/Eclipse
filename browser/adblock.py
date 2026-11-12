@@ -54,9 +54,11 @@ COSMETIC_CSS = (
 )
 
 YOUTUBE_SKIPPER = """
+// (four times a second, one look for a player showing an ad: ten, in every YouTube tab all day, was more than it
+// needed, and an ad's still gone within a quarter of a second)
 setInterval(() => {
-  const player = document.querySelector('.html5-video-player');
-  if (!player || !player.classList.contains('ad-showing')) return;
+  const player = document.querySelector('.html5-video-player.ad-showing');
+  if (!player) return;
   const skip = document.querySelector('.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern');
   if (skip) { skip.click(); return; }
   const video = player.querySelector('video');
@@ -64,7 +66,7 @@ setInterval(() => {
   video.muted = true;
   if (isFinite(video.duration) && video.duration > 0) video.currentTime = video.duration;
   else video.playbackRate = 16;  // (not seekable yet: over in a moment anyway)
-}, 100);
+}, 250);
 """
 
 # YouTube's ads in the feed and around the player (hidden; the video's own are taken out before they're planned)

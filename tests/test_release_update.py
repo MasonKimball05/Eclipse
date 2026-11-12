@@ -89,18 +89,39 @@ def test_an_ad_hoc_signed_app_is_refused(tmp_path):
 
 
 @pytest.mark.mac
+def _fake_open(tmp_path, starts: bool):
+    """A stand-in for /usr/bin/open: notes what it opened, and (as a copy that starts does) writes the marker."""
+    log, script = tmp_path / "opened.txt", tmp_path / "open.sh"
+    marker = tmp_path / "work" / release_update.STARTED
+    script.write_text("#!/bin/sh\necho \"$2\" >> " + str(log) + ("\ntouch " + str(marker) if starts else "") + "\n")
+    script.chmod(0o755)
+    return {"ECLIPSE_OPEN": str(script), "ECLIPSE_SWAP_WAIT": "5", "PATH": "/usr/bin:/bin"}, log
+
+
 def test_swap_puts_the_new_copy_in_place(tmp_path, monkeypatch):
     monkeypatch.setattr(release_update, "work_dir", lambda: tmp_path / "work")
     (tmp_path / "work").mkdir()
     current, new = _app(tmp_path / "Applications", 1), _app(tmp_path / "work" / "new", 2)
     command = release_update.swap_command(current, new, pid=999_999)  # (no such process: it's already gone)
-    command[2] = command[2].replace("/usr/bin/open -n", "echo")
-    subprocess.run(command, check=True, capture_output=True)
+    env, opened = _fake_open(tmp_path, starts=True)
+    subprocess.run(command, check=True, capture_output=True, env=env)
     assert release_update.build_of(current) == 2 and not new.exists()
     assert release_update.build_of(tmp_path / "work" / "old.app") == 1
+    assert opened.read_text().split() == [str(current)]
     release_update.tidy()
     assert not (tmp_path / "work").exists() and current.exists()
 
+
+def test_a_new_copy_that_never_starts_is_swapped_back(tmp_path, monkeypatch):
+    """One that quit as it opened (as 26.1.3.0 did) left nothing to go back to: its first act was deleting the old
+    copy. Not started (and not running) in time, the old copy's put back and opened."""
+    monkeypatch.setattr(release_update, "work_dir", lambda: tmp_path / "work")
+    (tmp_path / "work").mkdir()
+    current, new = _app(tmp_path / "Applications", 1), _app(tmp_path / "work" / "new", 2)
+    env, opened = _fake_open(tmp_path, starts=False)
+    subprocess.run(release_update.swap_command(current, new, pid=999_999), check=True, capture_output=True, env=env)
+    assert release_update.build_of(current) == 1  # (the old one, back)
+    assert opened.read_text().split() == [str(current), str(current)]  # (the new tried, then the old)
 
 def test_a_release_copy_asks_github_releases(tmp_path, monkeypatch):
     from browser import self_update

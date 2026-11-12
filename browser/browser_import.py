@@ -251,7 +251,8 @@ def read_bookmarks_file(path: Path, name="Safari") -> BrowserImport:
     result = BrowserImport(name)
     pinned = parse_bookmarks_html(path.read_text(encoding="utf-8", errors="replace"))
     if pinned:
-        result.spaces.append(_space(name, 0, f"{name}-file", pinned))
+        # (the same Space as reading it directly: one each, and imported again by the other way, two "Safari"s)
+        result.spaces.append(_space(name, 0, name.lower(), pinned))
     return result
 
 

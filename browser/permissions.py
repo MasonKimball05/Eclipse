@@ -100,6 +100,7 @@ class PermissionPrompt(QFrame):
         close.setObjectName("PermissionClose")
         close.setIcon(qta.icon("ph.x", color=manager.browser.theme.panel_text))
         close.setToolTip("Decide later")
+        close.setAccessibleName("Decide later")
         deny.clicked.connect(lambda: manager.answer(self, False))
         allow.clicked.connect(lambda: manager.answer(self, True))
         close.clicked.connect(lambda: manager.dismiss(self))

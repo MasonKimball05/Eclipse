@@ -40,6 +40,8 @@ def _hand_off(links) -> bool:
         return False
     socket.write(("\n".join(links) + "\n").encode())
     socket.waitForBytesWritten(1000)
+    if socket.bytesToWrite():
+        return False  # (not taken: the one running is quitting, say; this launch opens them itself)
     socket.disconnectFromServer()
     return True
 
@@ -86,11 +88,12 @@ class LinkReceiver(QObject):
 
     @pyqtSlot(QUrl)
     def continue_page(self, url):
-        """A page handed over from your iPhone or iPad (Handoff, with Eclipse as the default browser): macOS
-        gives it to the app, and Qt to whoever handles web links in it. It opens in a tab, to carry on reading."""
+        """A web link from outside: one clicked in another app (with Eclipse as the default browser), or a page
+        handed over from your iPhone or iPad (Handoff). macOS gives both to the app, and Qt to whoever handles web
+        links in it: here, not as a file-open event, so it goes where a link from another app goes (a Little window,
+        a new tab, or the Space an Air Traffic rule names). Opened as a plain tab, those settings never applied."""
         if url.scheme() in ("http", "https"):
-            self.window.open_url(url.toString())
-            self.window.bring_to_front()
+            self.window.open_external(url.toString())
 
     def listen_for_handoff(self):
         for scheme in ("https", "http"):  # (also what Qt would open in "the browser" from inside Eclipse: here)
@@ -99,6 +102,10 @@ class LinkReceiver(QObject):
     def stop(self):
         for scheme in ("https", "http"):
             QDesktopServices.unsetUrlHandler(scheme)
+        # No more hand-overs: quitting, nothing would read them, and a second launch handing its link over would
+        # step aside, the link never opened. Closed, it opens them itself
+        if self.server is not None:
+            self.server.close()
 
     def _accept(self):
         socket = self.server.nextPendingConnection()
@@ -163,9 +170,13 @@ def run() -> int:
     QTimer.singleShot(1500, lambda: setattr(window, "_whats_new", whats_new.show_if_new(window)))
 
     code = app.exec()
-    receiver.stop()
-    window.store.flush()  # (what changed in the last half second: quit with the window put away, it was lost)
-    window.shutdown()
-    crash.clean_exit()
-    features.after_app()
+    # Said to have quit cleanly last of all, and whatever happens: before the features' last step, a crash in it
+    # was never reported; after an error in shutting down, the next launch said Eclipse had crashed when it hadn't
+    try:
+        receiver.stop()
+        window.store.flush()  # (what changed in the last half second: quit with the window put away, it was lost)
+        window.shutdown()
+        features.after_app()
+    finally:
+        crash.clean_exit()
     return code

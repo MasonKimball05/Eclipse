@@ -13,6 +13,7 @@ import re
 import time
 from urllib.parse import parse_qs, quote_plus, urlparse
 
+from PyQt6 import sip
 from PyQt6.QtCore import QObject, QTimer, QUrl, pyqtSignal
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineScript
 
@@ -26,6 +27,7 @@ MAX_SOURCES = 3      # ...stopping once this many had real text
 MIN_TEXT = 600       # less than this is a paywall, a blocker page or a failed load
 PAGE_TEXT_LIMIT = 12_000
 PAGE_TIMEOUT_MS = 7_000
+SEARCH_TIMEOUT_MS = 20_000  # (the search page itself: given up on after this)
 
 # The page's readable text straight from the DOM. Unlike QWebEnginePage.toPlainText (which
 # stays empty until the whole page, ads included, has finished loading), this works as soon
@@ -162,6 +164,24 @@ a {{ color: var(--accent); }}
 </body></html>"""
 
 
+def reader_profile(window):
+    """The profile pages are read in unseen (a link's preview, Browse for Me's sources): off the record, nothing of
+    yours. Read with your logins, a preview of a "Sign out" or "Unsubscribe" link did it, with no click, and the
+    sites Browse for Me read saw you signed in, showed your account, and that went to Claude (and their cookies and
+    workers into your profile). One for every reader, kept while Eclipse runs."""
+    profile = getattr(window, "_reader_profile", None)
+    if profile is None:
+        from PyQt6.QtWebEngineCore import QWebEngineProfile
+        from .webview import harden, look_like_chrome
+        profile = QWebEngineProfile(window)  # (no storage name: off the record)
+        harden(profile)
+        look_like_chrome(profile)
+        if getattr(window, "adblock", None) is not None:
+            window.adblock.attach(profile, private=True)  # (ads and trackers blocked, as in a private window)
+        window._reader_profile = profile
+    return profile
+
+
 class PageReader(QObject):
     """Loads a page off-screen and reports its text as soon as the article is there.
 
@@ -236,6 +256,9 @@ class PageReader(QObject):
         self._poll.stop()
         self.page.triggerAction(QWebEnginePage.WebAction.Stop)
         self.page.setUrl(QUrl("about:blank"))
+        # Done with: let go of (after what's told of it, which happens at once). Kept, each link preview and each
+        # Browse for Me source left its reader, page and timer for the rest of the session
+        self.deleteLater()
         self.page.deleteLater()
 
 
@@ -260,14 +283,36 @@ class BrowseForMe(QObject):
         self._pages: list[QWebEnginePage] = []
         self._readers: list[PageReader] = []
         self._request = None
+        self._stopped = False  # (cancelled, or failed: what's still on its way is let go)
+        self._searched = False
 
     def start(self):
         self.status.emit("Searching…")
         page = self._hidden_page()
-        page.loadFinished.connect(lambda ok: page.runJavaScript(EXTRACT_RESULTS, 0, self._got_results))
+        page.loadFinished.connect(lambda ok: self._search_loaded(page, ok))
         page.load(QUrl(SEARCH_URL.format(quote_plus(self.query))))
+        # (a search that never comes back sat on "Searching…" until Chromium gave up, if it did)
+        QTimer.singleShot(SEARCH_TIMEOUT_MS, lambda: not sip.isdeleted(self) and self._search_too_slow())
+
+    def _search_loaded(self, page, ok):
+        if self._stopped or self._searched:
+            return
+        if not ok:  # (offline, say: said as no results, it read as if there were none)
+            self._stop("Couldn't reach the search: check your connection.")
+            return
+        page.runJavaScript(EXTRACT_RESULTS, 0, self._got_results)
+
+    def _search_too_slow(self):
+        if not self._stopped and not self._searched:
+            self._stop("The search didn't answer in time.")
+
+    def _stop(self, why):
+        self.failed.emit(why)
+        self._cleanup()
+        self._stopped = True
 
     def cancel(self):
+        self._stopped = True
         if self._request is not None:
             self._request.cancel()
         self._cleanup()
@@ -279,6 +324,9 @@ class BrowseForMe(QObject):
         return page
 
     def _got_results(self, results):
+        if self._stopped or self._searched:
+            return  # (cancelled meanwhile: nothing's read for a run no one's watching)
+        self._searched = True
         self._candidates = pick_sources(results or [])
         if not self._candidates:
             self.failed.emit("The search didn't return any results to read.")
@@ -301,6 +349,8 @@ class BrowseForMe(QObject):
         self._readers.append(reader)
 
     def _got_text(self, url, title, text):
+        if self._stopped:
+            return
         if len(text or "") >= MIN_TEXT:
             self._texts[len(self.sources)] = text
             self.sources.append((url, title))

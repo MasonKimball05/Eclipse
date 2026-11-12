@@ -165,7 +165,10 @@ class StartView(QWidget):
                 row.setIconSize(QSize(16, 16))
                 row.setToolTip(url)
                 row.setCursor(Qt.CursorShape.PointingHandCursor)
-                row.clicked.connect(lambda _=False, i=index: self.browser.reopen_closed_tab(i))
+                # (by which one it is, not where it was: a tab closed since moved them all along one, and the row
+                # beside it was what came back)
+                row.clicked.connect(lambda _=False, entry=closed[index]: entry in self.browser._closed and
+                                    self.browser.reopen_closed_tab(self.browser._closed.index(entry)))
                 self.body.addWidget(row)
         if not sites and not closed:
             hint = QLabel("The sites you visit most will be here.")

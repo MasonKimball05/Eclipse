@@ -128,13 +128,14 @@ class Translator(QObject):
         self._jobs: dict[int, _Job] = {}
         self._translated: set[int] = set()  # id(view) of pages showing a translation
         self._watched: set[int] = set()     # views whose navigations we listen for
+        self._collecting: set[int] = set()  # views whose text is being read, before their job starts
 
     def state(self, view) -> str:
         """"idle", "translating" or "translated"."""
         if view is None:
             return "idle"
-        if id(view) in self._jobs:
-            return "translating"
+        if id(view) in self._jobs or id(view) in self._collecting:
+            return "translating"  # (from the press: idle while its text was read, a second press started a second job)
         return "translated" if id(view) in self._translated else "idle"
 
     def toggle(self, view=None, tab=None, reader=False):
@@ -155,9 +156,14 @@ class Translator(QObject):
             self.browser.toast("Translate uses the Claude Code CLI, which isn't available")
             return
         language = target_language(self.browser.store.settings)
+        self._collecting.add(id(view))
+        self._changed(view)
         view.page().runJavaScript(COLLECT, WORLD, lambda found, v=view: self._collected(v, found, language))
 
     def _collected(self, view, found, language):
+        if id(view) not in self._collecting:
+            return  # (stopped while its text was being read)
+        self._collecting.discard(id(view))
         if found is None:
             return  # (the page closed while it was being read: Qt answers with nothing)
         texts = (found or {}).get("texts") or []
@@ -208,7 +214,8 @@ class Translator(QObject):
         job.done += 1
         job.failed += failed
         if job.done >= len(job.groups):
-            self._jobs.pop(id(job.view), None)
+            if self._jobs.get(id(job.view)) is job:  # (its own: never a newer job's)
+                self._jobs.pop(id(job.view))
             if job.failed == len(job.groups):
                 self._translated.discard(id(job.view))
                 self.browser.toast("Couldn't translate this page")
@@ -230,6 +237,7 @@ class Translator(QObject):
                 request.cancel()
 
     def _cancel(self, view):
+        self._collecting.discard(id(view))
         job = self._jobs.pop(id(view), None)
         if job is not None:
             job.cancelled = True

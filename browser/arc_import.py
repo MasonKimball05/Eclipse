@@ -339,12 +339,18 @@ def apply(store, arc: ArcImport):
     for page_url, image in arc.favicons.items():
         storage.save_favicon_png(page_url, image)
 
-    # Drop the untouched starter Spaces so your Arc setup isn't mixed with empty placeholders
-    if arc.spaces:
+    # Drop the untouched starter Spaces so your Arc setup isn't mixed with empty placeholders: on a first launch's
+    # import only (every time, an empty Space you'd made since went too, as the other browsers' import never does)
+    if arc.spaces and store.is_new:
         store.spaces = [s for s in store.spaces if s.pinned or s.today or s.id.startswith("arc-")]
     for space in arc.spaces:
         existing = store.space(space.id)
         if existing is not None:
+            # Arc's Space again: its pinned tabs and look as Arc has them now, and the Today tabs you have here kept
+            # (with Arc's, not already here, after). Replaced whole, yours went, their pages running on unseen
+            have = {t.url for t in walk_tabs(existing.today)}
+            space.today = list(existing.today) + [n for n in space.today
+                                                  if not isinstance(n, Tab) or n.url not in have]
             store.spaces[store.spaces.index(existing)] = space
         else:
             store.spaces.append(space)

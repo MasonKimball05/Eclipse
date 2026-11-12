@@ -26,6 +26,7 @@ final class SyncStore {
     private static let bookmarkKey = "syncFolder"
     private var folder: URL?
     private var retries = 0
+    private var generation = 0  // (bumped when the folder changes: a read still going for the one before is let go)
 
     init() {
         folder = Self.launchFolder() ?? Self.bookmarkedFolder()
@@ -47,6 +48,8 @@ final class SyncStore {
         problem = nil
         synced = nil
         Cache.clear()
+        generation += 1
+        loading = false  // (a read of the old folder, still going, is let go: this one's read now)
         reload()
     }
 
@@ -57,14 +60,17 @@ final class SyncStore {
         devices = []
         problem = nil
         Cache.clear()
+        generation += 1
+        loading = false
     }
 
     func reload() {
         guard let folder, !loading else { return }
         loading = true
+        let reading = generation
         Task.detached(priority: .userInitiated) {
             let read = Self.read(folder)
-            await self.finish(read)
+            await self.finish(read, of: reading)
         }
     }
 
@@ -74,7 +80,8 @@ final class SyncStore {
         while loading { try? await Task.sleep(for: .milliseconds(100)) }
     }
 
-    private func finish(_ read: Read) {
+    private func finish(_ read: Read, of reading: Int) {
+        guard reading == generation else { return }  // (the folder before: chosen again or forgotten since)
         loading = false
         guard read.readable else {
             problem = "Eclipse can't open the sync folder any more. Choose it again."
@@ -82,14 +89,20 @@ final class SyncStore {
         }
         problem = nil
         waiting = read.pending
-        var state = SyncState(device: "reader")
-        let items = state.merge(read.files).apply
-        synced = Synced(items: items)
-        Cache.write(items)
-        devices = read.files.map {
-            Device(id: $0.device ?? $0.name, name: $0.name.isEmpty ? "A Mac" : $0.name,
-                   written: Date(timeIntervalSince1970: $0.written))
-        }.sorted { $0.written > $1.written }
+        // Nothing read (iCloud took the files back to save space, or hasn't brought them yet, offline): what was
+        // here stays, and the copy kept for offline with it. Taken as the whole of it, both went blank
+        if !read.files.isEmpty {
+            var state = SyncState(device: "reader")
+            let items = state.merge(read.files).apply
+            synced = Synced(items: items)
+            if read.pending == 0 { Cache.write(items) }  // (kept once it's all there: never a part of it)
+        }
+        if !read.files.isEmpty {
+            devices = read.files.map {
+                Device(id: $0.device ?? $0.name, name: $0.name.isEmpty ? "A Mac" : $0.name,
+                       written: Date(timeIntervalSince1970: $0.written))
+            }.sorted { $0.written > $1.written }
+        }
         // Files iCloud is still bringing down: read again shortly (a few times, then on the next pull or return)
         if read.pending > 0 && retries < 5 {
             retries += 1
@@ -124,6 +137,16 @@ final class SyncStore {
             let pending = SyncFile.pending(in: url)
             for file in pending { try? FileManager.default.startDownloadingUbiquitousItem(at: file) }
             read.pending = pending.count
+            // Files listed under their own names but not brought down yet (as iCloud Drive does now, beside the old
+            // ".name.json.icloud" stand-ins): reading one fails, and it was dropped without a word or another try
+            let key = URLResourceKey.ubiquitousItemDownloadingStatusKey
+            let listed = (try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [key])) ?? []
+            for file in listed where file.pathExtension == "json" {
+                if (try? file.resourceValues(forKeys: [key]))?.ubiquitousItemDownloadingStatus == .notDownloaded {
+                    try? FileManager.default.startDownloadingUbiquitousItem(at: file)
+                    read.pending += 1
+                }
+            }
             read.files = SyncFile.readFolder(url, mine: "")
         }
         if failed != nil { read.readable = false }

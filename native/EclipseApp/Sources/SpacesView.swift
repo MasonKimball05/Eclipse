@@ -34,6 +34,10 @@ struct SpacesView: View {
         .preferredColorScheme(scheme(space?.look.mode))
         .fullScreenCover(item: $opened) { SafariView(url: $0.url).ignoresSafeArea() }
         .onAppear { if current == nil { current = synced.spaces.first?.id } }
+        .onChange(of: synced.spaces.map(\.id)) { _, ids in
+            // (the Space you were on, deleted on a Mac: the first, where the page stayed put on another's tabs)
+            if let on = current, !ids.contains(on) { current = ids.first }
+        }
     }
 
     @ViewBuilder private var content: some View {

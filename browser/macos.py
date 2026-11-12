@@ -559,6 +559,18 @@ def can_verify_owner() -> bool:
     return bool(able)
 
 
+def _reported(function, *args):
+    """Call `function` from inside something macOS called: an error raised there goes nowhere a person can see
+    (ctypes hands it to sys.unraisablehook, not to errors.log), and the call into macOS fails without a word."""
+    try:
+        return function(*args)
+    except Exception:
+        import sys
+        from . import crash
+        crash.log_exception(*sys.exc_info())
+        return None
+
+
 def verify_owner(reason: str, done, interactive=True) -> bool:
     """Ask macOS to check it's you: Touch ID, or the Mac's password ("Eclipse is trying to <reason>").
     done(ok) is called later, on a thread of macOS's: the caller takes it back to Qt's. False if it can't ask.
@@ -569,7 +581,7 @@ def verify_owner(reason: str, done, interactive=True) -> bool:
     if not interactive:
         _send(context, "setInteractionNotAllowed:", True, restype=None, argtypes=(ctypes.c_bool,))
     isa = ctypes.addressof(ctypes.c_void_p.in_dll(ctypes.CDLL("/usr/lib/libSystem.B.dylib"), "_NSConcreteGlobalBlock"))
-    reply = _REPLY(lambda _block, ok, _error: done(bool(ok)))
+    reply = _REPLY(lambda _block, ok, _error: _reported(done, bool(ok)))
     descriptor = _BlockDescriptor(0, ctypes.sizeof(_Block))
     block = _Block(isa, 1 << 28, 0, reply, ctypes.pointer(descriptor))  # (1 << 28: BLOCK_IS_GLOBAL)
     _asked.append((context, reply, descriptor, block))
@@ -843,7 +855,7 @@ def _continue_activity(delegate, selector, app, activity, restore):
         _cf.CFRelease(key)
         if item_id:
             opened = _spotlight["opened"]
-            opened(item_id) if opened else _spotlight["pending"].append(item_id)
+            _reported(opened, item_id) if opened else _spotlight["pending"].append(item_id)
             return True
     return _spotlight["qt"](delegate, selector, app, activity, restore)  # (anything else is Qt's: Handoff, say)
 

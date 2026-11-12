@@ -228,3 +228,27 @@ def test_each_subreddit_has_its_own_section():
     assert _section_key("https://www.reddit.com/r/Python/comments/1") == "reddit.com/r/python"
     assert _section_key("https://www.google.com/maps/@1,2") == "google.com/maps"
     assert _section_key("https://example.com/") == "" and _section_key("https://example.com/?q=1") == ""
+
+
+def test_addresses_on_your_network_written_any_way_are_never_fetched():
+    """"127.1" and "0xc0.0xa8.1.1" are addresses to the system's resolver but not to ip_address: taken for names, a
+    page's icon could make Eclipse ask your router or NAS for anything."""
+    from browser.favicons import is_private_host
+    for host in ("127.1", "0x7f.1", "0xc0.0xa8.1.1", "192.168.1", "100.100.1.2", "[::ffff:192.168.1.1]", "10.0.0.1"):
+        assert is_private_host(host), host
+    for host in ("example.com", "8.8.8.8", "face.cafe", "1.1.1.1"):
+        assert not is_private_host(host), host
+
+
+def test_the_same_icon_again_isnt_written_again(data_dir, qapp, monkeypatch):
+    """Told of a site's icon on every change, the same picture was written out and cached anew each time."""
+    from PyQt6.QtGui import QColor, QIcon, QPixmap
+    from browser import storage
+    pixmap = QPixmap(64, 64)
+    pixmap.fill(QColor("#3366ff"))
+    writes = []
+    real = QPixmap.save
+    monkeypatch.setattr(QPixmap, "save", lambda self, *a: writes.append(a) or real(self, *a))
+    storage.save_favicon("https://mail.example/", QIcon(pixmap))
+    storage.save_favicon("https://mail.example/", QIcon(pixmap))
+    assert len(writes) == 1

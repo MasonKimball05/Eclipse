@@ -201,6 +201,7 @@ class ReaderView(QFrame):
         self.theme_btn = QPushButton()
         self.theme_btn.setObjectName("ReaderButton")
         self.theme_btn.setToolTip("Light, sepia or dark")
+        self.theme_btn.setAccessibleName("Reader theme: light, sepia or dark")
         self.theme_btn.clicked.connect(self.cycle_theme)
         self.translate_btn = QPushButton("Translate")
         self.translate_btn.setObjectName("ReaderButton")
@@ -225,6 +226,7 @@ class ReaderView(QFrame):
         b = QToolButton()
         b.setObjectName("ReaderTool")
         b.setToolTip(tip)
+        b.setAccessibleName(tip)  # (an icon alone says nothing to VoiceOver)
         b.setIcon(qta.icon(icon, color=self.browser.theme.panel_text))
         b.setIconSize(QSize(12, 12) if small else QSize(16, 16))
         b.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -254,6 +256,7 @@ class ReaderView(QFrame):
             self.browser.toast("Reader isn't available: there's no article on this page")
             return
         self.tab, self.article = tab, article
+        self.page_url = view.url().adjusted(QUrl.UrlFormattingOption.RemoveFragment)  # (where it was read from)
         profile = view.page().profile()
         if self.view.page().profile() is not profile:
             page = ReaderPage(self, profile, self.view)

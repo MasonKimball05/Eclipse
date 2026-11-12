@@ -310,13 +310,13 @@ class LibraryWindow(FadesIn, QWidget):
         existing = next((t for t in self.store.all_tabs() if t.url == url), None)
         if existing is not None and (url.startswith("note:") or url.startswith("file:")):
             self.browser.activate_tab(existing)  # notes and answers already open: just go there
+        elif self.section == "archive":
+            self.browser.restore_archived(entry["source"])  # (into its own Space, and out of the archive)
+            self.refresh()
+            self.browser.bring_to_front()
+            return
         else:
             self.browser.open_url(url)
-        if self.section == "archive":
-            # Compared by value: Qt hands list items back as copies, so identity never matches
-            self.store.archive = [a for a in self.store.archive if a != entry["source"]]  # restored
-            self.store.schedule_save()
-            self.refresh()
         self.browser.bring_to_front()
 
     def _menu(self, pos):

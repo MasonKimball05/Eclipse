@@ -119,3 +119,14 @@ def test_bringing_it_in_replaces_the_starter_spaces_once(tmp_path):
     assert [s.name for s in store.spaces] == ["My Chrome", "Mine"]
     assert [t.url for t in store.spaces[0].pinned] == ["https://b.example/"]
     assert [t.url for t in store.spaces[0].today] == ["https://open.example/"]
+
+
+def test_safari_imported_either_way_is_the_same_space(tmp_path):
+    """Read directly it was "import-safari", from an exported file "import-Safari-file": imported once each way,
+    there were two Safari Spaces with the same bookmarks."""
+    from browser import browser_import
+    exported = tmp_path / "Bookmarks.html"
+    exported.write_text('<DL><DT><A HREF="https://example.com/">Example</A></DL>')
+    from_file = browser_import.read_bookmarks_file(exported)
+    direct_id = browser_import._space("Safari", 0, "safari", []).id
+    assert from_file.spaces[0].id == direct_id

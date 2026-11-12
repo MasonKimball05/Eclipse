@@ -383,6 +383,7 @@ class _PointedAt(QObject):
 
 
 _legible: dict = {}
+LEGIBLE_KEPT = 1000  # (icons made legible, remembered: more, and they start again)
 
 
 # Code and passwords: a Mac's Menlo, Windows' Consolas, or another monospaced font. Qt has no generic "monospace" (a
@@ -408,6 +409,8 @@ def legible(icon: QIcon, theme: "Theme") -> QIcon:
     key = (icon.cacheKey(), theme.dark)
     if key in _legible:
         return _legible[key]
+    if len(_legible) > LEGIBLE_KEPT:
+        _legible.clear()  # (an icon that changes all day, an inbox's count, kept every version for good)
     image = icon.pixmap(32, 32).toImage().convertToFormat(QImage.Format.Format_ARGB32)
     total = weight = color = 0.0
     for y in range(0, image.height(), 2):

@@ -1181,6 +1181,10 @@ private struct TabRow: View {
             .accessibilityLabel(tab.str("label").isEmpty ? tab.str("title") : tab.str("label"))
             .accessibilityHint(tab.str("hint"))
             .accessibilityAddTraits(tab.flag("selected") ? [.isButton, .isSelected] : .isButton)
+        // (its menu and its close button, for VoiceOver too: the menu only came from a right click, and the button
+        // only showed under the pointer)
+        .accessibilityAction(named: Text("Show Menu")) { model.act("menu", ["id": id, "kind": "tab"]) }
+        .accessibilityAction(named: Text("Close Tab")) { model.act("close", ["id": id]) }
     }
 
     /// What's dragged: the row, or a stack with a count when it's one of several picked.
@@ -1250,6 +1254,10 @@ private struct TabRow: View {
         .accessibilityLabel(tab.str("label").isEmpty ? tab.str("title") : tab.str("label"))
         .accessibilityHint(tab.str("hint"))
         .accessibilityAddTraits(tab.flag("selected") ? [.isButton, .isSelected] : .isButton)
+        // (its menu and its close button, for VoiceOver too: the menu only came from a right click, and the button
+        // only showed under the pointer)
+        .accessibilityAction(named: Text("Show Menu")) { model.act("menu", ["id": id, "kind": "tab"]) }
+        .accessibilityAction(named: Text("Close Tab")) { model.act("close", ["id": id]) }
     }
 
     @ViewBuilder private var icon: some View {
@@ -1340,6 +1348,7 @@ private struct FolderRow: View {
         .animation(.easeOut(duration: 0.12), value: hovering)
         .onTapGesture { model.act("folder", ["id": folder.str("id")]) }
         .overlay(RightClick { model.act("menu", ["id": folder.str("id"), "kind": "folder"]) } middle: {})
+        .accessibilityAction(named: Text("Show Menu")) { model.act("menu", ["id": folder.str("id"), "kind": "folder"]) }
         .modifier(DraggableUnless(model: model, fixed: folder.flag("fixed"), id: folder.str("id"), title: folder.str("name")))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(folder.str("name")), \(folder.flag("live") ? "Live Folder" : "folder"), \(folder.flag("expanded") ? "open" : "closed")")

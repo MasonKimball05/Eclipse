@@ -92,12 +92,19 @@ class Banner(QFrame):
             self.center.clicked(self)
 
 
+LIVE_KEPT = 20  # (notifications held while they might still be clicked)
+
+
 class NotificationCenter(QObject):
     def __init__(self, browser):
         super().__init__(browser)
         self.browser = browser
         self._live = []      # notifications kept alive while they're showing
         self._banners = []
+        self._badge = None   # (what the Dock shows: set again only when it changes)
+        # Counted again as tabs come and go: only on a title's change, an unpinned, closed or deleted tab's count
+        # stayed on the Dock till another's title changed
+        browser.store.structure_changed.connect(self.update_dock)
 
     @property
     def do_not_disturb(self) -> bool:
@@ -107,17 +114,18 @@ class NotificationCenter(QObject):
         profile.setNotificationPresenter(lambda notification, p=profile: self.present(p, notification))
 
     def present(self, profile, notification):
-        self._live.append(notification)
+        # (kept while its banner shows: most sites never close theirs, so held on to, every one stayed till quitting)
+        self._live = [*self._live[-(LIVE_KEPT - 1):], notification]
         notification.closed.connect(self._closed)  # not a lambda holding it, which would keep it alive
         notification.show()
         tab = self._tab_for(profile, notification)
         if tab is not None:
             tab.notified = True
             tab.changed.emit()
+        if self.do_not_disturb:
+            return  # (no banner, nor the Dock bouncing on and on till you came back: it did, before)
         if not self.browser.isActiveWindow():
             QApplication.alert(self.browser, 0)  # bounce the Dock icon until you look
-        if self.do_not_disturb:
-            return
         banner = Banner(self, notification, tab, self.browser.content)
         self._banners.insert(0, banner)
         for old in self._banners[MAX_BANNERS:]:
@@ -164,6 +172,7 @@ class NotificationCenter(QObject):
         if banner not in self._banners:
             return
         self._banners.remove(banner)
+        self._live = [n for n in self._live if n is not banner.notification]
         if close_it:
             banner.notification.close()
         banner.hide()
@@ -185,4 +194,7 @@ class NotificationCenter(QObject):
                 dot = True
             elif count:
                 total += int(count.rstrip("+"))
-        macos.set_dock_badge(str(total) if total else "•" if dot else "")
+        badge = str(total) if total else "•" if dot else ""
+        if badge != self._badge:
+            self._badge = badge
+            macos.set_dock_badge(badge)

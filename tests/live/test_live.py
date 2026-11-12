@@ -99,7 +99,14 @@ def test_reader_shows_the_article_without_scripts(window, site):
     assert "tostadores independientes" in text
     assert "Deportes" not in text and "boletín" not in text  # the nav and the newsletter box are gone
     assert run_js(reader.view, "1 + 1", 0) is None  # JavaScript is off in the reader
-    reader.close_reader()
+    # A #section of the same page keeps it; the page going somewhere else (back, a redirect) closes it, where it went
+    # on showing the article from before over the new page
+    tab = window.current_tab
+    run_js(tab.view, "location.hash = 'more'; 1", 0)
+    pause(0.4)
+    assert reader.isVisible()
+    tab.view.load(QUrl(f"{site}/links.html"))
+    assert wait_until(lambda: not reader.isVisible(), 5)
 
 
 def test_dev_console_runs_code_and_reloads_on_save(window, tmp_path):
@@ -2365,3 +2372,50 @@ def test_a_sign_in_step_heard_while_a_card_asks_you_something_comes_once_its_ans
     manager._cards[id(tab.view)] = offer
     assert manager._room_for(tab.view, "the password step")
     manager._cards.pop(id(tab.view))
+
+
+def test_dark_websites_reach_the_web_panel_and_peek(window, site, monkeypatch):
+    """Turned on or off, every open page changed at once, but the web panel's sites and a Peek kept the old look till
+    they next loaded a page."""
+    from types import SimpleNamespace
+    from browser import dark_pages
+    applied = []
+    monkeypatch.setattr(dark_pages, "apply", lambda page, settings: applied.append(page))
+    panel_view, peek_view = window.create_view(), window.create_view()
+    panel = window.feature("web_panel").panel
+    monkeypatch.setattr(panel, "sites", [SimpleNamespace(view=panel_view)])
+    monkeypatch.setattr(window.peek, "view", peek_view)
+    window.apply_dark_pages()
+    assert panel_view.page() in applied and peek_view.page() in applied
+
+
+def test_clearing_today_takes_its_tabs_out_of_their_split(window, site):
+    """Cleared (or archived) tabs stayed in their split: two left showing, but adding a third was refused, the gone
+    ones still taking places, and Undo put them back in it unasked."""
+    store = window.store
+    store.active_space.today[:] = []
+    tabs = [open_page(window, f"{site}/{p}") for p in ("index.html", "links.html", "article.html", "img.html")]
+    window.split_tabs(tabs)
+    assert store.split_of(tabs[0]) is not None
+    pinned = tabs[0]
+    store.move_tab(pinned, "pinned")  # (one kept: pinned tabs aren't cleared)
+    window.clear_today()
+    assert all(store.split_of(t) is None for t in tabs[1:])
+    assert not any(t.id in group for group in store.splits for t in tabs[1:])
+
+
+def test_a_page_youre_building_keeps_its_watcher_as_its_address_changes(window, tmp_path):
+    """An app changing its address as you use it (a #section, pushState) had its Reload-on-Save watcher stopped and
+    a new one started each time: the project walked again, and a save in between missed."""
+    from browser.devmode import origin_of
+    page = tmp_path / "site" / "app.html"
+    page.parent.mkdir()
+    page.write_text("<title>App</title><h1>App</h1>")
+    tab = open_page(window, QUrl.fromLocalFile(str(page)).toString())
+    origin = origin_of(tab.view.url().toString())
+    assert wait_until(lambda: origin in window.devmode._watchers, 3)
+    watcher = window.devmode._watchers[origin]
+    run_js(tab.view, "location.hash = 'settings'; 1", 0)
+    assert wait_until(lambda: tab.view.url().fragment() == "settings", 3)
+    pause(0.3)
+    assert window.devmode._watchers.get(origin) is watcher

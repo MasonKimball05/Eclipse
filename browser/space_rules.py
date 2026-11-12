@@ -139,7 +139,11 @@ class SpaceRulesFeature(Feature):
         for tab in self.window.store.all_tabs():
             view = tab.view
             if view is not None and hasattr(view, "page") and view.page() is page:
-                return (self.window.store.locate(tab) or (None, None))[1]
+                where = self.window.store.locate(tab)
+                if where is None:
+                    return None
+                # A Favorite belongs to no Space: it's in the one you're in (taken for none, it was never blocked)
+                return where[1] if where[1] is not None else self.window.store.active_space
         return None
 
     def _allow_navigation(self, page, url: QUrl) -> bool:
@@ -157,6 +161,7 @@ class SpaceRulesFeature(Feature):
 
     def _show_blocked(self, page, space, url):
         site = url.host().lower().removeprefix("www.")
+        page.eclipse_blocked = url.toString()  # (the tab keeps this address, not the blocked page's: window._on_url)
         e = html.escape
         page.setHtml(
             "<html><body style='font: 15px -apple-system, sans-serif; display: flex; align-items: center; "

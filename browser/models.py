@@ -18,6 +18,7 @@ from .theme import PALETTE
 FAVORITES, PINNED, TODAY = "favorites", "pinned", "today"
 
 HISTORY_LIMIT = 5000
+HISTORY_SAVE_MS = 15_000  # (history saved this long after it changes: the session file, half a second)
 ARCHIVE_LIMIT = 300
 
 
@@ -214,6 +215,10 @@ class Store(QObject):
         super().__init__()
         self.path = path
         self._save_timer = QTimer(self, singleShot=True, interval=500, timeout=self.save)
+        # History in a file of its own, saved less often: in the session file, the whole of it (most of the file,
+        # a couple of MB) was written out again after every page you went to and every title change
+        self._history_timer = QTimer(self, singleShot=True, interval=HISTORY_SAVE_MS, timeout=self.save_history)
+        self._history_dirty = False
 
         # If the session file is unreadable (or missing after a crash mid-save), the copy before it
         data = storage.read_json(path) or storage.read_json(storage.previous_copy(path)) or {}
@@ -227,7 +232,9 @@ class Store(QObject):
         if not self.space(self.active_space_id):
             self.active_space_id = self.spaces[0].id
         self.archive: list[dict] = data.get("archive", [])
-        self.history: list[dict] = data.get("history", [])
+        kept = storage.read_json(self.history_path)
+        self._history: list[dict] = kept.get("history", []) if kept else data.get("history", [])  # (or as it was)
+        self._history_dirty = kept is None and bool(data.get("history"))  # (moved to its own file at the next save)
         self.settings: dict = {"archive_after_hours": 12, "sidebar_visible": True, "sidebar_width": 250,
                                **data.get("settings", {})}
         self.window_geometry: str | None = data.get("window_geometry")
@@ -244,11 +251,32 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
         # Coalesce bursts of changes (e.g. a page updating its title repeatedly) into one write
         self._save_timer.start()
 
+    @property
+    def history_path(self):
+        return self.path.with_name("history.json")
+
+    @property
+    def history(self) -> list[dict]:
+        return self._history
+
+    @history.setter
+    def history(self, entries):
+        self._history = entries
+        self._history_dirty = True
+        self._history_timer.start()
+
+    def save_history(self):
+        self._history_timer.stop()
+        if self._history_dirty:
+            storage.write_json(self.history_path, {"version": 1, "history": self._history[:HISTORY_LIMIT]})
+            self._history_dirty = False
+
     def flush(self):
         """Save now if a save is waiting (quitting: the window's own save is only made when it's closed, and a
-        window put away, hidden while Eclipse keeps running, isn't closed by quitting)."""
+        window put away, hidden while Eclipse keeps running, isn't closed by quitting), history too."""
         if self._save_timer.isActive():
             self.save()
+        self.save_history()
 
     def save(self):
         self._save_timer.stop()
@@ -258,7 +286,6 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
             "favorites": [t.to_dict() for t in self.favorites],
             "spaces": [s.to_dict() for s in self.spaces],
             "archive": self.archive[:ARCHIVE_LIMIT],
-            "history": self.history[:HISTORY_LIMIT],
             "settings": self.settings,
             "window_geometry": self.window_geometry,
             "splits": [g for g in ([i for i in g if self.find_tab(i)] for g in self.splits) if len(g) >= 2],
@@ -575,4 +602,3 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
         self.history.insert(0, {"url": url, "title": title, "ts": time.time(),
                                 "visits": (old or {}).get("visits", 0) + 1})
         del self.history[HISTORY_LIMIT:]
-        self.schedule_save()

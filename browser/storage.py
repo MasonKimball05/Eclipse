@@ -204,5 +204,8 @@ def _same(a: QPixmap, b: QPixmap) -> bool:
 
 
 def _write(key, pixmap):
+    current = _icons.get(key)
+    if current is not None and _same(current.pixmap(64, 64), pixmap):
+        return  # (the same picture again: told on every change, it was written out, and cached anew, each time)
     pixmap.save(str(_icon_path(key)), "PNG")
     _icons[key] = QIcon(pixmap)

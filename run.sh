@@ -119,6 +119,13 @@ if [[ -n "$TESTS" ]]; then
 fi
 if (( RELEASE )); then
   if [[ -x "$RELEASE_VENV/bin/python" ]]; then
+    # Its packages kept to requirements.txt as the dev one is (else a version bump was tested on the new Qt and
+    # shipped on the old)
+    if [[ "$(cat "$RELEASE_VENV/.requirements-hash" 2>/dev/null)" != "$REQ_HASH" ]]; then
+      echo "Installing requirements into the release Python …"
+      "$RELEASE_VENV/bin/python" -m pip install --quiet --disable-pip-version-check -r "$SCRIPT_DIR/requirements.txt" || exit 1
+      echo "$REQ_HASH" > "$RELEASE_VENV/.requirements-hash"
+    fi
     exec "$RELEASE_VENV/bin/python" tools/release.py "${PASS[@]}"  # e.g. --notarize PROFILE --install
   fi
   exec "$VENV/bin/python" tools/release.py "${PASS[@]}"

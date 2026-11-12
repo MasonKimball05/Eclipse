@@ -21,7 +21,7 @@ from . import brand, storage
 FORMAT = "eclipse-backup"
 OLD_FORMATS = ("pythonbrowser-backup",)  # (made before the rename: restored the same)
 INCLUDED = ["session.json", "notes", "easels", "browse", "userscripts", "extension_storage", "extensions",
-            "NativeMessagingHosts", "passkeys", "passwords", "recovery.json", "addresses.json"]  # (AutoFill: left out, a restore had none)
+            "NativeMessagingHosts", "passkeys", "passwords", "recovery.json", "addresses.json", "history.json"]  # (AutoFill: left out, a restore had none)
 PENDING = "restore-pending"
 # What runs code: in your pages (extensions, userscripts) or on your Mac (the apps extensions may talk to). A backup
 # from someone else could carry any of it, so restoring says what's there, and can leave it out.

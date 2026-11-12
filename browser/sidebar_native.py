@@ -22,6 +22,8 @@ from . import native
 from .models import PINNED, TODAY, Folder, Tab, walk_tabs
 
 SETTING = "native_sidebar"
+PUSH_AFTER_MS = 30  # (changes this close together go to the sidebar as one)
+ICON_KEYS_KEPT = 2000  # (pictures remembered by their Qt key: more, and they start again)
 
 
 def available() -> bool:
@@ -63,7 +65,8 @@ class NativeSidebarBody(QObject):
         self._pending_icons: dict[str, str] = {}
         self._go = 0
         self._last = None
-        self._timer = QTimer(self, singleShot=True, interval=0, timeout=self.push)
+        # (a moment, not the next pass: ten tabs loading, or a title ticking, sent once, not once each)
+        self._timer = QTimer(self, singleShot=True, interval=PUSH_AFTER_MS, timeout=self.push)
         self._waking = QTimer(self, singleShot=True, interval=300, timeout=self._wake)  # (as a Qt row's WAKE_AHEAD_MS)
         self._resting = None
         self._hovered = None  # (the row the pointer's on, for its tab preview: RowPlace)
@@ -230,6 +233,8 @@ class NativeSidebarBody(QObject):
         cache = icon.cacheKey()
         key = self._icon_keys.get(cache)
         if key is None:
+            if len(self._icon_keys) > ICON_KEYS_KEPT:
+                self._icon_keys.clear()  # (an inbox's icon changing all day: a new picture each time, kept for good)
             data = native.png(icon.pixmap(32, 32))
             key = hashlib.sha1(data.encode()).hexdigest()[:16]
             self._icon_keys[cache] = key

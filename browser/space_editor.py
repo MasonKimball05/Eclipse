@@ -77,7 +77,7 @@ def native_space_editor(browser, space, pos, beside=None):
             return
         form.close()
         extra = {f"x{i}": action for i, (_icon, _text, action) in enumerate(browser.gather("space_actions", space))}
-        {"theme": lambda: browser.edit_space_theme(space), "folder": browser.new_folder,
+        {"theme": lambda: browser.edit_space_theme(space), "folder": lambda: browser.new_folder(space=space),
          "share": lambda: browser.share_space(space), "delete": lambda: browser.delete_space(space),
          **extra}.get(field, lambda: None)()
 
@@ -344,7 +344,7 @@ class SpaceEditor(QWidget):
 
     def _new_folder(self):
         self.close()
-        self.browser.new_folder()
+        self.browser.new_folder(space=self.space)  # (this Space's: asked from another's menu, it went in yours)
 
     def _share(self):
         self.close()

@@ -6,6 +6,7 @@
 # Typed shorthand, as in Arc and Apple Notes: "* " or "- " starts a list, "[] " a checklist (click a box,
 # or ⇧⌘L, to tick it), and "# ", "## " or "### " a heading. Return on an empty list item ends the list.
 
+import os
 import re
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
@@ -82,7 +83,10 @@ class NoteEditor(QTextEdit):
         # overwrite newer text when it closes
         self._save_timer.stop()
         if self.document().isModified():
-            self.path.write_text(self.toMarkdown())
+            # Written beside it and swapped in: written over in place, a crash or a full disk part way left it empty
+            temporary = self.path.with_name(self.path.name + ".saving")
+            temporary.write_text(self.toMarkdown())
+            os.replace(temporary, self.path)
             self.document().setModified(False)
 
     def _merge(self, fmt):

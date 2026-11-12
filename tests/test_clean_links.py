@@ -39,3 +39,15 @@ def test_certificate_reasons_are_plain_and_mention_dev_servers():
     assert "development server" in reason_text(T.CertificateAuthorityInvalid, "", QUrl("https://localhost:8443/"))
     assert "development server" not in reason_text(T.CertificateAuthorityInvalid, "", QUrl("https://a.com/"))
     assert reason_text(T.CertificateNonUniqueName, "Odd name", QUrl("https://a.com/")) == "Odd name."
+
+
+def test_more_trackers_go_and_a_sites_own_filters_stay():
+    """Google Ads' gad_source (on nearly every ad click now), Analytics' _gl and others went through; and "pk_"
+    taken as Matomo's took a site's own ?pk__in=1,2 filter, so a link opened unfiltered."""
+    from browser.clean_links import clean
+    assert clean("https://shop.example/p?id=4&gad_source=1&gad_campaignid=9&_gl=1*abc") == "https://shop.example/p?id=4"
+    assert clean("https://news.example/a?mibextid=Zx&li_fat_id=7&pk_campaign=x") == "https://news.example/a"
+    kept = "https://admin.example/items/?pk__in=1,2,3&pk=5"
+    assert clean(kept) == kept
+    back = "https://login.example/signin?ref_url=https://app.example/home"
+    assert clean(back) == back

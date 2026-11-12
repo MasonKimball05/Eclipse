@@ -5,6 +5,8 @@
 # icons go. Each site is tried once a session, a few at a time.
 
 import ipaddress
+import re
+import socket
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
 
@@ -35,6 +37,9 @@ class _IconLinks(HTMLParser):
                 self.links.append((a["rel"].lower(), a["href"], a.get("sizes", ""), a.get("type", "")))
 
 
+SHARED_ADDRESSES = ipaddress.ip_network("100.64.0.0/10")  # (a carrier's, or Tailscale's: not "private" to Python)
+
+
 def is_private_host(host: str) -> bool:
     """This Mac, or something on your network (a router, a NAS): never fetched for another site's page."""
     host = host.lower().strip("[]").rstrip(".")
@@ -43,8 +48,19 @@ def is_private_host(host: str) -> bool:
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
-        return "." not in host  # (a bare name: something on the local network)
-    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified
+        # A number written short or in hex ("127.1", "0xc0.0xa8.1.1"): an address all the same to the system's
+        # resolver, so to the fetch, though not to ip_address. Taken for a name, it passed as another site's
+        if re.fullmatch(r"[0-9a-fx.]+", host) and any(c.isdigit() for c in host):
+            try:
+                ip = ipaddress.ip_address(socket.inet_aton(host))
+            except (OSError, ValueError):
+                return True  # (something address-like that isn't one: not fetched)
+        else:
+            return "." not in host  # (a bare name: something on the local network)
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped  # (::ffff:192.168.1.1: the same address)
+    return (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified
+            or ip in SHARED_ADDRESSES)
 
 
 def redirect_ok(start: str, to: str) -> bool:

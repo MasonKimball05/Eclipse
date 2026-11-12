@@ -52,10 +52,13 @@ class TabSwitcher(QWidget):
         if not self.active:
             store = self.browser.store
             self.tabs = recent_tabs([t for t in store.visible_tabs() if t.url], self.browser._mru)
-            if len(self.tabs) < 2:
+            # The first is the tab you're on, the place it starts from; with none on (the start view showing), the
+            # first is the last one you used, and the one to go to (taken for the current one, it was skipped)
+            here = bool(self.tabs) and self.tabs[0] is self.browser.current_tab
+            if len(self.tabs) < (2 if here else 1):
                 return
             self.active = True
-            self.index = 0
+            self.index = 0 if here or direction < 0 else -1
             self._reveal.start()
             self._poll.start()
             # The page keeps keyboard focus, so watch the whole app for Esc (and for switching away)

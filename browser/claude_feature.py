@@ -12,7 +12,7 @@ from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import QCheckBox, QLabel
 
 from .ai import Claude, looks_like_question, page_block
-from .browse import BrowseForMe, PageReader, answer_path, js_set, new_run_id, render_page
+from .browse import BrowseForMe, PageReader, answer_path, js_set, new_run_id, reader_profile, render_page
 from .features import Feature
 from .models import TODAY, Folder, Tab, display_host, walk_tabs
 from .page_index import ask_prompt, cite, question_words
@@ -236,7 +236,7 @@ class ClaudeFeature(Feature):
             update("status", html.escape(status))
             self._browse_runs.discard(run)
 
-        run = BrowseForMe(self.claude, window.profile_for_tab(tab), query, window)
+        run = BrowseForMe(self.claude, reader_profile(window), query, window)  # (none of your logins: reader_profile)
         self._browse_runs.add(run)
         run.status.connect(set_status)
         run.sources_found.connect(got_sources)
@@ -371,10 +371,11 @@ class ClaudeFeature(Feature):
             card.set_content(title, summary)
             card.set_image(image)
             return
-        # Read the page off-screen (same cookies as your tabs), then hand its text to Claude
+        # Read the page off-screen (with none of your logins: browse.reader_profile), then hand its text to Claude
         if self._preview_page is not None:
             self._preview_page.cancel()
-        reader = self._preview_page = PageReader(window.profile, url, window, timeout_ms=8_000, enough_chars=800)
+        reader = self._preview_page = PageReader(reader_profile(window), url, window, timeout_ms=8_000,
+                                                 enough_chars=800)
         reader.done.connect(lambda title, text: (self._preview_images.__setitem__(url, reader.image),
                                                  card.url == url and card.set_image(reader.image),
                                                  self._summarize(url, title or display_host(url), text)))

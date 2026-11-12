@@ -384,22 +384,26 @@ class PageChat(QFrame):
         turns.append([shown or question, ""])
         self.input.clear()
         self._asking_tab = tab
+        # (each question its own: by tab alone, a second asked while the first's page text was on its way let both
+        # through, answering into the same row, the one left running out of Cancel's reach)
+        asked = self._asked = getattr(self, "_asked", 0) + 1
         self.refresh()
 
         def got_text(text):
-            if tab.view is None or sip.isdeleted(self) or self._asking_tab is not tab:
+            if tab.view is None or sip.isdeleted(self) or self._asked != asked:
                 return  # (closed, or asked something else meanwhile)
             request = ai.ask(prompt_for(tab.label, tab.url, text, earlier, question))
             self.request = request
-            request.partial.connect(lambda answer: self._answer(tab, answer))
-            request.finished.connect(lambda answer: self._answer(tab, answer, done=True))
-            request.failed.connect(lambda message: self._answer(tab, f"**Couldn't ask:** {message}", done=True))
+            request.partial.connect(lambda answer: self._answer(tab, answer, asked=asked))
+            request.finished.connect(lambda answer: self._answer(tab, answer, done=True, asked=asked))
+            request.failed.connect(lambda message: self._answer(tab, f"**Couldn't ask:** {message}", done=True,
+                                                                asked=asked))
         tab.view.page().toPlainText(got_text)
 
-    def _answer(self, tab, answer, done=False):
+    def _answer(self, tab, answer, done=False, asked=None):
         turns = self.chats.get(tab.id)
-        if not turns or sip.isdeleted(self):
-            return
+        if not turns or sip.isdeleted(self) or (asked is not None and asked != getattr(self, "_asked", asked)):
+            return  # (an earlier question's: not this one's row)
         turns[-1][1] = answer
         if done:
             self.request = None
@@ -408,6 +412,7 @@ class PageChat(QFrame):
             self.refresh()
 
     def cancel(self):
+        self._asked = getattr(self, "_asked", 0) + 1  # (whatever's on its way for the question before: let go)
         if self.request is not None:
             self.request.cancel()
             self.request = None

@@ -157,6 +157,7 @@ class MiniPlayerWindow(QFrame):
         button.setIcon(qta.icon(icon, color="white"))
         button.setIconSize(QSize(size, size))
         button.setToolTip(tip)
+        button.setAccessibleName(tip)  # (an icon alone says nothing to VoiceOver)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.clicked.connect(slot)
         return button
@@ -242,6 +243,15 @@ class MiniPlayer:
             return
         view = tab.view
         view.page().runJavaScript(FIND_PLAYING, WORLD, lambda playing: playing and self._float(tab))
+
+    def page_loaded(self, tab):
+        """A page finished loading: if it's the floated one (the next video was a page of its own, or it reloaded),
+        the new page's video fills the player again, or, with none, the tab goes back. Left as it was, the whole
+        page showed in the player."""
+        if tab is None or tab is not self.tab or tab.view is None:
+            return
+        tab.view.page().runJavaScript(VIDEO_ONLY, WORLD,
+                                      lambda found: found or tab is not self.tab or self._restore())
 
     def release(self, tab):
         """`tab` is about to be shown in the main window again (or closed): take it back."""

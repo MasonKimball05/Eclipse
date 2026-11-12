@@ -128,6 +128,10 @@ struct GradientField: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { drag in
+                        // Only once it's moved: a click (or a double-click's first) changed the color to the field's
+                        // at that spot, and a color the field doesn't have, a gray, say, snapped to a pale tint
+                        guard dragging?.index == index || hypot(drag.translation.width, drag.translation.height) >= 3
+                        else { return }
                         let at = CGPoint(x: Swift.min(Swift.max(drag.location.x, 0), size.width),
                                          y: Swift.min(Swift.max(drag.location.y, 0), size.height))
                         dragging = (index, at)

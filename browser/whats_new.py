@@ -23,6 +23,18 @@ NOTES = """
   aren't from their feed.
 - **Arc's live folders, live again**: a GitHub live folder brought over from Arc is a GitHub Live Folder here,
   keeping itself up to date. Ones brought over before are offered the same, once.
+- **Right-click menus that stay open**: a page's right-click menu (on a search result, say) no longer closes by
+  itself, and right-clicking a link no longer highlights its text.
+- **Hard swipes, one Space at a time**: a hard swipe across the sidebar lands on the next Space, smoothly, without
+  flying past it or slipping back, and the window switches the moment the sidebar settles.
+- **Private windows keep more to themselves**: extensions get nothing from them, a page there can't be watched for
+  changes, zoom stays as you set it, and saving or filling a password there leaves nothing behind.
+- **Safer passwords and extensions**: passwords and passkeys aren't offered on a page whose security warning you
+  clicked past, hidden form fields can't collect your address, and extensions can't reach the files on your Mac
+  or see your tabs' addresses without permission.
+- **Fixes all over**: sync keeps pinned notes and sketches, and Keep Both keeps both Macs' Favorites; backups
+  include your saved addresses; ⌘Q quits with a Little window open; Clear Cookies & Site Data clears sites'
+  stored data too; updating a saved password no longer adds a second one; and many smaller fixes.
 
 ## Lately
 

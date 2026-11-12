@@ -990,22 +990,24 @@ def test_the_page_youre_on_is_offered_to_your_other_devices(window, site, monkey
     window.close_tab(tab)
 
 
-def test_a_page_handed_over_from_your_iphone_opens_in_a_tab(window, monkeypatch):
+def test_a_link_from_another_app_or_your_iphone_goes_where_outside_links_go(window, monkeypatch):
+    """macOS gives a link clicked in another app (and a page handed over from your iPhone) to Qt's handler for web
+    links, not as a file to open: it opened as a plain tab, and the Little window setting and Air Traffic rules
+    never applied to links from other apps."""
     from PyQt6.QtCore import QUrl
     from PyQt6.QtGui import QDesktopServices
     from PyQt6.QtNetwork import QLocalServer
     from browser.app import LinkReceiver
-    opened, fronted = [], []
-    monkeypatch.setattr(window, "open_url", lambda url, **_: opened.append(url))
-    monkeypatch.setattr(window, "bring_to_front", lambda: fronted.append(True))
+    routed = []
+    monkeypatch.setattr(window, "open_external", lambda url: routed.append(url))
     receiver = LinkReceiver(window, QLocalServer())
     receiver.listen_for_handoff()
     try:
-        # (macOS gives Qt the page; Qt gives it to the app's handler for web links, as openUrl does)
-        assert QDesktopServices.openUrl(QUrl("https://example.com/article?from=phone"))
-        assert opened == ["https://example.com/article?from=phone"] and fronted == [True]
+        # (macOS gives Qt the link; Qt gives it to the app's handler for web links, as openUrl does)
+        assert QDesktopServices.openUrl(QUrl("https://example.com/article?from=mail"))
+        assert routed == ["https://example.com/article?from=mail"]
         receiver.continue_page(QUrl("file:///etc/passwd"))
-        assert len(opened) == 1  # (only web pages)
+        assert len(routed) == 1  # (only web pages)
     finally:
         receiver.stop()
 
@@ -2090,12 +2092,26 @@ def test_a_space_comes_forward_on_its_schedule_and_blocks_its_distractions(windo
                                                      timeout=0.5) or ""), 10)
     page = tab.view.page()  # (if it doesn't show, how the page was, to tell why)
     assert shown, (page.lifecycleState(), page.url().toString(), window.toasts, window.current_tab is tab)
+    assert tab.url == site + "/article.html"  # (kept, not the quiet page's own address: Open Anyway's not all that has it)
     window.toast_action()
     assert wait_until(lambda: tab.view.url().toString() == site + "/article.html", 5)
     # The same site in another Space opens as ever
     window.switch_space(first)
     other = open_page(window, site + "/index.html")
     assert other.view.url().toString() == site + "/index.html"
+    # A Favorite is in whichever Space you're in: blocked in Work too (taken for in none, it never was)
+    from browser.models import Tab
+    window.switch_space(work)
+    pause(0.4)
+    favorite = Tab(site + "/links.html?favorite", "A favorite")
+    window.store.favorites.append(favorite)
+    feature.allowed.clear()
+    window.toasts.clear()
+    window.activate_tab(favorite)
+    assert wait_until(lambda: blocked in window.toasts, 5)
+    window.store.favorites.remove(favorite)
+    window._remove_view(favorite)
+    window.switch_space(first)
     feature.set_rule(work, {})
     assert work.id not in window.store.settings.get("space_rules", {})
     window.close_tab(tab)
@@ -3743,3 +3759,266 @@ def test_a_userscripts_saved_value_reaches_its_other_open_tabs(window, site):
         assert wait_until(lambda: shown(first) == "7", 5)
     finally:
         host.remove_userscript(script.id)
+
+
+
+def test_a_floated_tab_that_loads_a_new_page_shows_its_video_or_goes_back(window, site):
+    """The video-only look was put on once: a floated tab that loaded a page of its own (a next video that's a new
+    page, a reload) showed the whole page in the little player."""
+    from PyQt6.QtCore import QRect
+    player = window.mini_player
+    player._screen_area = lambda: QRect(-6000, -4000, 1600, 1000)  # (off your screen)
+    video = open_page(window, f"{site}/video.html")
+    assert wait_until(lambda: window.tab_audio(video)[0], 5)
+    other = open_page(window, f"{site}/index.html")
+    assert wait_until(lambda: player.tab is video and player.window.isVisible(), 5)
+    video.view.reload()  # (a page with a video again: just its video)
+    assert loaded(video.view)
+    assert wait_until(lambda: run_js(video.view, "!!document.getElementById('pb-mini-style')"), 3)
+    assert player.tab is video
+    # Its video asking for full screen (YouTube does on a double-click): refused, never this window taking it
+    from types import SimpleNamespace
+    told = []
+    request = SimpleNamespace(toggleOn=lambda: True, reject=lambda: told.append("rejected"),
+                              accept=lambda: told.append("accepted"), origin=lambda: QUrl(site))
+    window._on_fullscreen(request, video.view)
+    assert told == ["rejected"] and not window.isFullScreen()
+    video.view.load(QUrl(f"{site}/links.html"))  # (one with none: the tab goes back, never the whole page in it)
+    assert loaded(video.view)
+    assert wait_until(lambda: player.tab is None and not player.window.isVisible(), 3)
+    window.close_tab(other)
+
+
+def test_ctrl_tab_with_no_tab_on_goes_to_the_last_one_you_used(window, site):
+    """With the start view up (no tab on), ⌃Tab took the first of the recent tabs for the current one and went to the
+    second: never to the one you'd just been using."""
+    older, last = open_page(window, f"{site}/index.html"), open_page(window, f"{site}/links.html")
+    switcher = window.tab_switcher
+    window.current_tab = None  # (as after closing the last tab you had on: the start view)
+    switcher.step(1)
+    assert switcher.active and switcher.tabs[switcher.index] is last
+    switcher.commit()
+    assert window.current_tab is last
+    window.activate_tab(older)
+    switcher.step(1)  # (with one on: the one before it, as ever)
+    assert switcher.tabs[switcher.index] is last
+    switcher.commit()
+
+
+def test_the_tab_the_now_playing_card_plays_isnt_put_to_rest(window, site, monkeypatch):
+    """Paused from the card and left a few minutes, Low Power Mode froze it (or Memory Saver slept it): the card's
+    Play did nothing till you went to the tab."""
+    music = open_page(window, f"{site}/index.html")
+    other = open_page(window, f"{site}/links.html")
+    feature = window.feature("now_playing")
+    if feature is None:
+        pytest.skip("Now Playing isn't part of this build")
+    monkeypatch.setattr(feature.player, "tab", music)
+    assert music not in list(window.resting_tabs())
+    monkeypatch.setattr(feature.player, "tab", None)
+    assert music in list(window.resting_tabs())  # (with no card for it, it can rest as any tab)
+    window.close_tab(other)
+
+
+def test_new_folder_from_another_spaces_menu_goes_in_that_space(window, monkeypatch):
+    """Right-clicking another Space's button and choosing New Folder put the folder in the Space you were in."""
+    from browser import prompts
+    store = window.store
+    while len(store.spaces) < 2:
+        store.add_space("Second", "#22aa66")
+    here, there = store.spaces[0], store.spaces[1]
+    window.switch_space(here)
+    monkeypatch.setattr(prompts, "ask_text", lambda parent, title, label, done, **k: done("From its menu"))
+    window.new_folder(space=there)
+    assert any(getattr(n, "name", "") == "From its menu" for n in there.pinned)
+    assert not any(getattr(n, "name", "") == "From its menu" for n in here.pinned)
+
+
+def test_reopening_a_closed_note_thats_open_again_goes_to_it_not_a_second_editor(window):
+    """Closed, opened again from the Library, then ⇧⌘T: two editors on one note, and the one saved last wrote over
+    the other's changes."""
+    from browser.models import Tab
+    note = Tab("note:reopen-test", "A note")
+    window.store.add_tab(note)
+    window.activate_tab(note)
+    window.close_tab(note)
+    again = Tab("note:reopen-test", "A note")  # (opened again, from the Library)
+    window.store.add_tab(again)
+    window.activate_tab(again)
+    window.reopen_closed_tab()
+    assert [t for t in window.store.all_tabs() if t.url == "note:reopen-test"] == [again]
+    assert window.current_tab is again
+    window.close_tab(again)
+
+
+def test_pages_read_unseen_are_read_with_none_of_your_logins(window, site, site_root):
+    """A link's preview and Browse for Me's sources were read with your logins: a preview of a "Sign out" link signed
+    you out, with no click, and the sites read showed your account, which went to Claude."""
+    from pathlib import Path
+    from browser.browse import PageReader, reader_profile
+    (Path(site_root) / "who.html").write_text("<title>Who</title><body><script>document.body.textContent = "
+                                             "'cookies: [' + document.cookie + '] ' + 'x'.repeat(300)</script>")
+    tab = open_page(window, f"{site}/index.html")
+    run_js(tab.view, "document.cookie = 'session=yours; max-age=999'; 1", 0)  # (signed in, in your profile)
+    profile = reader_profile(window)
+    assert profile.isOffTheRecord() and reader_profile(window) is profile
+    found = []
+    reader = PageReader(profile, f"{site}/who.html", window, timeout_ms=8000, enough_chars=50)
+    reader.done.connect(lambda title, text: found.append(text))
+    assert wait_until(lambda: found, 10)
+    assert "cookies: []" in found[0] and "session=yours" not in found[0]
+
+
+def test_two_quick_questions_about_a_page_get_one_answer_each(window, site, monkeypatch):
+    """A second question asked while the first's page text was on its way: both were asked, both answers went into
+    the second's row (the last one in won), and the one left running couldn't be cancelled."""
+    from types import SimpleNamespace
+    tab = open_page(window, f"{site}/article.html")
+    chat = window.feature("page_chat").chat
+    chat.follow(tab)
+    held = []
+    monkeypatch.setattr(tab.view.page(), "toPlainText", lambda callback: held.append(callback))
+    asked = []
+
+    def ask(prompt):
+        signal = lambda: SimpleNamespace(connect=lambda fn: None)  # noqa: E731
+        asked.append(prompt)
+        return SimpleNamespace(partial=signal(), finished=signal(), failed=signal(), cancel=lambda: None)
+    monkeypatch.setattr(window, "assistant", lambda *a, **k: SimpleNamespace(ask=ask))
+    monkeypatch.setattr(chat, "_askable", lambda: True)
+    chat.ask("First question")
+    chat.ask("Second question")
+    for callback in held:
+        callback("the page's text")  # (both page texts arrive, the first's late)
+    assert len(asked) == 1 and "Second question" in asked[0]
+
+
+def test_the_docks_unread_count_goes_when_its_tab_does(window, monkeypatch):
+    """Counted only when a title changed: a pinned inbox unpinned, closed or in a deleted Space left its number on
+    the Dock until another tab's title changed."""
+    from browser import macos
+    from browser.models import PINNED, Tab
+    shown = []
+    monkeypatch.setattr(macos, "set_dock_badge", lambda text, *a: shown.append(text))
+    inbox = Tab("https://mail.example/", "(5) Inbox")
+    window.store.add_tab(inbox, kind=PINNED)
+    window.notifications.title_changed(inbox)
+    assert shown[-1] == "5"
+    window.store.remove_tab(inbox)
+    assert shown[-1] == ""
+
+
+def test_a_space_whose_current_tab_moved_away_opens_on_one_of_its_own(window, site):
+    """Moving the tab you're on to another Space left its old Space remembering it: switching back, the start page,
+    though the Space had tabs of its own."""
+    store = window.store
+    while len(store.spaces) < 2:
+        store.add_space("Second", "#22aa66")
+    first, second = store.spaces[0], store.spaces[1]
+    window.switch_space(first)
+    stays = open_page(window, f"{site}/index.html")
+    moves = open_page(window, f"{site}/links.html")
+    window.move_to_space(moves, second)
+    assert store.active_space is second
+    window.switch_space(first)
+    assert wait_until(lambda: window.current_tab is stays, 3)
+
+
+def test_pin_toggle_leaves_a_favorite_where_it_is(window):
+    """⌃D took a Favorite for a pinned tab: it went into Today, its name and home page gone, archived in a day."""
+    from browser.models import Tab
+    favorite = Tab("https://favorite.example/", "Fav", custom_title="Mine")
+    window.store.favorites.append(favorite)
+    window.toggle_pin(favorite)
+    assert favorite in window.store.favorites and favorite.custom_title == "Mine"
+    window.store.favorites.remove(favorite)
+
+
+def test_an_archived_tab_comes_back_to_its_own_space_and_leaves_the_archive(window):
+    """The sidebar's archive menu opened it as a new tab in the Space you were in, and left it archived: a second
+    click made a second tab."""
+    store = window.store
+    while len(store.spaces) < 2:
+        store.add_space("Second", "#22aa66")
+    first, second = store.spaces[0], store.spaces[1]
+    window.switch_space(first)
+    entry = {"url": "https://archived.example/page", "title": "Archived page", "space_id": second.id,
+             "archived_at": 1.0}
+    store.archive.insert(0, entry)
+    window.restore_archived(entry)
+    assert entry not in store.archive
+    assert store.active_space is second and window.current_tab.url == "https://archived.example/page"
+    assert window.current_tab in second.today
+    window.close_tab(window.current_tab)
+    window.switch_space(first)
+
+
+def test_a_tab_made_a_favorite_takes_the_favorites_profile(window, site):
+    """Added to Favorites from a Space with its own profile, it kept that profile's page and logins (a work account
+    showing in every Space) until it happened to reload, and then signed in as someone else."""
+    store = window.store
+    work = store.add_space("Work profile", "#3366ff")
+    window.set_space_profile(work, "Work") if hasattr(window, "set_space_profile") else setattr(work, "profile", "Work")
+    window.switch_space(work)
+    tab = open_page(window, f"{site}/index.html")
+    assert tab.view.page().profile() is window.profile_named("Work")
+    window.toggle_favorite(tab)
+    assert tab in store.favorites
+    assert wait_until(lambda: tab.view is not None and tab.view.page().profile() is window.profile_for_tab(tab), 5)
+    assert window.profile_for_tab(tab) is not window.profile_named("Work")
+    store.favorites.remove(tab)
+    window._remove_view(tab)
+    window.switch_space(store.spaces[0])
+    store.remove_space(work)
+
+
+def test_a_recently_closed_row_reopens_the_tab_it_shows(window, site):
+    """Each row kept where its tab was in the closed list: a tab closed since moved them along, and clicking a row
+    brought back the one beside it."""
+    from PyQt6.QtWidgets import QPushButton
+    for path in ("index.html", "links.html"):
+        window.close_tab(open_page(window, f"{site}/{path}"))
+    start = window.content.empty
+    start.refresh()
+    rows = [b for b in start.findChildren(QPushButton) if b.objectName() == "StartClosed"]
+    first = rows[0]
+    shown = first.toolTip()
+    window.reopen_closed_tab(0)  # (the oldest brought back meanwhile: the rest move down one)
+    first.click()
+    assert window.current_tab is not None and window.current_tab.url == shown
+
+
+def test_a_favorites_split_from_another_space_stays_there(window, site):
+    """Split with a Favorite in one Space, the other Space's tab came along beside the Favorite in every Space, and
+    clicking into it took the window back to its Space."""
+    from browser.models import Tab
+    store = window.store
+    while len(store.spaces) < 2:
+        store.add_space("Second", "#22aa66")
+    first, second = store.spaces[0], store.spaces[1]
+    window.switch_space(first)
+    favorite = Tab(f"{site}/index.html", "Fav")
+    store.favorites.append(favorite)
+    window.activate_tab(favorite)
+    other = open_page(window, f"{site}/links.html")
+    window.split_tabs([favorite, other])
+    window.switch_space(second)
+    window.activate_tab(favorite)
+    assert store.active_space is second and not (other.view and other.view.isVisible())
+    store.favorites.remove(favorite)
+    window._remove_view(favorite)
+    window.switch_space(first)
+
+
+def test_the_find_bar_says_what_its_buttons_are_and_gives_the_keys_back(window, site, monkeypatch):
+    """Its buttons were icons alone ("button, button, button" to VoiceOver), and Esc left the keyboard in the bar
+    sliding away: Space or the arrows searched again instead of scrolling the page."""
+    tab = open_page(window, f"{site}/article.html")
+    bar = window.content.find_bar
+    assert [b.accessibleName() for b in (bar.prev_btn, bar.next_btn, bar.close_btn)] == [
+        "Previous Match", "Next Match", "Close Find"]
+    focused = []
+    monkeypatch.setattr(window, "focus_current", lambda: focused.append(True))
+    bar.open()
+    bar.close_bar()
+    assert focused == [True]

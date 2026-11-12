@@ -88,3 +88,19 @@ def test_session_falls_back_to_the_copy_before(data):
     path.write_text("{ truncated")
     assert storage.read_json(path) is None
     assert storage.read_json(storage.previous_copy(path)) == {"n": 1}
+
+
+def test_eclipses_own_answer_pages_arent_taken_for_pages_youre_building(data_dir, tmp_path):
+    """Browse for Me's answers are files too: taken for yours, each answer tab watched their folder, and the next
+    answer written reloaded every one, back to the top."""
+    from PyQt6.QtCore import QUrl
+    from browser import devmode
+    answer = data_dir / "browse" / "run.html"
+    answer.parent.mkdir(parents=True, exist_ok=True)
+    answer.write_text("<p>an answer</p>")
+    yours = tmp_path / "site" / "index.html"
+    yours.parent.mkdir()
+    yours.write_text("<p>yours</p>")
+    assert not devmode.is_dev_url(QUrl.fromLocalFile(str(answer)).toString())
+    assert devmode.is_dev_url(QUrl.fromLocalFile(str(yours)).toString())
+    assert devmode.is_dev_url("http://localhost:5173/")

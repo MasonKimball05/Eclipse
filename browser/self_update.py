@@ -297,7 +297,10 @@ class UpdatesFeature(Feature):
         super().__init__(window)
         self.updater = SelfUpdater(window)
         if release_bundle() is not None and not storage.throwaway():
-            threading.Thread(target=release_update.tidy, daemon=True).start()  # (what the last update left)
+            # Started: said so after a few seconds (an update's swap is waiting to hear it, or puts the old copy
+            # back), and what the last update left (the old copy) cleared a while after that, not at once
+            QTimer.singleShot(5_000, release_update.mark_started)
+            QTimer.singleShot(120_000, lambda: threading.Thread(target=release_update.tidy, daemon=True).start())
 
     def check(self):
         self.updater.check(manual=True)
