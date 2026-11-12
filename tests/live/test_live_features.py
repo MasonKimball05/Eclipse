@@ -2888,7 +2888,7 @@ def test_the_library_and_downloads_open_natively(window, site, monkeypatch):
         subprocess.run(["screencapture", "-x", "-o", "-l", str(view.page.window_number()), f"{shots}/downloads.png"])
     item.state, item.status = "done", "Done"
     item.changed.emit()
-    view._act("remove", {"id": id(item)})  # finished, then taken off the list
+    view._act("remove", {"id": shown[0]["id"]})  # finished, then taken off the list (by its row)
     assert view.page.state()["items"] == [] and item not in view.qt.items
     assert view.page.key("w") and wait_until(lambda: not view.isVisible(), 3)
 

@@ -192,3 +192,19 @@ def test_a_new_live_folders_name_is_as_long_as_edit_keeps_it():
     me = type("F", (), {"create_live_folder": lambda self, live, name, token: made.append(name)})()
     LiveFoldersFeature._made(me, ({"url": "https://e.com/feed"}, "x" * 60, None))
     assert made == ["x" * 40]
+
+
+def test_a_theme_change_skips_pages_whose_owner_is_gone(qapp):
+    """A page whose owner was deleted without closing it was still listed: asked for its parent, it raised, and
+    the Space's new look (switching Spaces) stopped there."""
+    from types import SimpleNamespace
+    from PyQt6 import sip
+    from PyQt6.QtCore import QObject
+    from PyQt6.QtGui import QColor
+    from browser import native
+    owner = QObject()
+    page = QObject(owner)
+    native._pages[987654] = page
+    sip.delete(page)
+    native.retheme(owner, SimpleNamespace(dark=True, accent=QColor("#123456")))
+    assert 987654 not in native._pages

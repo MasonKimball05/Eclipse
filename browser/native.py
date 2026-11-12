@@ -12,6 +12,7 @@ import os
 import sys
 from pathlib import Path
 
+from PyQt6 import sip
 from PyQt6.QtCore import QObject, pyqtSignal
 
 ABI = 2  # (must match native/Sources/Bridge.swift's)
@@ -138,7 +139,10 @@ def retheme(owner, theme):
     to `owner` (a form, What's New, the Update window…) takes the new one. Else a sheet stayed light over a window
     that had just gone dark."""
     state = theme_state(theme)
-    for page in list(_pages.values()):
+    for key, page in list(_pages.items()):
+        if sip.isdeleted(page):  # (its owner gone without closing it: nothing of it to ask)
+            _pages.pop(key, None)
+            continue
         if not getattr(page, "follows_theme", False):
             continue
         parent = page.parent()
