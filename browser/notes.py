@@ -45,6 +45,7 @@ def _path(url):
 
 class NoteEditor(QTextEdit):
     title_changed = pyqtSignal(str)
+    save_failed = pyqtSignal(str)
 
     def __init__(self, url):
         super().__init__()
@@ -83,10 +84,11 @@ class NoteEditor(QTextEdit):
         # overwrite newer text when it closes
         self._save_timer.stop()
         if self.document().isModified():
-            # Written beside it and swapped in: written over in place, a crash or a full disk part way left it empty
-            temporary = self.path.with_name(self.path.name + ".saving")
-            temporary.write_text(self.toMarkdown())
-            os.replace(temporary, self.path)
+            try:
+                storage.write_text(self.path, self.toMarkdown())
+            except OSError as error:  # (a full disk: kept as edited, to try again, and you're told)
+                self.save_failed.emit(str(error))
+                return
             self.document().setModified(False)
 
     def _merge(self, fmt):
@@ -217,7 +219,11 @@ class NotesFeature(Feature):
     name = "notes"
 
     def view_for(self, tab):
-        return NoteEditor(tab.url) if is_note(tab.url) else None
+        if not is_note(tab.url):
+            return None
+        editor = NoteEditor(tab.url)
+        editor.save_failed.connect(lambda error: self.window.toast(f"Couldn't save “{editor.title}”: {error}"))
+        return editor
 
     def new_note(self):
         from .models import TODAY, Tab

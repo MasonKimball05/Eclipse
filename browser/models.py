@@ -207,9 +207,13 @@ class Space:
                    d.get("active_tab_id"), d.get("profile", "default"), d.get("theme"), d.get("start_view"))
 
 
+SAVE_RETRY_MS = 5000  # (a save that failed: tried again this long after)
+
+
 class Store(QObject):
     # Tabs/spaces were added, removed or reordered: the sidebar needs a rebuild
     structure_changed = pyqtSignal()
+    save_failed = pyqtSignal(str)  # (your tabs couldn't be saved: why)
 
     def __init__(self, path):
         super().__init__()
@@ -280,6 +284,13 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
 
     def save(self):
         self._save_timer.stop()
+        try:
+            self._write()
+        except OSError as error:  # (a full disk, say: told, and tried again, never just lost)
+            self.save_failed.emit(str(error))
+            QTimer.singleShot(SAVE_RETRY_MS, self.schedule_save)
+
+    def _write(self):
         storage.write_json(self.path, {
             "version": 1,
             "active_space_id": self.active_space_id,
@@ -456,6 +467,9 @@ Tab(url, title, home_url=url) for url, title in DEFAULT_FAVORITES]
         if found:
             parent = found[0]
             i = next(i for i, n in enumerate(parent) if n is folder)
+            if folder.live:  # (a Live Folder's new-item dots: nothing clears them out of it)
+                for tab in walk_tabs(folder.children):
+                    tab.fresh = False
             parent[i:i + 1] = folder.children
             self._changed()
 

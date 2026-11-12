@@ -4,6 +4,7 @@
 # and their progress) and does what's asked in the native window to it.
 
 import json
+import itertools
 import os
 import sys
 
@@ -18,6 +19,17 @@ from .downloads import DownloadRow, _file_mime, quick_look, reveal_in_finder
 POLL_MS = 250  # (while it's open: progress moves smoothly)
 SYMBOLS = {"ph.music-note": "music.note", "ph.film-strip": "film", "ph.download-simple": "arrow.down.circle"}
 
+
+
+_row_ids = itertools.count(1)
+
+
+def _row_id(item) -> int:
+    """A download's row, numbered once and never again (its address, id(), was a new download's after it was freed:
+    that one took over the old row's selection, and a menu still open on it acted on the new one)."""
+    if getattr(item, "_row_id", None) is None:
+        item._row_id = next(_row_ids)
+    return item._row_id
 
 class NativeDownloads(QObject):
     def __init__(self, browser):
@@ -85,7 +97,7 @@ class NativeDownloads(QObject):
         items = []
         for item in qt.items:
             path = item.path if item.state == "done" and item.path and os.path.exists(item.path) else ""
-            items.append({"id": id(item), "title": item.title, "status": item.status, "state": item.state,
+            items.append({"id": _row_id(item), "title": item.title, "status": item.status, "state": item.state,
                           "fraction": item.fraction, "can_pause": item.can_pause, "paused": bool(item.paused),
                           "path": path, "symbol": SYMBOLS.get(item.icon, "arrow.down.circle")})
         return {"url": qt.url.text(), "message": qt.message.text(), "can_fetch": qt.fetch_btn.isEnabled(),
@@ -121,7 +133,7 @@ class NativeDownloads(QObject):
         elif name == "clear":
             qt.clear_finished()
         elif name in ("open", "reveal", "look", "copy", "pause", "cancel", "remove"):
-            item = next((i for i in qt.items if id(i) == event.get("id")), None)
+            item = next((i for i in qt.items if _row_id(i) == event.get("id")), None)
             if item is not None:
                 self._item(item, name)
         elif name != "focus":

@@ -2749,6 +2749,13 @@ def test_settings_open_natively_and_drive_their_qt_pages(window, monkeypatch):
     assert state["selected"] == "tabs" and not settings.qt.isVisible()  # (its Qt pages, never shown)
     pages = {p["key"]: p for p in state["pages"]}
     assert {"general", "tabs", "privacy", "passwords", "shortcuts"} <= set(pages)
+    # A search left typed: opening Settings to a page (or picking one) shows that page, not the results over it
+    settings.page.update({"search": "pass"})
+    pause(0.5)
+    assert wait_until(lambda: settings.page.state().get("search") == "pass", 2)
+    window.open_settings("privacy")
+    assert wait_until(lambda: settings.page.state().get("search") == ""
+                      and settings.page.state()["selected"] == "privacy", 3)
 
     def rows(page):
         found = []
@@ -3369,6 +3376,23 @@ def test_the_space_and_theme_editors_are_native(window, monkeypatch):
     form.fill({"name": "Renamed Live", "icon": "ph.code", "color": "#14b8a6"})
     assert wait_until(lambda: space.name == "Renamed Live" and space.icon == "ph.code"
                       and space.color.lower() == "#14b8a6", 3)
+    # A new profile: the editor opens again, showing it
+    from browser import space_editor
+    reopened = []
+    real = space_editor.native_space_editor
+    monkeypatch.setattr(space_editor, "native_space_editor", lambda *a: reopened.append(real(*a)) or reopened[-1])
+    monkeypatch.setattr(window, "set_space_profile", lambda s, p: setattr(s, "profile", p))
+    profile_before = space.profile
+    form.fill({"profile": space_editor.NEW_PROFILE})  # (New Profile… picked, as you would)
+    pause(0.3)
+    form.on_field(form, "create", {"new_profile": "Work Stuff"})
+    assert wait_until(lambda: not form.is_open() and reopened and reopened[-1].is_open(), 3)
+    assert space.profile == "work-stuff"
+    state = reopened[-1].page.state()
+    menu = next(f for section in state["sections"] for f in section["fields"] if f["id"] == "profile")
+    assert menu["value"] == "work-stuff"
+    space.profile = profile_before
+    form = reopened[-1]
     form.close()
     assert wait_until(lambda: not form.is_open(), 3)
     # From the sidebar (edit_space): beside the Space's name, to the right of the sidebar, level with it
@@ -3388,6 +3412,9 @@ def test_the_space_and_theme_editors_are_native(window, monkeypatch):
         subprocess.run(["screencapture", "-x", "-o", "-l", str(form.page.window_number()), f"{shots}/theme_editor.png"])
     form.fill({"colors": ["#f43f5e", "#eab308"], "intensity": 0.9, "mode": "dark"})
     assert wait_until(lambda: space.theme.get("colors") == ["#f43f5e", "#eab308"] and window.theme.dark, 3)
+    # (the editor itself, and anything else open over the window, in the new look too)
+    assert wait_until(lambda: form.page.state().get("dark") is True
+                      and form.page.state().get("accent") == window.theme.accent.name(), 3)
     if shots:
         pause(0.4)
         subprocess.run(["screencapture", "-x", "-o", "-l", str(form.page.window_number()), f"{shots}/theme_editor_two.png"])
@@ -4841,3 +4868,86 @@ def test_a_video_in_a_little_window_goes_full_screen_from_a_tab(window, site, mo
     little._full_screen(_video_request(site, told)(True))
     assert asked == [view] and window.current_tab is not None and window.current_tab.view is view
     window.close_tab(window.current_tab)
+
+
+def test_reopening_a_closed_tab_puts_it_back_in_its_folder(window, site):
+    """⇧⌘T brought a tab back at the top of Today, out of its folder (gone with it, if it was the last)."""
+    store = window.store
+    space = store.active_space
+    other, inside = open_page(window, f"{site}/index.html"), open_page(window, f"{site}/links.html")
+    folder = store.add_folder(space, "Reading", index=0, kind="today")
+    store.move_tab(inside, "today", space, folder=folder) if False else None
+    space.today.remove(inside)
+    folder.children.append(inside)
+    store._changed()
+    url = inside.url
+    window.close_tab(inside)
+    assert folder not in space.today  # (its last tab: it went with it)
+    window.reopen_closed_tab()
+    back = window.current_tab
+    assert back.url == url and folder in space.today and back in folder.children
+    window.close_tab(back)
+    window.close_tab(other)
+
+
+def test_a_deleted_folders_tabs_leave_split_view(window, site):
+    """They stayed in the split's group, unseen, counted against its four panes."""
+    store = window.store
+    space = store.active_space
+    a, b = open_page(window, f"{site}/index.html"), open_page(window, f"{site}/links.html")
+    window.split_tabs([a, b])
+    folder = store.add_folder(space, "Gone", index=0, kind="today")
+    space.today.remove(b)
+    folder.children.append(b)
+    store._changed()
+    window.delete_folder(folder, asked=True)
+    assert all(b.id not in group for group in store.splits)
+    window.close_tab(a)
+
+
+def test_another_tab_closes_the_peek(window, site):
+    """A Peek stayed over the tab or Space you went to (⌃Tab, ⌘1, a new tab)."""
+    a, b = open_page(window, f"{site}/index.html"), open_page(window, f"{site}/links.html")
+    window.activate_tab(a)
+    window.peek.open(window.profile, url=f"{site}/article.html")
+    assert wait_until(lambda: window.peek.isVisible(), 2)
+    window.activate_tab(b)
+    assert not window.peek.isVisible()
+    window.close_tab(a)
+    window.close_tab(b)
+
+
+def test_a_split_pane_moved_to_another_profile_gets_its_page_again(window, site, monkeypatch):
+    """Into or out of Favorites, in a Space with its own profile: its page went, and its pane stayed blank."""
+    from PyQt6.QtWebEngineCore import QWebEngineProfile
+    a, b = open_page(window, f"{site}/index.html"), open_page(window, f"{site}/links.html")
+    window.split_tabs([a, b])
+    window.activate_tab(a)
+    other = QWebEngineProfile("eclipse-test-other", window)
+    real = window.profile_for_tab
+    monkeypatch.setattr(window, "profile_for_tab", lambda t: other if t is b else real(t))
+    window._profile_follows(b)
+    assert wait_until(lambda: b.view is not None and b.view.isVisible(), 3)
+    monkeypatch.undo()
+    window.close_tab(a)
+    window.close_tab(b)
+
+
+def test_whats_new_twice_is_one_window(window, monkeypatch):
+    """Each Help › What's New (or one after the launch's own) opened another window over the last."""
+    from types import SimpleNamespace
+    from browser import whats_new
+    made = []
+
+    def window_for(browser):
+        made.append(SimpleNamespace(shown=False, raised=0))
+        page = made[-1]
+        page.show = lambda: setattr(page, "shown", True)
+        page.isVisible = lambda: page.shown
+        page.raise_ = lambda: setattr(page, "raised", page.raised + 1)
+        return page
+    monkeypatch.setattr(whats_new, "window_for", window_for)
+    monkeypatch.setattr(window, "_whats_new", None, raising=False)
+    window.show_whats_new()
+    window.show_whats_new()
+    assert len(made) == 1 and made[0].raised == 1

@@ -155,3 +155,40 @@ def test_a_window_or_popup_is_kept_on_its_screen():
     assert screens.fit(QRect(-50, 0, 300, 2000), area) == QRect(0, 25, 300, 850)  # (in from the left, no taller)
     assert screens.fit(QRect(1300, 800, 300, 200), area) == QRect(1140, 675, 300, 200)
     assert screens.fit(QRect(10, 30, 50, 50), None) == QRect(10, 30, 50, 50)
+
+
+def test_download_rows_are_numbered_once_and_never_again():
+    """Rows were numbered by id(item): a new download given a freed one's address took over its row."""
+    from types import SimpleNamespace
+    from browser.downloads_native import _row_id
+    a, b = SimpleNamespace(), SimpleNamespace()
+    first = _row_id(a)
+    assert _row_id(a) == first and _row_id(b) != first
+    del a
+    assert _row_id(SimpleNamespace()) not in (first, _row_id(b))
+
+
+def test_the_librarys_row_numbers_forget_what_isnt_listed():
+    """Every row ever listed (each search's, every 2 s) was kept for the whole session; numbers are never reused."""
+    from types import SimpleNamespace
+    from browser import library_native
+    entries = [{"url": f"https://e.com/{i}", "title": str(i), "ts": 0} for i in range(3)]
+    shown = {"rows": entries}
+    qt = SimpleNamespace(section="history", matching=lambda q: shown["rows"], _icon=None, empty_text=lambda q: "")
+    lib = SimpleNamespace(qt=qt, query="", _icons={}, _icon_key=lambda url: "k")
+    lib._icons["k"] = "png"
+    describe = library_native.NativeLibrary.describe
+    first = [e["id"] for e in describe(lib)["entries"]]
+    assert [e["id"] for e in describe(lib)["entries"]] == first  # (the same rows keep their numbers)
+    shown["rows"] = entries[1:] + [{"url": "https://e.com/new", "title": "new", "ts": 0}]
+    second = [e["id"] for e in describe(lib)["entries"]]
+    assert second[:2] == first[1:] and second[2] not in first
+    assert len(lib._ids) == 3  # (the one no longer listed, forgotten)
+
+
+def test_a_new_live_folders_name_is_as_long_as_edit_keeps_it():
+    from browser.live_folder_dialog import LiveFoldersFeature
+    made = []
+    me = type("F", (), {"create_live_folder": lambda self, live, name, token: made.append(name)})()
+    LiveFoldersFeature._made(me, ({"url": "https://e.com/feed"}, "x" * 60, None))
+    assert made == ["x" * 40]

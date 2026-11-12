@@ -163,6 +163,7 @@ struct OptionsCard: View {
         .padding(14)
         .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.5)))
         .onAppear { subs = options.str("subs") }
+        .onChange(of: options.str("subs")) { if $0 != subs { subs = $0 } }  // (reset from Eclipse: Settings saved, say)
     }
 }
 

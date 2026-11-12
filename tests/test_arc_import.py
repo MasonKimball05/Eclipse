@@ -245,3 +245,25 @@ def test_importing_from_arc_again_keeps_your_own_empty_spaces_and_today_tabs(fak
     assert mine in store.spaces
     again = store.space(imported.id)
     assert any(t.url == "https://reading.example/" for t in again.today)
+
+
+def test_importing_arc_again_never_makes_two_tabs_with_one_id(fake_arc, store):
+    """Arc's ids came along: a tab you'd moved out of its Space was there twice under one id after importing again."""
+    arc_import.apply(store, arc_import.read_arc())
+    home = store.spaces[0]
+    code = home.pinned[0]
+    home.pinned.remove(code)
+    store.spaces[1].today.append(code)  # (moved to the other Space)
+    kept = code.id
+    arc_import.apply(store, arc_import.read_arc())
+    ids = [t.id for t in store.all_tabs()]
+    assert len(ids) == len(set(ids)) and code in store.spaces[1].today and code.id == kept  # (yours kept its id)
+
+
+def test_a_damaged_arc_database_still_imports_the_rest(tmp_path):
+    from pathlib import Path
+    bad = tmp_path / "History"
+    bad.write_bytes(b"not a database at all" * 100)
+    work = tmp_path / "work"
+    work.mkdir()
+    assert arc_import._query(Path(bad), work, "SELECT url FROM urls") == []

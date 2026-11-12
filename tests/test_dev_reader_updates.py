@@ -104,3 +104,20 @@ def test_eclipses_own_answer_pages_arent_taken_for_pages_youre_building(data_dir
     assert not devmode.is_dev_url(QUrl.fromLocalFile(str(answer)).toString())
     assert devmode.is_dev_url(QUrl.fromLocalFile(str(yours)).toString())
     assert devmode.is_dev_url("http://localhost:5173/")
+
+
+def test_reader_leaves_no_article_on_the_disk_and_takes_any_theme(qapp, monkeypatch):
+    """A long article went to one shared temporary file, never deleted (a private window's too); and an unknown
+    reader_theme setting raised."""
+    from types import SimpleNamespace
+    from browser import reader
+    me = SimpleNamespace(article={"title": "Long"}, settings={"reader_theme": "nonsense"}, tab=None,
+                         theme_btn=SimpleNamespace(setText=lambda t: None), _file=None,
+                         view=SimpleNamespace(load=lambda url: None, setHtml=lambda *a: None),
+                         isVisible=lambda: False)
+    monkeypatch.setattr(reader, "reader_document", lambda article, size, theme: "x" * (reader.SETHTML_LIMIT + 10))
+    reader.ReaderView.render(me)
+    written = me._file
+    assert written is not None and written.exists() and str(id(me)) in written.name  # (this window's own)
+    reader.ReaderView.close_reader(me)
+    assert not written.exists()

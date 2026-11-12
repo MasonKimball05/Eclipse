@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import (QApplication, QColorDialog, QDialog, QFileDialog,
 import qtawesome as qta
 
 from . import (backup, brand, clean_links, dark_pages, macos, memory, motion, prompts, screenshots, shortcuts,
-               sidebar_native, space_share, spelling, storage)
+               native, sidebar_native, space_share, spelling, storage)
 from .adblock import AdBlocker
 from .command_bar import CUSTOM_SETTING, CommandBar, use_custom_sites
 from .content import ContentFrame
@@ -114,6 +114,8 @@ def _delete(obj):
 
 MRU_KEPT = 300  # (tabs remembered in the order you last used them, for ⌃Tab)
 
+
+SAVE_FAILED_GAP_S = 60  # (a save failing every few seconds says so once a minute)
 
 class MainWindow(QMainWindow):
     PAGE_MIN = PAGE_MIN  # (for features laying things out beside the page: the web panel)
@@ -239,6 +241,7 @@ class MainWindow(QMainWindow):
         self.emit("ready")  # (the features: the window's there now)
 
         store.structure_changed.connect(self._schedule_rebuild)
+        store.save_failed.connect(self._save_failed)
         # Icons for tabs that haven't loaded yet (pinned tabs, Favorites…), looked for a moment after start
         self.favicons = Favicons(self, profile.httpUserAgent())
         self.favicons.fetched.connect(self._icon_fetched)
@@ -321,6 +324,7 @@ class MainWindow(QMainWindow):
         for panel in (self._settings, self._library):
             if panel is not None:
                 panel.apply_theme()
+        native.retheme(self, self.theme)  # (the forms and pages open over it too)
         for corner in self.content.corners:
             corner.update()
         if self.content.blank:
@@ -422,6 +426,12 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self.sidebar.align_with_traffic_lights)  # (its buttons sit after them now)
         else:
             self.traffic_lights.place(True)
+
+    def _save_failed(self, error):
+        now = time.monotonic()
+        if now - getattr(self, "_said_save_failed", -SAVE_FAILED_GAP_S) >= SAVE_FAILED_GAP_S:  # (once in a while)
+            self._said_save_failed = now
+            self.toast(f"Couldn't save your tabs: {error}")
 
     def _update_shield(self):
         self.sidebar.update_shield()  # (a method, not a lambda holding the window: see permissions.PermissionPrompt)
@@ -1401,6 +1411,8 @@ class MainWindow(QMainWindow):
         previous = self.current_tab
         if previous is not tab:
             self.content.find_bar.dismiss()  # (while the page you're leaving is still the current one)
+            if self.peek.isVisible():
+                self.peek.close_peek(animate=False)  # (another tab: the old one's Peek doesn't stay over it)
         if previous is not tab and previous is not None:
             self._note_scroll(previous)  # (to put it back if it sleeps, or after a restart)
         wanted = self.store.settings.get("tab_previews", True) or self.store.settings.get("ctrl_tab", "recent") == "recent"
@@ -1466,6 +1478,8 @@ class MainWindow(QMainWindow):
         self._prepare_soon()
 
     def _show_nothing(self):
+        if self.peek.isVisible():
+            self.peek.close_peek(animate=False)
         self.current_tab = None
         self.content.show_view(None)
         self.reader.close_reader()
@@ -1528,7 +1542,8 @@ class MainWindow(QMainWindow):
         self._destroy_view(tab)
         self.emit("tab_closed", tab)
         if kind == TODAY:
-            self._closed.append((tab.to_dict(), space.id))
+            # (and where it was: ⇧⌘T puts it back in its folder, in its place, the folder too if it went with it)
+            self._closed.append((tab.to_dict(), space.id, node_path(space.today, tab, leaving=(tab,))))
             del self._closed[:-self._keep_closed]
             self.store.remove_tab(tab)
         else:
@@ -1568,7 +1583,7 @@ class MainWindow(QMainWindow):
         """Bring back the last tab you closed (or the one at `index` in the closed list)."""
         if not self._closed:
             return
-        data, space_id = self._closed.pop(index)
+        data, space_id, *where = self._closed.pop(index)
         url = data.get("url") or ""
         if url.startswith(("note:", "easel:")):
             # Open in a tab already (from the Library, since): that one, never a second editor on the same file,
@@ -1579,8 +1594,11 @@ class MainWindow(QMainWindow):
                     self.activate_tab(already)
                 return
         tab = Tab.from_dict(data)
-        space = self.store.space(space_id) or self.store.active_space
-        self.store.add_tab(tab, TODAY, space, 0)
+        space = self.store.space(space_id)
+        if space is not None and where and where[0]:
+            self.store.put_back(space, where[0], tab)  # (where it was, in its folder)
+        else:  # (the Space has gone since: on top of the one you're in)
+            self.store.add_tab(tab, TODAY, space or self.store.active_space, 0)
         if activate:
             self.activate_tab(tab)
 
@@ -1701,6 +1719,7 @@ class MainWindow(QMainWindow):
             self.emit("folder_deleted", gone)
         current_inside = self.current_tab in tabs
         for tab in tabs:
+            self.store.remove_from_split(tab)  # (else a split kept them, unseen, counted against its four)
             self._remove_view(tab)
         self.store.remove_tab(folder)
         if current_inside:
@@ -1795,6 +1814,8 @@ class MainWindow(QMainWindow):
         self._destroy_view(tab)
         if current:
             self.activate_tab(tab)
+        else:
+            self._relayout_split()  # (a pane of the Split View on screen: its page made again, not left blank)
 
     def move_to_space(self, tab, space):
         located = self.store.locate(tab)
@@ -2142,6 +2163,10 @@ class MainWindow(QMainWindow):
 
     def show_whats_new(self):
         from .whats_new import window_for
+        shown = getattr(self, "_whats_new", None)
+        if shown is not None and shown.isVisible():  # (already open, from the menu or after an update: to the front)
+            shown.raise_()
+            return
         self._whats_new = window_for(self)
         self._whats_new.show()
 
@@ -2597,7 +2622,7 @@ class MainWindow(QMainWindow):
         self.emit("before_backup")  # (extensions' storage, say)
         try:
             count = backup.create(Path(path))
-        except OSError as error:
+        except (OSError, ValueError) as error:
             prompts.tell(self, "Backup Failed", str(error), warning=True)
             return
         self.toast(f"Backed up {count} file{'' if count == 1 else 's'} to {Path(path).name}")
@@ -2825,6 +2850,7 @@ class MainWindow(QMainWindow):
             return
         was_active = space is self.store.active_space
         for tab in list(walk_tabs(space.pinned + space.today)):
+            self.store.remove_from_split(tab)
             self._remove_view(tab)
         self.store.remove_space(space)
         if was_active:

@@ -413,7 +413,8 @@ class LiveFoldersFeature(Feature):
         live, name, token = result
         if name:
             live["named"] = True
-        self.create_live_folder(live, name or (feed_name(live["url"]) if live.get("url") else "Live Folder"), token)
+        name = name or (feed_name(live["url"]) if live.get("url") else "Live Folder")
+        self.create_live_folder(live, name[:40], token)  # (as long as Edit keeps it: else cut there, later)
         return None
 
     # What a Live Folder follows: changed, its items are some other feed's, and go (the rest it keeps: what you've

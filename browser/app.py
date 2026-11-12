@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import sys
 from pathlib import Path
 
@@ -147,7 +148,11 @@ def run() -> int:
     server = QLocalServer(app)
     server.listen(_server_name())
 
-    restored = backup.apply_pending()  # a backup chosen last time, swapped in before anything loads
+    try:
+        restored = backup.apply_pending()  # a backup chosen last time, swapped in before anything loads
+    except Exception:  # (never stops Eclipse opening: what's swapped in stays, the rest next time)
+        logging.getLogger(__name__).exception("Couldn't finish restoring the backup")
+        restored = None
     crashed = crash.start()  # did the last run quit properly? (and catch hard crashes from here on)
     profile = build_profile(app)
     store = Store(storage.session_path())

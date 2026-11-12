@@ -15,6 +15,7 @@
 # sign in again) and extensions (Qt 6.11's extension support crashes when enabling one).
 
 import json
+import logging
 import plistlib
 import re
 import shutil
@@ -29,7 +30,7 @@ from PyQt6.QtCore import QTimer, QUrl
 
 from . import brand, prompts, storage
 from .features import Feature
-from .models import ARCHIVE_LIMIT, DEFAULT_FAVORITES, Folder, Space, Tab, walk_folders, walk_tabs
+from .models import ARCHIVE_LIMIT, DEFAULT_FAVORITES, Folder, Space, Tab, new_id, walk_folders, walk_tabs
 from .webview import DEFAULT_PROFILE
 from .theme import PALETTE
 
@@ -290,8 +291,11 @@ def _query(db: Path, tmp: Path, sql: str, params=()) -> list:
     copy = tmp / db.name
     shutil.copy2(db, copy)
     # (closed after: `with sqlite3.connect()` only ends a transaction, and Windows can't delete an open copy)
-    with closing(sqlite3.connect(f"file:{copy}?mode=ro", uri=True)) as conn:
-        return conn.execute(sql, params).fetchall()
+    try:
+        with closing(sqlite3.connect(f"file:{copy}?mode=ro", uri=True)) as conn:
+            return conn.execute(sql, params).fetchall()
+    except sqlite3.Error:  # (copied mid-write by Arc, or a version without that table: the rest still imports)
+        return []
 
 
 def _read_history(db: Path, tmp: Path) -> list[dict]:
@@ -336,6 +340,7 @@ def _extension_names(folder: Path) -> list[str]:
 
 def apply(store, arc: ArcImport):
     """Merge an import into the store. Re-importing replaces the Spaces imported last time."""
+    had = {id(t) for t in store.all_tabs()}  # (the tabs here before: they keep their ids, splits and all)
     for page_url, image in arc.favicons.items():
         storage.save_favicon_png(page_url, image)
 
@@ -371,6 +376,15 @@ def apply(store, arc: ArcImport):
     store.settings[OFFERED] = True
     if arc.spaces:
         store.active_space_id = arc.spaces[0].id
+    # Arc's tabs come with Arc's ids: imported again, one you'd moved out of its Space (to Today, Favorites, another
+    # Space) was there twice under one id, and closing or splitting one acted on whichever was found first
+    seen = {t.id for t in store.all_tabs() if id(t) in had}
+    for tab in store.all_tabs():
+        if id(tab) in had:
+            continue
+        if tab.id in seen:
+            tab.id = new_id()
+        seen.add(tab.id)
     store._changed()
 
 
@@ -452,7 +466,8 @@ class ArcImportFeature(Feature):
             return
         try:
             arc = read_arc()
-        except (OSError, ValueError, KeyError) as error:
+        except Exception as error:  # (anything in a file shaped other than expected: said, never just nothing)
+            logging.getLogger(__name__).exception("Couldn't read Arc's data")
             prompts.tell(window, "Import from Arc", f"Couldn't read Arc's data:\n{error}", warning=True)
             return
 

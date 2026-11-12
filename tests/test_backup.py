@@ -108,3 +108,69 @@ def test_a_restore_that_fails_part_way_leaves_nothing_to_swap_in(data_dir, tmp_p
         backup.stage(zip_path)
     assert backup.apply_pending() is None  # (nothing half-made to swap in)
     assert "Original" in (data_dir / "session.json").read_text()
+
+
+def test_an_older_backup_without_passwords_keeps_the_ones_you_have(data_dir, tmp_path):
+    """A backup made before passwords and passkeys were in backups: restoring it left you with none at all."""
+    _fill(data_dir, "Original")
+    zip_path = tmp_path / "old.zip"
+    backup.create(zip_path)  # (no passwords then)
+    (data_dir / "passwords").mkdir()
+    (data_dir / "passwords" / "logins.json").write_text("mine")
+    (data_dir / "recovery.json").write_text("{}")
+    backup.stage(zip_path)
+    backup.apply_pending()
+    assert (data_dir / "passwords" / "logins.json").read_text() == "mine" and (data_dir / "recovery.json").exists()
+
+
+def test_a_restore_stopped_part_way_finishes_next_time_never_undoes_itself(data_dir, tmp_path, monkeypatch):
+    """Stopped part way, the next launch moved what was already restored out, with nothing to take its place."""
+    import shutil
+    _fill(data_dir, "Original")
+    zip_path = tmp_path / "b.zip"
+    backup.create(zip_path)
+    _fill(data_dir, "Changed since")
+    backup.stage(zip_path)
+    real, moves = shutil.move, []
+
+    def stops_on_notes(src, dst):
+        if src.endswith("restore-pending/notes"):
+            raise OSError("stopped")
+        moves.append(src)
+        return real(src, dst)
+    monkeypatch.setattr(shutil, "move", stops_on_notes)
+    with pytest.raises(OSError):
+        backup.apply_pending()
+    monkeypatch.setattr(shutil, "move", real)
+    backup.apply_pending()  # (the next launch: finishes)
+    assert "Original" in (data_dir / "session.json").read_text()
+    assert (data_dir / "notes" / "a.md").read_text() == "note Original"
+
+
+def test_a_backup_that_fails_keeps_the_one_it_would_have_replaced(data_dir, tmp_path, monkeypatch):
+    """Written straight over the chosen file: stopped part way (a full disk), the earlier backup of the same name was
+    gone, half a zip in its place. And a file dated before 1980 failed it without a word."""
+    import os
+    _fill(data_dir, "Original")
+    zip_path = tmp_path / "b.zip"
+    zip_path.write_bytes(b"the earlier backup")
+    real = zipfile.ZipFile.write
+
+    def full_disk(self, *args, **kwargs):
+        raise OSError("No space left on device")
+    monkeypatch.setattr(zipfile.ZipFile, "write", full_disk)
+    with pytest.raises(OSError):
+        backup.create(zip_path)
+    monkeypatch.setattr(zipfile.ZipFile, "write", real)
+    assert zip_path.read_bytes() == b"the earlier backup" and list(tmp_path.glob("*.partial")) == []
+    os.utime(data_dir / "notes" / "a.md", (100_000_000, 100_000_000))  # (1973)
+    assert backup.create(zip_path) == 2
+
+
+def test_a_damaged_backup_says_so(data_dir, tmp_path):
+    """One whose backup.json isn't an object (or that can't be read) did nothing when chosen."""
+    odd = tmp_path / "odd.zip"
+    with zipfile.ZipFile(odd, "w") as z:
+        z.writestr("backup.json", json.dumps(["not", "an", "object"]))
+    with pytest.raises(ValueError):
+        backup.describe(odd)

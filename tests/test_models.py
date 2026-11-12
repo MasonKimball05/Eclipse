@@ -400,3 +400,15 @@ def test_history_from_before_comes_over_from_the_session_file(store):
     assert [h["url"] for h in moved.history] == ["https://old.example/"]
     moved.flush()
     assert json.loads(moved.history_path.read_text())["history"][0]["url"] == "https://old.example/"
+
+
+def test_ungrouping_a_live_folder_leaves_no_dots_nothing_can_clear(store):
+    """Its tabs kept their new-item dots: only a Live Folder clears them as you open them, and they'd left it."""
+    space = store.active_space
+    folder = Folder("Feed", live={"kind": "rss", "url": "https://e.com/feed"})
+    fresh = Tab("https://e.com/1")
+    fresh.fresh = True
+    folder.children = [fresh]
+    space.pinned.append(folder)
+    store.ungroup_folder(folder)
+    assert fresh in space.pinned and fresh.fresh is False

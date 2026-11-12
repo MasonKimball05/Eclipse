@@ -27,22 +27,36 @@ PENDING = "restore-pending"
 # from someone else could carry any of it, so restoring says what's there, and can leave it out.
 CODE = ["extensions", "extension_storage", "userscripts", "NativeMessagingHosts"]
 KEEP_CODE = "keep-current-extensions"  # (in a staged restore: leave the extensions you have now)
+# Kept when a backup hasn't any (made before they were backed up): else restoring an older backup left you with no
+# saved passwords or passkeys at all, kept only in the before-restore folder
+KEEP_IF_MISSING = ["passkeys", "passwords", "recovery.json", "addresses.json"]
+DONE = "restored.json"  # (in a restore under way: what's swapped in already, so a second try finishes, never undoes)
 
 
 def create(dest: Path) -> int:
     """Write a backup to dest; returns how many files it holds."""
     import zipfile  # (here, not at launch: only backing up and restoring need it)
     root = storage.data_dir()
+    dest = Path(dest)
     count = 0
-    with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as archive:
-        for name in INCLUDED:
-            path = root / name
-            files = [path] if path.is_file() else sorted(p for p in path.rglob("*") if p.is_file()) if path.exists() else []
-            for file in files:
-                archive.write(file, file.relative_to(root).as_posix())
-                count += 1
-        archive.writestr("backup.json", json.dumps({"format": FORMAT, "version": 1, "created": time.time(),
-                                                    "files": count}))
+    # Written beside it, and named only once it's all there: stopped part way (a full disk), it had already written
+    # over the backup of the same name (made the same day), and left half a zip in its place
+    partial = dest.with_name(dest.name + ".partial")
+    try:
+        # (strict_timestamps off: a file dated before 1980 raised ValueError, and the backup failed saying nothing)
+        with zipfile.ZipFile(partial, "w", zipfile.ZIP_DEFLATED, strict_timestamps=False) as archive:
+            for name in INCLUDED:
+                path = root / name
+                files = [path] if path.is_file() else sorted(p for p in path.rglob("*") if p.is_file()) if path.exists() else []
+                for file in files:
+                    archive.write(file, file.relative_to(root).as_posix())
+                    count += 1
+            archive.writestr("backup.json", json.dumps({"format": FORMAT, "version": 1, "created": time.time(),
+                                                        "files": count}))
+        partial.replace(dest)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
     return count
 
 
@@ -56,6 +70,10 @@ def describe(path: Path) -> dict:
             names = archive.namelist()
     except (KeyError, ValueError, zipfile.BadZipFile) as error:
         raise ValueError(f"That isn't a {brand.NAME} backup.") from error
+    except (OSError, NotImplementedError, RuntimeError) as error:  # (unreadable, a compression it can't open…)
+        raise ValueError(f"That backup can't be read ({error}).") from error
+    if not isinstance(info, dict) or not isinstance(session, dict):
+        raise ValueError(f"That isn't a {brand.NAME} backup.")
     if info.get("format") not in (FORMAT, *OLD_FORMATS):
         raise ValueError(f"That isn't a {brand.NAME} backup.")
     spaces = session.get("spaces", [])
@@ -116,16 +134,26 @@ def apply_pending() -> Path | None:
     pending = root / PENDING
     if not pending.is_dir():
         return None
-    kept = root / time.strftime("before-restore-%Y-%m-%d-%H%M%S")
+    stamp, n = time.strftime("before-restore-%Y-%m-%d-%H%M%S"), 1
+    kept = root / stamp
+    while kept.exists():  # (two restores in a second, or a try that stopped part way)
+        n += 1
+        kept = root / f"{stamp}-{n}"
     kept.mkdir()
     keep_code = (pending / KEEP_CODE).exists()
+    done_path = pending / DONE
+    done = storage.read_json(done_path) or []
     for name in INCLUDED:
-        if keep_code and name in CODE:
+        if name in done or (keep_code and name in CODE):
+            continue  # (swapped in by a try that stopped part way: moving it out now would leave nothing there)
+        if name in KEEP_IF_MISSING and not (pending / name).exists():
             continue
         if (root / name).exists():
             shutil.move(str(root / name), str(kept / name))
         if (pending / name).exists():
             shutil.move(str(pending / name), str(root / name))
+        done.append(name)
+        storage.write_json(done_path, done)
     shutil.rmtree(pending, ignore_errors=True)
     _forget_what_sync_knew(root)
     return kept

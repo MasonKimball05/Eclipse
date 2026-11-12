@@ -29,7 +29,11 @@ func words(_ item: JSON) -> String {
 struct SettingsView: View {
     @ObservedObject var model: PageModel
     @State private var selection: String?
-    @State private var search = ""
+    // (the model's, not the view's: a page you pick, or one Eclipse opens Settings to, clears it; else the results
+    // stayed over the page)
+    private var search: Binding<String> {
+        Binding(get: { model.string("search") }, set: { model.merge(["search": $0]) })
+    }
 
     var pages: [JSON] { model.state["pages"] as? [JSON] ?? [] }
 
@@ -40,7 +44,7 @@ struct SettingsView: View {
                     Label(page.str("title"), systemImage: page.str("symbol")).tag(page.str("key"))
                 }
             }
-            .searchable(text: $search, placement: .sidebar, prompt: "Search")
+            .searchable(text: search, placement: .sidebar, prompt: "Search")
             .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
             .safeAreaInset(edge: .bottom) {
                 if model.bool("classic") {
@@ -50,19 +54,22 @@ struct SettingsView: View {
                 }
             }
         } detail: {
-            if search.isEmpty {
+            if search.wrappedValue.isEmpty {
                 if let page = pages.first(where: { $0.str("key") == selection }) ?? pages.first {
                     PageForm(items: page.list("items"))
                         .onAppear { model.window?.title = page.str("title") }
                         .onChange(of: page.str("title")) { model.window?.title = $0 }
                 }
             } else {
-                SearchResults(pages: pages, query: search).onAppear { model.window?.title = "Search" }
+                SearchResults(pages: pages, query: search.wrappedValue).onAppear { model.window?.title = "Search" }
             }
         }
         .onAppear { selection = model.string("selected", "general") }
-        .onChange(of: model.string("selected")) { selection = $0 }
-        .onChange(of: selection) { key in
+        .onChange(of: model.string("selected")) { selection = $0; model.merge(["search": ""]) }
+        .onChange(of: selection) { [selection] key in
+            // (you picked another page: it shows, not the results; not the first page being set, which SwiftUI tells
+            // late, on the next change: that cleared a search as it was typed)
+            if selection != nil, key != nil { model.merge(["search": ""]) }
             if let key, key != model.string("selected") {
                 model.merge(["selected": key])
                 model.act("select", ["key": key])
@@ -73,8 +80,9 @@ struct SettingsView: View {
 
     /// While searching, only the pages with a match.
     var shownPages: [JSON] {
-        guard !search.isEmpty else { return pages }
-        return pages.filter { page in page.list("items").contains { words($0).localizedCaseInsensitiveContains(search) } }
+        let query = search.wrappedValue
+        guard !query.isEmpty else { return pages }
+        return pages.filter { page in page.list("items").contains { words($0).localizedCaseInsensitiveContains(query) } }
     }
 }
 

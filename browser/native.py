@@ -133,6 +133,21 @@ def theme_state(theme) -> dict:
     return {"dark": bool(theme.dark), "accent": theme.accent.name()}
 
 
+def retheme(owner, theme):
+    """The Space's look changed (its color, light or dark, another Space): every open page opened in it that belongs
+    to `owner` (a form, What's New, the Update window…) takes the new one. Else a sheet stayed light over a window
+    that had just gone dark."""
+    state = theme_state(theme)
+    for page in list(_pages.values()):
+        if not getattr(page, "follows_theme", False):
+            continue
+        parent = page.parent()
+        while parent is not None and parent is not owner:
+            parent = parent.parent()
+        if parent is owner:
+            page.update(state)
+
+
 def note_sections(markdown: str) -> list[dict]:
     """Markdown notes ("## heading", "- line" with indented carry-on lines, plain lines) as the sections a native
     page lists: [{"heading": …, "lines": [{"text": inline Markdown, "bullet": bool}]}]."""
@@ -165,6 +180,7 @@ class NativePage(QObject):
             spec = {**spec, "behind": True}
         opener = (lib.eclipse_native_embed if embed else lib.eclipse_native_open) if lib else None
         self.id = opener(json.dumps(spec).encode()) if opener else 0
+        self.follows_theme = "dark" in spec and "accent" in spec  # (opened in the Space's look: it keeps to it)
         if self.id:
             _pages[self.id] = self
 

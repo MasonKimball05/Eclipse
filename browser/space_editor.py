@@ -19,6 +19,7 @@ from .webview import DEFAULT_PROFILE
 
 COLUMNS = 8
 NEW_PROFILE = "__new__"
+REOPEN_MS = 250  # (the popover gone first)
 
 
 _PICTURES: dict = {}  # {ink: {key: PNG}}: the icon grid's pictures, made once per color
@@ -75,6 +76,10 @@ def native_space_editor(browser, space, pos, beside=None):
             made = re.sub(r"[^a-z0-9_-]+", "-", str(values.get("new_profile", "")).strip().lower()).strip("-")
             if made:
                 browser.set_space_profile(space, made)
+                # (the form's menu can't take a new choice: opened again, it shows the profile it now has; else it
+                # still said New Profile…, as if nothing had happened)
+                form.close()
+                QTimer.singleShot(REOPEN_MS, lambda: native_space_editor(browser, space, pos, beside))
             return
         form.close()
         extra = {f"x{i}": action for i, (_icon, _text, action) in enumerate(browser.gather("space_actions", space))}

@@ -113,18 +113,37 @@ def write_json(path: Path, data: dict, keep_previous=False, private=False) -> No
     # private: only your account can read it (passwords, passkeys: encrypted anyway, but nobody else's business)
     tmp = path.with_suffix(".tmp")
     text = json.dumps(data, indent=1)
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600 if private else 0o644)
-    if private:
-        os.fchmod(fd, 0o600)  # (whatever it was before, and whatever the umask says)
-    with os.fdopen(fd, "w") as f:
-        f.write(text)
-        f.flush()
-        # On the disk before it's swapped in: left to the system, a power cut soon after a save could leave both
-        # this and the copy before it empty (the copy's only one save older)
-        os.fsync(f.fileno())
-    if keep_previous and path.exists():
-        os.replace(path, previous_copy(path))
-    os.replace(tmp, path)
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600 if private else 0o644)
+        if private:
+            os.fchmod(fd, 0o600)  # (whatever it was before, and whatever the umask says)
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+            f.flush()
+            # On the disk before it's swapped in: left to the system, a power cut soon after a save could leave both
+            # this and the copy before it empty (the copy's only one save older)
+            os.fsync(f.fileno())
+        if keep_previous and path.exists():
+            os.replace(path, previous_copy(path))
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)  # (a full disk, say: no half-written file left behind)
+        raise
+
+
+def write_text(path: Path, text: str) -> None:
+    """`text` into `path` whole or not at all: written beside it, on the disk, then swapped in (written over in
+    place, or swapped in before it was on the disk, a crash, a full disk or a power cut could leave it empty)."""
+    tmp = path.with_name(path.name + ".saving")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 # --- Favicons -----------------------------------------------------------------

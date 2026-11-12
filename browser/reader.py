@@ -6,6 +6,7 @@
 # A, A+, a theme (light, sepia, dark) and Translate sit in the bar at the top; Esc closes it.
 
 import html
+import os
 import tempfile
 from pathlib import Path
 
@@ -279,7 +280,7 @@ class ReaderView(QFrame):
             return
         size = SIZES[self.settings.get("reader_size", 2) % len(SIZES)]
         theme = self.settings.get("reader_theme", "light")
-        self.theme_btn.setText({"light": "Light", "sepia": "Sepia", "dark": "Dark"}[theme])
+        self.theme_btn.setText({"light": "Light", "sepia": "Sepia", "dark": "Dark"}.get(theme, "Light"))
         base = QUrl(self.tab.url) if self.tab else QUrl()
         document = reader_document(self.article, size, theme)
         if len(document.encode("utf-8")) < SETHTML_LIMIT:
@@ -287,7 +288,8 @@ class ReaderView(QFrame):
         else:
             # setHtml can't take more than 2 MB (it becomes a data: address): a long article goes
             # through a file instead (its links are already absolute; JavaScript is still off)
-            path = Path(tempfile.gettempdir()) / "eclipse-ui" / "reader.html"
+            # (this window's own, and gone when Reader closes: a private window's article left on the disk after)
+            path = self._file = Path(tempfile.gettempdir()) / "eclipse-ui" / f"reader-{os.getpid()}-{id(self)}.html"
             path.parent.mkdir(exist_ok=True)
             path.write_text(document, encoding="utf-8")
             self.view.load(QUrl.fromLocalFile(str(path)))
@@ -311,6 +313,9 @@ class ReaderView(QFrame):
             tab.view.load(url)
 
     def close_reader(self):
+        if getattr(self, "_file", None) is not None:
+            self._file.unlink(missing_ok=True)
+            self._file = None
         if self.isVisible():
             self.hide()
             claude = self.browser.feature("claude")

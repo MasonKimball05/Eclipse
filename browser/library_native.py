@@ -66,10 +66,15 @@ class NativeLibrary(QObject):
         entries, icons = [], {}
         # Each entry keeps its number while it's listed: numbered by where it was, a page loading while a row's
         # menu was open (a new entry at the top) had Remove take a different page out of your history
-        ids = self.__dict__.setdefault("_ids", {})
+        # (only those still listed are remembered, each search's and refresh's: numbered on, never reused)
+        ids, kept = self.__dict__.get("_ids", {}), {}
         self._by_id = {}
         for entry in self._entries:
-            i = ids.setdefault((qt.section, entry["url"], entry.get("ts"), entry.get("path")), len(ids) + 1)
+            key = (qt.section, entry["url"], entry.get("ts"), entry.get("path"))
+            if key not in ids:
+                self._next_id = getattr(self, "_next_id", 0) + 1
+                ids[key] = self._next_id
+            i = kept[key] = ids[key]
             self._by_id[i] = entry
             key = self._icon_key(entry["url"])
             if key not in self._icons:
@@ -80,6 +85,7 @@ class NativeLibrary(QObject):
                             "day": day_label(entry["ts"]) if entry["ts"] else "Earlier",
                             "web": entry["url"].startswith("http"), "note": entry["url"].startswith("note:"),
                             "file": "path" in entry})
+        self._ids = kept
         total = len(qt.matching(""))
         return {"entries": entries, "icons": icons, "empty": qt.empty_text(self.query), "query": self.query,
                 "clear": {"history": "Clear History…", "archive": "Empty Archive…"}.get(qt.section, ""),
