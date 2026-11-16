@@ -5018,3 +5018,61 @@ def test_the_shield_opens_site_settings_or_its_menu_where_theres_no_native(windo
     window.sidebar.shield_btn.click()
     assert len(opened) == 1 and len(menus) == 1
     window.close_tab(tab)
+
+
+def _select_across_the_bold(view):
+    """"quick brown fox" in the second paragraph, starting inside its <b> and ending after it."""
+    return run_js(view, """(() => {
+      const b = document.querySelector('#two b'), after = b.nextSibling;
+      const range = document.createRange();
+      range.setStart(b.firstChild, 0); range.setEnd(after, 4);
+      const s = window.getSelection(); s.removeAllRanges(); s.addRange(range);
+      return s.toString(); })()""")
+
+
+def test_a_highlight_is_marked_kept_in_its_sites_note_and_back_after_a_reload(window, site):
+    from browser import highlights
+    from browser.notes import _path
+    feature = window.feature("highlights")
+    tab = open_page(window, f"{site}/highlight.html")
+    view = tab.view
+    assert _select_across_the_bold(view) == "quick brown fox"
+    made = []
+    feature.highlight_selection(view, done=made.append)
+    assert wait_until(lambda: made, 3) and made[0] is not None
+    item = made[0]
+    try:
+        assert item["text"] == "quick brown fox" and item["prefix"].endswith("A ")
+        marked = "Array.from(document.querySelectorAll('mark[data-eclipse-highlight]')).map(m => m.closest('p').id + ':' + m.textContent).join('|')"
+        assert run_js(view, marked) == "two:quick brown|two: fox"
+        # In its site's note, linked to its page
+        note = window.store.settings[highlights.NOTES_SETTING][highlights.site_of(tab.url)]
+        assert "“quick brown fox” — [Highlight Me]" in _path(note).read_text()
+        # Back after a reload, on the same words (not the first "quick brown fox" on the page)
+        view.reload()
+        assert loaded(view)
+        assert wait_until(lambda: run_js(view, marked) == "two:quick brown|two: fox", 3)
+        # ⌘T finds it by what it says
+        from types import SimpleNamespace
+        bar = SimpleNamespace(mode="", _icon=lambda name: None, _open=lambda url: url)
+        rows = feature.command_results(bar, "brown fox", set())
+        assert rows and "quick brown fox" in rows[0].title
+        # Right-clicking it offers to take it off; then it's gone from the page and the note
+        assert feature.store.overlapping(tab.url, "brown") is item
+        feature.remove(item, view)
+        assert wait_until(lambda: run_js(view, "document.querySelectorAll('mark[data-eclipse-highlight]').length") == 0, 3)
+        assert "quick brown fox" not in _path(note).read_text() and not feature.store.for_page(tab.url)
+    finally:
+        if item in feature.store.items:
+            feature.remove(item)
+        window.close_tab(tab)
+
+
+def test_no_highlights_in_a_private_window(window, site):
+    from PyQt6.QtWidgets import QMenu
+    feature = window.feature("highlights")
+    private = window.private.new_window(f"{site}/highlight.html")
+    view = private.current if hasattr(private, "current") else private.view
+    assert loaded(view)
+    assert feature.selection_menu(QMenu(), view, "quick brown") == []
+    private.close()

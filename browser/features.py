@@ -17,7 +17,7 @@ import traceback
 
 # The feature modules, in the order they're loaded (later ones can find earlier ones)
 FEATURE_MODULES = [
-    "self_update", "arc_import", "welcome", "addresses", "member_card", "notes", "easel", "gestures", "now_playing", "upnext",
+    "self_update", "arc_import", "welcome", "addresses", "member_card", "notes", "highlights", "easel", "gestures", "now_playing", "upnext",
     "integrations_ui", "github_status", "live_folder_dialog", "boosts", "claude_feature", "page_chat",
     "handoff", "sync", "scripting", "spotlight", "power_saver", "memory_saver", "privacy_report", "space_rules", "recipes",
     "page_watch", "download_arc", "web_panel", "ext.ui",

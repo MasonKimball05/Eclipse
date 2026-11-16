@@ -21,6 +21,9 @@ NOTES = """
   everything about the site you're on in one place: what it may use (camera, microphone, location,
   notifications), its ads, zoom and dark page, the apps it may open without asking, and Clear Cookies & Site Data
   to sign out of just that site.
+- **Highlights**: select text, right-click → Highlight, and it's marked there each time you come back. Each site's
+  highlights are kept in a note of their own ("Highlights from example.com"), linked to their pages, and ⌘T finds
+  them by what they say. Right-click highlighted text to remove it.
 
 ## Lately
 
