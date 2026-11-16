@@ -4,6 +4,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 from browser import power_saver, windows_system
 
 
@@ -116,6 +118,8 @@ def test_eclipses_own_links_on_the_command_line_go_to_eclipse_not_a_little_windo
     assert window.toasts and "doesn't know" in window.toasts[-1]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="a named pipe holds a write till the other end reads it, and "
+                    "here both ends are this one process, which can't read while it waits (the real one reads at once)")
 def test_a_link_handed_over_while_eclipse_quits_isnt_lost(qapp, monkeypatch):
     """The running Eclipse went on listening while it quit, with nothing reading: a second launch handed its link
     over, stepped aside, and the link never opened. Stopped, it listens no more, and the second launch opens it."""

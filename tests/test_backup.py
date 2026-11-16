@@ -134,7 +134,7 @@ def test_a_restore_stopped_part_way_finishes_next_time_never_undoes_itself(data_
     real, moves = shutil.move, []
 
     def stops_on_notes(src, dst):
-        if src.endswith("restore-pending/notes"):
+        if str(src).replace("\\", "/").endswith("restore-pending/notes"):  # (Windows' separators too)
             raise OSError("stopped")
         moves.append(src)
         return real(src, dst)

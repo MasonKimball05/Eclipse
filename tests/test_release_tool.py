@@ -202,3 +202,47 @@ def test_the_release_opens_signed_as_it_ships_and_publishes_only_what_it_was_bui
     assert "built_from_here()" in inspect.getsource(release.assemble)
     # (and what the app says, written to a file: into a pipe nothing read, a chatty app stopped, and looked open)
     assert "subprocess.PIPE" not in inspect.getsource(release.check_launches)
+
+
+def test_a_release_waits_for_its_checks_and_refuses_a_red_one(monkeypatch):
+    """26.1.5.0 went out with the Windows checks red for a week: nothing looked at them."""
+    release = _release()
+    assert {"macOS", "Windows"} <= set(release.ci_workflows())
+    ok = {"status": "completed", "conclusion": "success", "url": "u"}
+    red = {"status": "completed", "conclusion": "failure", "url": "https://ci/1"}
+    running = {"status": "in_progress", "conclusion": None, "url": "u"}
+    expected = ["macOS", "Windows"]
+    state = release.ci_state
+    assert state([{"workflowName": "macOS", **ok}, {"workflowName": "Windows", **ok}], expected)[0] == "passed"
+    failed = state([{"workflowName": "macOS", **ok}, {"workflowName": "Windows", **red}], expected)
+    assert failed[0] == "failed" and "Windows" in failed[1] and "https://ci/1" in failed[1]
+    # (each judged by its newest run: a re-run that passed counts, an older red one doesn't)
+    assert state([{"workflowName": "Windows", **ok}, {"workflowName": "Windows", **red},
+                  {"workflowName": "macOS", **ok}], expected)[0] == "passed"
+    assert state([{"workflowName": "macOS", **ok}], expected)[0] == "running"  # (Windows' hasn't started)
+    assert state(None, expected)[0] == "failed"  # (unreadable: never taken for passed)
+    # Still running: waited for, then published once they pass; a red one refuses at once
+    monkeypatch.setattr(release, "ci_workflows", lambda: expected)
+    answers = [[{"workflowName": "macOS", **ok}, {"workflowName": "Windows", **running}]] * 2 + \
+        [[{"workflowName": "macOS", **ok}, {"workflowName": "Windows", **ok}]]
+    monkeypatch.setattr(release, "ci_runs", lambda commit: answers.pop(0))
+    slept = []
+    assert release.ci_problem("abc", wait=True, sleep=slept.append) is None and len(slept) == 2
+    monkeypatch.setattr(release, "ci_runs", lambda commit: [{"workflowName": "macOS", **ok},
+                                                            {"workflowName": "Windows", **running}])
+    assert release.ci_problem("abc", wait=False) is None  # (before building: running is fine for now)
+    clock = iter(range(0, 10_000, 600))
+    assert "minutes" in release.ci_problem("abc", wait=True, sleep=lambda s: None, clock=lambda: next(clock))
+    monkeypatch.setattr(release, "ci_runs", lambda commit: [{"workflowName": "macOS", **ok},
+                                                            {"workflowName": "Windows", **red}])
+    assert "failed" in release.ci_problem("abc", wait=False)
+
+
+def test_publishing_looks_at_the_checks_before_building_and_again_before_publishing():
+    import inspect
+    release = _release()
+    flow = inspect.getsource(release.release)
+    assert flow.index("ci_problem(head, wait=False)") < flow.index("assemble(")
+    publishing = flow[flow.index("if publishing:\n        #"):]
+    assert publishing.index("ci_problem(head, wait=True)") < publishing.index("publish(archive")
+    assert "ci_problem(" in inspect.getsource(release.publish_built)

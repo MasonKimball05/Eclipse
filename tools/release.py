@@ -30,6 +30,7 @@ library), then the app, all with the hardened runtime and a secure timestamp, as
 
 import argparse
 import compileall
+import json
 import os
 import plistlib
 import re
@@ -555,6 +556,77 @@ def publishable() -> str | None:
     return None
 
 
+# CI: a release is only published once GitHub's checks on its commit have passed, on every system they run on (the
+# Windows ones were red for a week, and 26.1.5.0 went out with them so). Still running, it waits for them.
+WORKFLOWS = ROOT / ".github" / "workflows"
+CI_WAIT_S = 20 * 60  # (a run takes a few minutes; a queue on GitHub's side can add more)
+CI_POLL_S = 30
+
+
+def ci_workflows() -> list[str]:
+    """The names of the checks that run on every push (each workflow file's `name:`)."""
+    names = []
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        found = re.search(r"^name:\s*(.+?)\s*$", path.read_text(), re.M)
+        if found:
+            names.append(found.group(1).strip("\"'"))
+    return names
+
+
+def ci_runs(commit: str) -> list[dict] | None:
+    """GitHub's runs of the checks on `commit`, newest first; None if they can't be read."""
+    found = subprocess.run(["gh", "run", "list", "--commit", commit, "--limit", "50",
+                            "--json", "workflowName,status,conclusion,url"], capture_output=True, text=True)
+    if found.returncode != 0:
+        return None
+    try:
+        return json.loads(found.stdout or "[]")
+    except ValueError:
+        return None
+
+
+def ci_state(runs: list[dict] | None, expected: list[str]) -> tuple[str, str]:
+    """("passed" | "running" | "failed", what to say) for a commit's checks: each workflow judged by its newest run
+    (a re-run that passed counts)."""
+    if runs is None:
+        return "failed", "couldn't read the checks on GitHub (`gh run list`)"
+    waiting, failed = [], []
+    for name in expected:
+        newest = next((r for r in runs if r.get("workflowName") == name), None)
+        if newest is None or newest.get("status") != "completed":
+            waiting.append(name)
+        elif newest.get("conclusion") != "success":
+            failed.append(f"{name} ({newest.get('conclusion')}: {newest.get('url')})")
+    if failed:
+        return "failed", "the checks failed on this commit: " + ", ".join(failed)
+    if waiting:
+        return "running", "waiting for the checks on this commit: " + ", ".join(waiting)
+    return "passed", "the checks passed: " + ", ".join(expected)
+
+
+def ci_problem(commit: str, wait: bool, sleep=time.sleep, clock=time.monotonic) -> str | None:
+    """Why `commit` can't be published for its checks, or None once they've all passed. `wait`: while they're still
+    running, wait for them (up to CI_WAIT_S); otherwise still running is fine for now (looked at again later)."""
+    expected = ci_workflows()
+    if not expected:
+        return None
+    started = clock()
+    said = ""
+    while True:
+        state, why = ci_state(ci_runs(commit), expected)
+        if state == "passed":
+            print(why)
+            return None
+        if state == "failed" or not wait:
+            return why if state == "failed" else None
+        if clock() - started >= CI_WAIT_S:
+            return why + f" (still not done after {CI_WAIT_S // 60} minutes)"
+        if why != said:
+            print(why + "…")
+            said = why
+        sleep(CI_POLL_S)
+
+
 # The version people see: year . major release . week's release . release within the week (26.1.3.0, 26.1.3.1…).
 # The latest is the newest release on GitHub named like that, so nothing needs editing before a release. (Updates
 # don't go by it: they compare build numbers, the minute a release was built, in its tag release-<build>.)
@@ -677,7 +749,7 @@ def differences(built: Path, source: Path) -> list[str]:
                   if name not in ours or name not in theirs or ours[name].read_bytes() != theirs[name].read_bytes())
 
 
-def publish_built():
+def publish_built(ignore_ci=False):
     """The notarized release in dist/, published as it is: only when the commit has exactly its code."""
     app, archive = DIST / f"{NAME}.app", DIST / f"{NAME}.zip"
     if not app.exists() or not archive.exists():
@@ -694,6 +766,8 @@ def publish_built():
     if different := differences(app / "Contents" / "Resources" / "app", ROOT):
         raise SystemExit("The release in dist/ was built from different code than this commit (" +
                          ", ".join(different[:5]) + "): build it again with --notarize PROFILE --publish")
+    if not ignore_ci and (why := ci_problem(git("rev-parse", "HEAD"), wait=True)):
+        raise SystemExit(f"Can't publish: {why} (--ignore-ci publishes anyway)")
     info = plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
     dmg = DIST / f"{NAME}.dmg"
     if dmg.exists() and subprocess.run(["xcrun", "stapler", "validate", str(dmg)], capture_output=True).returncode:
@@ -768,12 +842,17 @@ def rehearse(kind="week") -> Path:
     return app
 
 
-def release(identity: str, notary_profile: str | None, install: bool, publishing=False, kind="week") -> Path:
+def release(identity: str, notary_profile: str | None, install: bool, publishing=False, kind="week",
+            ignore_ci=False) -> Path:
     if identity.startswith(("-", "Apple Development")) or not identity:
         raise SystemExit("A release needs the Developer ID Application certificate (none of the team's is here)")
     if publishing and (why := publishable()):
         raise SystemExit(f"Can't publish: {why}")
     head = git("rev-parse", "HEAD")
+    # (a check that's failed already: said now, not after ten minutes of signing and notarizing; one still running
+    # is waited for before publishing, below)
+    if publishing and not ignore_ci and (why := ci_problem(head, wait=False)):
+        raise SystemExit(f"Can't publish: {why} (--ignore-ci publishes anyway)")
     # The version people see (26.1.3.0), and the build number updates compare (the minute it was built)
     version, build = next_version(kind, published_versions()), time.strftime("%Y%m%d%H%M")
     print(f"{NAME} {version} (build {build})")
@@ -816,6 +895,9 @@ def release(identity: str, notary_profile: str | None, install: bool, publishing
                 (app / "Contents" / "Resources" / "app" / BUILT_FROM).read_text() != head:
             raise SystemExit(f"Can't publish: {why or 'the checkout changed while it was being built'} "
                              "(the release in dist/ is kept: build it again)")
+        if not ignore_ci and (why := ci_problem(head, wait=True)):
+            raise SystemExit(f"Can't publish: {why} (the release in dist/ is kept: once they pass, "
+                             "./run.sh --release --publish-built, or --ignore-ci to publish anyway)")
         publish(archive, build, version, dmg, head)
     print(f"\nShare {dmg}: it opens on Macs with Apple silicon and macOS {minimum} or later.")
     return app
@@ -839,6 +921,8 @@ def main():
     parser.add_argument("--rehearse", action="store_true",
                         help="put the release together and check it opens, without signing or publishing it")
     parser.add_argument("--notes", action="store_true", help="just show the next release's notes")
+    parser.add_argument("--ignore-ci", action="store_true",
+                        help="publish even if GitHub's checks on the commit failed or haven't finished")
     parser.set_defaults(kind="week")
     args = parser.parse_args()
     if args.notes:
@@ -852,7 +936,7 @@ def main():
             print(warning)
         return
     if args.publish_built:
-        publish_built()
+        publish_built(args.ignore_ci)
         return
     if args.rehearse:
         rehearse(args.kind)
@@ -865,7 +949,7 @@ def main():
         identity = best[0] if best and best[1].startswith("Developer ID Application") else ""
         if best:
             print(f"Signing with {best[1]}")
-    release(identity, args.notarize, args.install, args.publish, args.kind)
+    release(identity, args.notarize, args.install, args.publish, args.kind, args.ignore_ci)
 
 
 if __name__ == "__main__":

@@ -12,6 +12,8 @@
 #                          Built with python.org's Python once tools/release_python.py has set it up (so it
 #                          runs on macOS 13 and up), else with this venv's.
 #                          --rehearse: put it together and check it opens, without signing or publishing it
+#                          --publish: only once GitHub's checks (macOS and Windows) have passed on the commit,
+#                          waiting for them if they're still running; --ignore-ci publishes anyway
 #   ./run.sh --tests       run the unit tests
 #   ./run.sh --live-tests  run the live tests too, in three groups at once (browser windows open behind yours, ~2 min)
 #   ./run.sh --core        run without the features (browser/features.py): the plain browser

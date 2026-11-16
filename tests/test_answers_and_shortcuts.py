@@ -101,3 +101,15 @@ def test_addresses_dev_servers_ipv6_and_files_open_rather_than_search(tmp_path):
     finally:
         del SITE_SEARCHES["custom:test"]
     assert command_bar is not None
+
+
+def test_a_windows_path_opens_as_a_file(monkeypatch):
+    """Only paths starting with / were taken for files: on Windows, C:\\Users\\…\\index.html went to the search engine."""
+    import ntpath
+    from browser import command_bar
+    from types import SimpleNamespace
+    windows = SimpleNamespace(isabs=ntpath.isabs, expanduser=lambda p: p, exists=lambda p: True)
+    monkeypatch.setattr(command_bar, "os", SimpleNamespace(path=windows))  # (command_bar's own, never os itself)
+    assert command_bar.to_url(r"C:\Users\me\site\index.html") is not None
+    assert command_bar.to_url(r"\\server\share\notes.txt") is not None
+    assert command_bar.to_url("site\\index.html") is None  # (not absolute: not taken for a file)

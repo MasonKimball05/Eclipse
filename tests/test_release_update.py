@@ -88,7 +88,6 @@ def test_an_ad_hoc_signed_app_is_refused(tmp_path):
     assert "signature" in release_update.problem(app, 4)  # signed, but not by Eclipse's maker
 
 
-@pytest.mark.mac
 def _fake_open(tmp_path, starts: bool):
     """A stand-in for /usr/bin/open: notes what it opened, and (as a copy that starts does) writes the marker."""
     log, script = tmp_path / "opened.txt", tmp_path / "open.sh"
@@ -98,6 +97,7 @@ def _fake_open(tmp_path, starts: bool):
     return {"ECLIPSE_OPEN": str(script), "ECLIPSE_SWAP_WAIT": "5", "PATH": "/usr/bin:/bin"}, log
 
 
+@pytest.mark.mac  # (the swap is a Mac shell script)
 def test_swap_puts_the_new_copy_in_place(tmp_path, monkeypatch):
     monkeypatch.setattr(release_update, "work_dir", lambda: tmp_path / "work")
     (tmp_path / "work").mkdir()
@@ -112,6 +112,7 @@ def test_swap_puts_the_new_copy_in_place(tmp_path, monkeypatch):
     assert not (tmp_path / "work").exists() and current.exists()
 
 
+@pytest.mark.mac  # (the swap is a Mac shell script)
 def test_a_new_copy_that_never_starts_is_swapped_back(tmp_path, monkeypatch):
     """One that quit as it opened (as 26.1.3.0 did) left nothing to go back to: its first act was deleting the old
     copy. Not started (and not running) in time, the old copy's put back and opened."""

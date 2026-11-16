@@ -185,9 +185,11 @@ _SCHEME = re.compile(r"^(https?|file|about|chrome|view-source|data):", re.IGNORE
 def to_url(text: str) -> str | None:
     """Return a URL if the text looks like one, otherwise None (meaning: search for it)."""
     text = text.strip()
-    if text.startswith(("/", "~/")) and os.path.exists(os.path.expanduser(text)):
-        # A file on this Mac: opened, not sent to a search engine (its folders and your name with it)
-        return QUrl.fromLocalFile(os.path.expanduser(text)).toString()
+    path = os.path.expanduser(text)
+    if text and (text.startswith("~") or os.path.isabs(path)) and os.path.exists(path):
+        # A file on this computer: opened, not sent to a search engine (its folders and your name with it). Any
+        # absolute path, so C:\Users\… and \\server\share on Windows too, not only a Mac's /…
+        return QUrl.fromLocalFile(path).toString()
     if not text or " " in text:
         return None
     if _SCHEME.match(text):
