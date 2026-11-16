@@ -3,6 +3,7 @@ import traceback
 
 from PyQt6.QtCore import QEvent, QObject, QStandardPaths, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QContextMenuEvent, QMouseEvent
+from PyQt6.QtNetwork import QNetworkCookie
 from PyQt6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineScript, QWebEngineSettings
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWidgets import QApplication
@@ -43,10 +44,39 @@ def look_like_chrome(profile):
     profile.setHttpUserAgent(re.sub(r"QtWebEngine/\S+\s*", "", profile.httpUserAgent()))
 
 
+class CookieLedger(QObject):
+    """A profile's cookies as they're set and removed, so one site's can be cleared (Site Settings): Qt's cookie
+    store can't list them, and asked to load them all again it says nothing of the ones it already has."""
+
+    def __init__(self, profile):
+        super().__init__(profile)
+        self.cookies = {}
+        store = profile.cookieStore()
+        store.cookieAdded.connect(self._added)
+        store.cookieRemoved.connect(self._removed)
+        store.loadAllCookies()  # (the ones kept from before: told as added)
+
+    @staticmethod
+    def _key(cookie):
+        return bytes(cookie.name()), cookie.domain(), cookie.path()
+
+    def _added(self, cookie):
+        self.cookies[self._key(cookie)] = QNetworkCookie(cookie)  # (a copy: the one signalled is only lent)
+
+    def _removed(self, cookie):
+        self.cookies.pop(self._key(cookie), None)
+
+
+def cookie_ledger(profile) -> CookieLedger:
+    ledger = profile.findChild(CookieLedger)
+    return ledger if ledger is not None else CookieLedger(profile)
+
+
 def harden(profile):
     """What a page may never do, in every profile (private ones too). A local .html file (a download,
     say) can't read other files on the Mac: Qt lets it fetch any file:// address by default, and send
     what it reads anywhere."""
+    cookie_ledger(profile)  # (and its cookies kept track of from the start)
     profile.settings().setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, False)
     # Nor open a pop-up window by itself (Qt allows it by default): window.open() still works after a click,
     # for sign-in pop-ups, but a page can't bury you in windows from a timer

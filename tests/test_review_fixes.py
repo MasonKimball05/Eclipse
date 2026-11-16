@@ -208,3 +208,11 @@ def test_a_theme_change_skips_pages_whose_owner_is_gone(qapp):
     sip.delete(page)
     native.retheme(owner, SimpleNamespace(dark=True, accent=QColor("#123456")))
     assert 987654 not in native._pages
+
+
+def test_a_sites_cookies_are_its_own_and_its_subdomains():
+    from browser.site_settings import same_site
+    assert same_site(".example.com", "www.example.com") and same_site("example.com", "example.com")
+    assert same_site("shop.example.com", "www.example.com")  # (clearing a site clears its subdomains')
+    assert not same_site("example.com.evil.net", "example.com") and not same_site("ample.com", "example.com")
+    assert not same_site("", "example.com")

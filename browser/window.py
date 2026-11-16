@@ -1304,6 +1304,20 @@ class MainWindow(QMainWindow):
         self.store.schedule_save()
         self.apply_dark_pages()
 
+    def show_site_settings(self, pos=None, tab=None):
+        """Site Settings for the site you're on (or `tab`'s): the native popover beside the address pill, or the
+        shield's menu where native pages aren't built, or for a page that isn't a website."""
+        from . import native, site_settings
+        tab = tab or self.current_tab
+        if tab is not None and tab is not self.current_tab:
+            self.activate_tab(tab)  # (beside its page, the one it's about)
+        if native.available() and site_settings.open_for(self, tab) is not None:
+            return
+        if pos is None:
+            shield = self.sidebar.shield_btn
+            pos = shield.mapToGlobal(QPoint(0, shield.height()))
+        self.show_adblock_menu(pos)
+
     def show_adblock_menu(self, pos):
         tab = self.current_tab
         host = QUrl(tab.url).host() if tab else ""
@@ -1908,6 +1922,7 @@ class MainWindow(QMainWindow):
         self._act(menu, "ph.link-simple", "Copy as Markdown Link", lambda: self.copy_markdown_link(tab))
         if tab.url.startswith(("http://", "https://")):
             self._act(menu, "ph.share", "Share…", lambda: self.share_page(tab))
+            self._act(menu, "ph.sliders-horizontal", "Site Settings…", lambda: self.show_site_settings(tab=tab))
         if not tab.url.startswith(("note:", "easel:")):  # two editors on one file would fight over it
             self._act(menu, "ph.copy", "Duplicate", lambda: self.open_url(tab.url))
         self._act(menu, "ph.download-simple", "Download Video…", lambda: self.download_video(tab))
@@ -2945,6 +2960,7 @@ class MainWindow(QMainWindow):
             ("Move Sidebar to the Left" if self.sidebar_on_right else "Move Sidebar to the Right", "ph.arrows-left-right",
              lambda: self.set_sidebar_side("left" if self.sidebar_on_right else "right")),
             ("Copy URL", "ph.link", self.copy_url),
+            ("Site Settings", "ph.sliders-horizontal", lambda: self.show_site_settings()),
             ("Copy as Markdown Link", "ph.link-simple", self.copy_markdown_link),
             ("Print…", "ph.printer", self.print_page),
             ("Save as PDF", "ph.file-pdf", self.save_pdf),

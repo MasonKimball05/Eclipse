@@ -1758,7 +1758,7 @@ class Sidebar(QWidget):
         self.shield_btn.setIconSize(QSize(12, 12))
         self.shield_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.shield_btn.clicked.connect(
-            lambda: browser.show_adblock_menu(self.shield_btn.mapToGlobal(QPoint(0, self.shield_btn.height()))))
+            lambda: browser.show_site_settings(self.shield_btn.mapToGlobal(QPoint(0, self.shield_btn.height()))))
         # Developer Mode: a DEV chip on localhost and file pages, with the error count; opens the console
         self.dev_btn = QToolButton()
         self.dev_btn.setObjectName("DevChip")
@@ -2443,12 +2443,13 @@ class Sidebar(QWidget):
         if not blocker.enabled or blocker.is_allowed(host):
             self.shield_btn.setIcon(qta.icon("ph.shield-slash", color=color))
             self.shield_btn.setText("")
-            self.shield_btn.setToolTip("Ad blocking is off here")
+            self.shield_btn.setToolTip("Ad blocking is off here · click for Site Settings")
         else:
             count = blocker.count_for(tab.url)
             self.shield_btn.setIcon(qta.icon("ph.shield-check", color=color))
             self.shield_btn.setText(str(count) if count else "")
-            self.shield_btn.setToolTip(f"{count} ads and trackers blocked on {display_host(tab.url)}")
+            self.shield_btn.setToolTip(f"{count} ads and trackers blocked on {display_host(tab.url)} · click for Site "
+                                       "Settings")
         self.shield_btn.show()
         self._fit_pill_text()
 

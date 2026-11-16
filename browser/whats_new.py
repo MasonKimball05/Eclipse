@@ -15,6 +15,13 @@ EDITION = 31
 SETTING = "whats_new_seen"
 
 NOTES = """
+## This week
+
+- **Site Settings**: click the shield in the address pill (or ⌘T → Site Settings, or right-click a tab) for
+  everything about the site you're on in one place: what it may use (camera, microphone, location,
+  notifications), its ads, zoom and dark page, the apps it may open without asking, and Clear Cookies & Site Data
+  to sign out of just that site.
+
 ## Lately
 
 - **Edit a Live Folder**: right-click one and choose Edit Live Folder… to change what it follows, its name, how

@@ -4951,3 +4951,70 @@ def test_whats_new_twice_is_one_window(window, monkeypatch):
     window.show_whats_new()
     window.show_whats_new()
     assert len(made) == 1 and made[0].raised == 1
+
+
+def test_site_settings_change_a_sites_permissions_zoom_ads_and_apps(window, site, monkeypatch):
+    """Everything kept about a site was spread over the shield's menu, Settings and the cards that first asked."""
+    from browser import external_links, native, site_settings
+    from browser.zoom import zoom_for
+    from PyQt6.QtWebEngineCore import QWebEnginePermission
+    monkeypatch.setenv("ECLIPSE_NATIVE", "1")
+    if not native.available():
+        pytest.skip("the native pages aren't built (python tools/build_native.py)")
+    tab = open_page(window, f"{site}/index.html")
+    host, origin = site_settings.site_of(tab)
+    settings = window.store.settings
+    external_links.set_allowed(settings, origin, "zoommtg", True)
+    profile = tab.view.page().profile()
+    try:
+        form = site_settings.open_for(window, tab)
+        assert form is not None and form.is_open()
+        fields = {f["id"]: f for section in form.page.state()["sections"] for f in section["fields"]}
+        assert {"perm:MediaVideoCapture", "perm:Geolocation", "ads", "zoom", "app:zoommtg", "clear"} <= set(fields)
+        assert fields["perm:Geolocation"]["value"] == "ask" and fields["zoom"]["value"] == "100"
+        form.fill({"perm:Geolocation": "block", "zoom": "125", "app:zoommtg": False})
+        assert wait_until(lambda: zoom_for(settings, tab.url) == 1.25, 3)
+        assert abs(tab.view.zoomFactor() - 1.25) < 0.01
+        assert any(kind == QWebEnginePermission.PermissionType.Geolocation and value == "block"
+                   for _label, kind, value in window.permissions.rules_for(profile, origin))
+        assert not external_links.allowed(settings, origin, "zoommtg")
+        form.fill({"ads": False})  # (its ads let through: and the page loads again to show them)
+        assert wait_until(lambda: window.adblock.is_allowed(host), 3)
+        form.close()
+        assert wait_until(lambda: not form.is_open(), 3)
+    finally:
+        window.adblock.set_allowed(host, False)
+        window.permissions.reset_site(profile, origin)
+        settings.get("site_zoom", {}).clear()
+        external_links.set_allowed(settings, origin, "zoommtg", False)
+        window.close_tab(tab)
+
+
+def test_clearing_a_sites_data_signs_it_out(window, site):
+    from browser import site_settings
+    tab = open_page(window, f"{site}/index.html")
+    run_js(tab.view, "document.cookie = 'kept=1; path=/'; localStorage.setItem('kept', '1'); true")
+    assert "kept=1" in run_js(tab.view, "document.cookie")
+    cleared = []
+    host, _origin = site_settings.site_of(tab)
+    site_settings.clear_site_data(window, tab, host, tab.view.page().profile(), done=cleared.append)
+    assert wait_until(lambda: cleared, 5) and cleared[0] >= 1
+    assert loaded(tab.view)
+    assert wait_until(lambda: "kept" not in (run_js(tab.view, "document.cookie") or "")
+                      and run_js(tab.view, "localStorage.getItem('kept')") is None, 5)
+    window.close_tab(tab)
+
+
+def test_the_shield_opens_site_settings_or_its_menu_where_theres_no_native(window, site, monkeypatch):
+    from browser import native, site_settings
+    tab = open_page(window, f"{site}/index.html")
+    opened, menus = [], []
+    monkeypatch.setattr(site_settings, "open_for", lambda browser, t: opened.append(t) or object())
+    monkeypatch.setattr(window, "show_adblock_menu", lambda pos: menus.append(pos))
+    monkeypatch.setattr(native, "available", lambda: True)
+    window.sidebar.shield_btn.click()
+    assert opened == [tab] and not menus
+    monkeypatch.setattr(native, "available", lambda: False)  # (Windows: the shield's menu, as before)
+    window.sidebar.shield_btn.click()
+    assert len(opened) == 1 and len(menus) == 1
+    window.close_tab(tab)
