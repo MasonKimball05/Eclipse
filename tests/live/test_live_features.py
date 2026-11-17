@@ -1,6 +1,7 @@
 # Eclipse's features, end to end, in the real window: swipes, Now Playing, Browse for Me, Easels, GitHub,
 # Boosts and Ask About This Page. Run with:  ./run.sh --live-tests
 
+import json
 import os
 import time
 
@@ -5076,3 +5077,136 @@ def test_no_highlights_in_a_private_window(window, site):
     assert loaded(view)
     assert feature.selection_menu(QMenu(), view, "quick brown") == []
     private.close()
+
+
+def test_a_saved_card_fills_a_checkout_after_touch_id_and_a_new_one_is_offered_to_save(window, site, monkeypatch):
+    """(Stripe's published test card numbers: never a real card)"""
+    from test_live import _click_when_ready, _stand_ins
+    from browser import cards
+    asked = _stand_ins(monkeypatch)
+    cards.save({"number": "4242 4242 4242 4242", "name": "Arkan Example", "month": "4", "year": "2031",
+                "label": "Personal"})
+    manager = window.feature("cards").cards
+    tab = open_page(window, site.replace("127.0.0.1", "localhost") + "/pay.html")
+    press = "document.getElementById('%s').dispatchEvent(new PointerEvent('pointerdown', {bubbles: true})); 1"
+    try:
+        run_js(tab.view, press % "number", world=0)
+        assert wait_until(lambda: manager.card_for(tab.view) is not None, 5), "no card for the checkout"
+        _click_when_ready(manager.card_for(tab.view), "Personal · Visa ••••4242, expires 04/31")
+        values = "['number','holder','month','year','csc','trap'].map(i => document.getElementById(i).value)"
+        assert wait_until(lambda: run_js(tab.view, values, world=0) == [
+            "4242424242424242", "Arkan Example", "04", "2031", "", ""], 5)  # (never the security code, nor a trap)
+        assert asked == ["fill your card on localhost"]  # (Touch ID first, every time)
+        # Paying with a card that isn't saved: offered to keep it (its security code never is)
+        run_js(tab.view, "document.getElementById('number2').value = '5555 5555 5555 4444';"
+                         "document.getElementById('exp2').value = '09 / 32';"
+                         "document.getElementById('name2').value = 'Arkan Example';"
+                         "document.querySelector('#other button').click(); 1", world=0)
+        assert wait_until(lambda: isinstance(manager.card_for(tab.view), cards.SaveCard), 5), "no offer to save"
+        _click_when_ready(manager.card_for(tab.view), "Save")
+        kept = {c["number"]: c for c in cards.all_cards()}
+        assert set(kept) == {"4242424242424242", "5555555555554444"}
+        assert (kept["5555555555554444"]["month"], kept["5555555555554444"]["year"]) == (9, 2032)
+        assert "csc" not in kept["5555555555554444"] and "cvc" not in json.dumps(kept)
+        # And filled into a form with one field for when it expires ("MM / YY", seven characters)
+        tab.view.reload()
+        assert loaded(tab.view)
+        run_js(tab.view, press % "number2", world=0)
+        assert wait_until(lambda: isinstance(manager.card_for(tab.view), cards.FillCard), 5)
+        _click_when_ready(manager.card_for(tab.view), "Mastercard ••••4444, expires 09/32")
+        other = "['number2','exp2','name2'].map(i => document.getElementById(i).value)"
+        assert wait_until(lambda: run_js(tab.view, other, world=0) == ["5555555555554444", "09 / 32", "Arkan Example"], 5)
+    finally:
+        for card in cards.all_cards():
+            cards.delete(card["id"])
+        window.close_tab(tab)
+
+
+def test_no_card_on_an_http_page(window, site, monkeypatch):
+    from test_live import _stand_ins
+    from browser import cards
+    _stand_ins(monkeypatch)
+    cards.save({"number": "4242424242424242", "month": "4", "year": "2031"})
+    manager = window.feature("cards").cards
+    tab = open_page(window, f"{site}/pay.html")  # (http on 127.0.0.1: not a secure page)
+    try:
+        run_js(tab.view, "document.getElementById('number').dispatchEvent(new PointerEvent('pointerdown', "
+                         "{bubbles: true})); 1", world=0)
+        pause(0.8)
+        assert manager.card_for(tab.view) is None
+    finally:
+        for card in cards.all_cards():
+            cards.delete(card["id"])
+        window.close_tab(tab)
+
+
+def test_a_focus_session_keeps_sites_away_counts_down_and_ends(window, site):
+    feature = window.feature("focus")
+    space = window.store.active_space
+    try:
+        feature.start(50, ["127.0.0.1"], space)
+        assert feature.session is not None and feature.card.isVisible()
+        assert feature.card.title.text() == f"Focusing in {space.name}" and feature.card.left.text() == "50 min left"
+        tab = open_page(window, f"{site}/index.html")
+        page, url = tab.view.page(), QUrl(f"{site}/index.html")
+        # (what was decided, not what was drawn: with the screen locked, a hidden page's quiet page may not be drawn)
+        assert not feature._allow_navigation(page, url)  # (kept away)
+        assert wait_until(lambda: getattr(page, "eclipse_blocked", None) == url.toString(), 5)
+        assert tab.url.endswith("/index.html")  # (the tab keeps its address, not the quiet page's)
+        feature.open_anyway(page, url)  # (let through for a while)
+        assert feature._allow_navigation(page, url)
+        # The time's up: everything as it was, and said
+        window.store.settings["focus_session"]["until"] = time.time() + 0.3
+        feature.tick()
+        assert wait_until(lambda: feature.session is None and not feature.card.isVisible(), 3)
+        assert "focus_session" not in window.store.settings
+        feature.allowed.clear()
+        assert feature._allow_navigation(page, QUrl(f"{site}/links.html"))  # (nothing kept away now)
+        window.close_tab(tab)
+    finally:
+        window.store.settings.pop("focus_session", None)
+        feature.tick()
+
+
+def test_focus_starts_from_its_form_with_the_spaces_blocked_sites(window, monkeypatch):
+    from browser import native
+    monkeypatch.setenv("ECLIPSE_NATIVE", "1")
+    if not native.available():
+        pytest.skip("the native pages aren't built (python tools/build_native.py)")
+    feature, rules = window.feature("focus"), window.feature("space_rules")
+    space = window.store.active_space
+    before = dict(rules.rule(space))
+    rules.rules()[space.id] = {"blocked": ["news.example"]}
+    try:
+        form = feature.ask(space)
+        fields = {f["id"]: f for section in form.page.state()["sections"] for f in section["fields"]}
+        assert fields["sites"]["value"] == "news.example" and fields["minutes"]["value"] == "50"
+        form.fill({"minutes": "25", "sites": "news.example\nhttps://www.video.example/watch"}, press="start")
+        assert wait_until(lambda: feature.session is not None, 3)
+        assert feature.session["minutes"] == 25 and feature.session["blocked"] == ["news.example", "video.example"]
+    finally:
+        rules.rules()[space.id] = before
+        if not before:
+            rules.rules().pop(space.id, None)
+        feature.end(early=True)
+
+
+def test_a_peek_or_little_window_opened_as_a_tab_at_once_isnt_blank(window, site, monkeypatch):
+    """Before its page committed, its address was empty: in a Space with another profile the tab opened again from
+    nothing, and a Little window's page was dropped."""
+    from PyQt6.QtWebEngineCore import QWebEngineProfile
+    from browser.little import LittleWindow
+    other = QWebEngineProfile("eclipse-test-peek", window)
+    monkeypatch.setattr(window, "profile_for_tab", lambda tab: other)  # (this Space: another profile)
+    window.peek.open(window.profile, url=f"{site}/article.html")
+    window.peek.promote()  # (at once)
+    tab = window.current_tab
+    assert tab.url.endswith("/article.html")
+    assert wait_until(lambda: tab.view is not None and tab.view.url().toString().endswith("/article.html"), 5)
+    monkeypatch.undo()
+    window.close_tab(tab)
+    little = window._track(LittleWindow(window, url=f"{site}/links.html"))
+    little.promote()  # (at once)
+    tab = window.current_tab
+    assert tab is not None and tab.url.endswith("/links.html")
+    window.close_tab(tab)

@@ -216,3 +216,24 @@ def test_a_sites_cookies_are_its_own_and_its_subdomains():
     assert same_site("shop.example.com", "www.example.com")  # (clearing a site clears its subdomains')
     assert not same_site("example.com.evil.net", "example.com") and not same_site("ample.com", "example.com")
     assert not same_site("", "example.com")
+
+
+def test_focus_counts_down_in_words_and_matches_sites():
+    from browser.focus import blocked, left_text
+    assert [left_text(s) for s in (3000, 5400, 7200, 59, 20)] == [
+        "50 min left", "1 h 30 min left", "2 h left", "1 min left", "less than a minute left"]
+    assert blocked(["youtube.com"], "www.youtube.com") and blocked(["youtube.com"], "m.youtube.com")
+    assert not blocked(["youtube.com"], "notyoutube.com") and not blocked(["youtube.com"], "")
+
+
+def test_a_blocker_that_fails_doesnt_stop_the_others(monkeypatch):
+    """Asked together, the first blocker to raise (a closed window's) let every page through, past focus sessions
+    and Space Rules alike."""
+    from PyQt6.QtCore import QUrl
+    from browser.webview import WebPage
+
+    def broken(page, url):
+        raise RuntimeError("wrapped C/C++ object has been deleted")
+    monkeypatch.setattr(WebPage, "blockers", [broken, lambda page, url: url.host() != "distracting.example"])
+    assert WebPage._blockers_allow(None, QUrl("https://work.example/")) is True
+    assert WebPage._blockers_allow(None, QUrl("https://distracting.example/")) is False

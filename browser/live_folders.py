@@ -423,6 +423,10 @@ class LiveFolders(QObject):
                                                        "yet?)" if "Not Found" in message else message))
         elif kind == "repos":
             self._repos(folder.live.get("root", ""), done)
+        elif kind == "linear":
+            self._linear(folder, done)
+        elif kind == "jira":
+            self._jira(folder, done)
         else:
             self._feed(folder.live.get("url", ""), done)
 
@@ -488,6 +492,81 @@ class LiveFolders(QObject):
                 done(bytes(reply.readAll()), reply.url().toString())
             reply.deleteLater()
         reply.finished.connect(finished)
+
+    def _post(self, url, body: bytes, done, fail, headers=None):
+        """As _get, but POSTing `body` (an API that's asked with one: Linear's), redirects only on the same site."""
+        request = QNetworkRequest(QUrl(url))
+        for name, value in (headers or {}).items():
+            request.setRawHeader(name.encode(), value.encode())
+        request.setAttribute(QNetworkRequest.Attribute.RedirectPolicyAttribute,
+                             QNetworkRequest.RedirectPolicy.SameOriginRedirectPolicy)
+        request.setTransferTimeout(20_000)
+        reply = self.network.post(request, body)
+        reply.downloadProgress.connect(lambda received, _total: received > MAX_FEED_BYTES and reply.abort())
+
+        def finished():
+            status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+            data = bytes(reply.readAll())
+            if reply.error() != QNetworkReply.NetworkError.NoError and not data:
+                fail(reply.errorString())
+            else:
+                done(data, status or 0)
+            reply.deleteLater()
+        reply.finished.connect(finished)
+
+    def _token(self, folder, done) -> str | None:
+        token = keychain.load(token_account(folder))
+        if not token:
+            done([], error="Its token isn't in the Keychain any more: set it again from the folder's menu.")
+        return token or None
+
+    def _linear(self, folder, done):
+        """Linear: the issues assigned to you that aren't done or canceled, with your personal API key."""
+        key = self._token(folder, done)
+        if key is None:
+            return
+        body = json.dumps({"query": LINEAR_QUERY % {"first": MAX_FETCH}}).encode()
+
+        def got(data, status):
+            try:
+                done(parse_linear(data))
+            except ValueError as error:
+                done([], error="Linear didn't take the API key: make a new one (Linear → Settings → Security & "
+                               "access → Personal API keys) and set it from the folder's menu" if status in (400, 401)
+                     and "auth" in str(error).lower() else str(error))
+        self._post(LINEAR_API, body, got, lambda message: done([], error=message),
+                   {"Authorization": key, "Content-Type": "application/json"})
+
+    def _jira(self, folder, done):
+        """Jira: a JQL search's issues (unresolved ones assigned to you, unless it says otherwise), with your
+        Atlassian email and an API token."""
+        import base64
+        live = folder.live
+        token = self._token(folder, done)
+        if token is None:
+            return
+        site = jira_site(live.get("site", ""))
+        if not site:
+            done([], error="Its Jira site isn't an https address (https://your-team.atlassian.net)")
+            return
+        query = QUrlQuery()
+        query.addQueryItem("jql", live.get("jql") or JIRA_DEFAULT_JQL)
+        query.addQueryItem("fields", "summary")
+        query.addQueryItem("maxResults", str(MAX_FETCH))
+        url = QUrl(site + JIRA_SEARCH)
+        url.setQuery(query)
+        auth = base64.b64encode(f"{live.get('email', '')}:{token}".encode()).decode()
+
+        def got(data, _final):
+            try:
+                done(parse_jira(data, site))
+            except ValueError as error:
+                done([], error=str(error))
+        self._get(url.toString(QUrl.ComponentFormattingOption.FullyEncoded), got,
+                  lambda message: done([], error="Jira didn't take the email and token: check them, then set the "
+                                                 "token again from the folder's menu" if "authentication" in
+                                       message.lower() or "401" in message else message),
+                  {"Authorization": f"Basic {auth}", "Accept": "application/json"}, secret=True)
 
     def _feed(self, url, done, discovered=False, guessed=False):
         known = None if discovered or guessed else known_feed(url)
@@ -951,6 +1030,59 @@ class _RepoScan(QThread):
             self.scanned.emit([], str(error))
 
 
+# --- Linear and Jira ------------------------------------------------------------------------------------------
+
+LINEAR_API = "https://api.linear.app/graphql"
+LINEAR_QUERY = ("{ viewer { assignedIssues(first: %(first)d, orderBy: updatedAt, "
+                "filter: {state: {type: {nin: [\"completed\", \"canceled\"]}}}) { nodes { identifier title url } } } }")
+JIRA_SEARCH = "/rest/api/3/search/jql"
+JIRA_DEFAULT_JQL = "assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC"
+
+
+def parse_linear(data: bytes) -> list[tuple[str, str]]:
+    try:
+        answer = json.loads(data)
+    except ValueError:
+        raise ValueError("Linear's answer wasn't data")
+    if not isinstance(answer, dict):
+        raise ValueError("Linear's answer wasn't data")
+    if answer.get("errors"):
+        first = answer["errors"][0] if isinstance(answer["errors"], list) and answer["errors"] else {}
+        raise ValueError(str(first.get("message") if isinstance(first, dict) else first) or "Linear said no")
+    nodes = dig(answer, "data.viewer.assignedIssues.nodes")
+    if not isinstance(nodes, list):
+        raise ValueError("Linear's answer had no issues in it")
+    return [(f"{n.get('identifier', '')} · {n.get('title', '')}".strip(" ·"), n["url"]) for n in nodes
+            if isinstance(n, dict) and str(n.get("url", "")).startswith("https://")]
+
+
+def jira_site(text: str) -> str:
+    """"your-team.atlassian.net", or its https address, as "https://your-team.atlassian.net" ("" if it isn't one)."""
+    text = text.strip().rstrip("/")
+    url = QUrl(text if "://" in text else "https://" + text)
+    return f"https://{url.host().lower()}" + (f":{url.port()}" if url.port() != -1 else "") \
+        if url.scheme() == "https" and "." in url.host() else ""
+
+
+def parse_jira(data: bytes, site: str) -> list[tuple[str, str]]:
+    try:
+        answer = json.loads(data)
+    except ValueError:
+        raise ValueError("Jira's answer wasn't data: is the site right?")
+    if isinstance(answer, dict) and answer.get("errorMessages"):
+        raise ValueError("Jira: " + "; ".join(str(m) for m in answer["errorMessages"])[:300])
+    issues = answer.get("issues") if isinstance(answer, dict) else None
+    if not isinstance(issues, list):
+        raise ValueError("Jira's answer had no issues in it")
+    found = []
+    for issue in issues:
+        key = str(issue.get("key", "")) if isinstance(issue, dict) else ""
+        if re.fullmatch(r"[A-Z][A-Z0-9_]+-\d+", key):  # (a key, never a path a page could make up)
+            summary = str((issue.get("fields") or {}).get("summary", ""))
+            found.append((f"{key} · {summary}".strip(" ·"), f"{site}/browse/{key}"))
+    return found
+
+
 def token_account(folder) -> str:
     return f"live-folder:{folder.id}"
 
@@ -965,6 +1097,10 @@ def reaches(live: dict) -> str | None:
     if live.get("kind") == "json" and live.get("auth") == "token":
         url = QUrl(live.get("url", ""))
         return f"token:{url.scheme()}://{url.host().lower()}:{url.port()}"
+    if live.get("kind") == "linear":
+        return "token:" + LINEAR_API
+    if live.get("kind") == "jira":
+        return "token:" + jira_site(live.get("site", ""))
     return None
 
 

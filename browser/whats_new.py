@@ -24,6 +24,15 @@ NOTES = """
 - **Highlights**: select text, right-click → Highlight, and it's marked there each time you come back. Each site's
   highlights are kept in a note of their own ("Highlights from example.com"), linked to their pages, and ⌘T finds
   them by what they say. Right-click highlighted text to remove it.
+- **Payment cards**: save a card in Settings → Payment Cards, or when you pay with one, and a checkout fills it in
+  after Touch ID, every time, even in Stripe's and other payment companies' card boxes. Security codes are never
+  kept, and cards are encrypted like your passwords.
+- **Focus sessions**: ⌘T → Start Focus Session… (or a Space's menu → Focus…) for 25 minutes to 2 hours. The sites
+  you pick are kept away in every Space until the time's up, a card at the bottom of the sidebar counts down, and
+  End stops early.
+- **Linear and Jira Live Folders**: New Live Folder → Linear for the issues assigned to you, or Jira for a search's
+  issues (yours, unresolved, unless you say otherwise), kept up to date in your sidebar. Their keys stay in the
+  Keychain.
 
 ## Lately
 

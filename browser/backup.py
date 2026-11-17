@@ -22,7 +22,7 @@ FORMAT = "eclipse-backup"
 OLD_FORMATS = ("pythonbrowser-backup",)  # (made before the rename: restored the same)
 INCLUDED = ["session.json", "notes", "easels", "browse", "userscripts", "extension_storage", "extensions",
             "NativeMessagingHosts", "passkeys", "passwords", "recovery.json", "addresses.json", "history.json",
-            "highlights.json"]  # (AutoFill: left out, a restore had none)
+            "highlights.json", "cards.json"]  # (AutoFill: left out, a restore had none)
 PENDING = "restore-pending"
 # What runs code: in your pages (extensions, userscripts) or on your Mac (the apps extensions may talk to). A backup
 # from someone else could carry any of it, so restoring says what's there, and can leave it out.
@@ -30,7 +30,7 @@ CODE = ["extensions", "extension_storage", "userscripts", "NativeMessagingHosts"
 KEEP_CODE = "keep-current-extensions"  # (in a staged restore: leave the extensions you have now)
 # Kept when a backup hasn't any (made before they were backed up): else restoring an older backup left you with no
 # saved passwords or passkeys at all, kept only in the before-restore folder
-KEEP_IF_MISSING = ["passkeys", "passwords", "recovery.json", "addresses.json"]
+KEEP_IF_MISSING = ["passkeys", "passwords", "recovery.json", "addresses.json", "cards.json"]
 DONE = "restored.json"  # (in a restore under way: what's swapped in already, so a second try finishes, never undoes)
 
 
@@ -144,6 +144,10 @@ def apply_pending() -> Path | None:
     keep_code = (pending / KEEP_CODE).exists()
     done_path = pending / DONE
     done = storage.read_json(done_path) or []
+    # Passkeys made since the backup: their keys are in this Mac's Keychain, and only the list was the backup's, so
+    # they went from it (unusable, though nothing had changed for them). The backup's list, and them after it
+    passkeys_now = (storage.read_json(root / "passkeys" / "passkeys.json") or {}).get("passkeys", []) \
+        if "passkeys" not in done else []
     for name in INCLUDED:
         if name in done or (keep_code and name in CODE):
             continue  # (swapped in by a try that stopped part way: moving it out now would leave nothing there)
@@ -153,11 +157,23 @@ def apply_pending() -> Path | None:
             shutil.move(str(root / name), str(kept / name))
         if (pending / name).exists():
             shutil.move(str(pending / name), str(root / name))
+        if name == "passkeys" and passkeys_now:
+            _merge_passkeys(root, passkeys_now)
         done.append(name)
         storage.write_json(done_path, done)
     shutil.rmtree(pending, ignore_errors=True)
     _forget_what_sync_knew(root)
     return kept
+
+
+def _merge_passkeys(root, passkeys_now):
+    path = root / "passkeys" / "passkeys.json"
+    restored = (storage.read_json(path) or {}).get("passkeys", [])
+    known = {p.get("id") for p in restored}
+    newer = [p for p in passkeys_now if isinstance(p, dict) and p.get("id") not in known]
+    if newer:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        storage.write_json(path, {"version": 1, "passkeys": restored + newer}, private=True)
 
 
 def _forget_what_sync_knew(root):

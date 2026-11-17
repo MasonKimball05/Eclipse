@@ -1,0 +1,21 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Pay</title></head><body>
+<form id="pay" onsubmit="event.preventDefault(); document.title = 'paid'">
+  <input id="number" autocomplete="cc-number" inputmode="numeric">
+  <input id="holder" name="cardholder">
+  <select id="month" autocomplete="cc-exp-month"><option value="">MM</option>
+    <option value="01">01</option><option value="02">02</option><option value="03">03</option><option value="04">04</option>
+    <option value="05">05</option><option value="06">06</option><option value="07">07</option><option value="08">08</option>
+    <option value="09">09</option><option value="10">10</option><option value="11">11</option><option value="12">12</option></select>
+  <select id="year" autocomplete="cc-exp-year"><option value="">YYYY</option><option value="2030">2030</option>
+    <option value="2031">2031</option><option value="2032">2032</option></select>
+  <input id="csc" autocomplete="cc-csc">
+  <!-- Hidden beside the real one, to collect a card number: never filled -->
+  <input id="trap" autocomplete="cc-number" style="position:absolute; left:-9999px">
+  <button>Pay</button>
+</form>
+<form id="other" onsubmit="event.preventDefault(); document.title = 'paid again'">
+  <input id="number2" name="cardnumber"><input id="exp2" name="exp-date" maxlength="7" placeholder="MM / YY">
+  <input id="name2" autocomplete="cc-name"><button>Pay</button>
+</form>
+</body></html>

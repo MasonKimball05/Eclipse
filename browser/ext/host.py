@@ -569,9 +569,12 @@ class ExtensionHost(QObject):
         if bridge in self.bridges:
             self.bridges.remove(bridge)
         for port_id, port in list(self._ports.items()):  # its ports close with it
-            port.get("offered", set()).discard(bridge)
             if port["opener"] is bridge or bridge in port["others"]:
                 self._m_port_close(bridge, port["ext"], port_id)
+            elif bridge in port.get("offered", ()):
+                # Offered, never answered (its page went somewhere else first): as if it said no, or the port stayed
+                # open for good, waiting
+                self._m_port_reject(bridge, port["ext"], port_id)
 
     def _content_bridges(self, page, ext_id, frame_id=None) -> list[WorldBridge]:
         """An extension's content scripts in a page (one per frame they run in), or in just one frame."""

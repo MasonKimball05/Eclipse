@@ -12,6 +12,7 @@ import datetime
 import html
 import time
 
+from PyQt6 import sip
 from PyQt6.QtCore import QTime, QTimer, QUrl, Qt
 from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QHBoxLayout, QLabel,
@@ -148,6 +149,8 @@ class SpaceRulesFeature(Feature):
 
     def _allow_navigation(self, page, url: QUrl) -> bool:
         """Whether a tab's page may go to url (a site blocked in the Space it's in shows the blocked page)."""
+        if sip.isdeleted(self.window):
+            return True  # (a window that's gone: nothing of its to keep a page from)
         if url.scheme() not in ("http", "https"):
             return True
         space = self._space_of(page)

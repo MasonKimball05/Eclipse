@@ -7,9 +7,9 @@ from PyQt6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QDialogButtonBox,
 
 from . import forms, keychain, prompts
 from .features import Feature
-from .live_folders import (DEFAULT_ROOT, GITHUB, LIMIT_CHOICES, MAX_ITEMS, REFRESH_CHOICES, LiveFolders, item_limit,
-                           refresh_minutes, allow_here, allowed_here, feed_name, github_repo,
-                           mark_seen, token_account)
+from .live_folders import (DEFAULT_ROOT, GITHUB, JIRA_DEFAULT_JQL, LIMIT_CHOICES, MAX_ITEMS, REFRESH_CHOICES,
+                           LiveFolders, item_limit, jira_site, refresh_minutes, allow_here, allowed_here, feed_name,
+                           github_repo, mark_seen, token_account)
 from .models import walk_tabs
 from .theme import FittedLabel, stylesheet
 
@@ -22,6 +22,8 @@ KINDS = [
     ("page", "Links on a page", "The links on a page that match a CSS selector, read with your logins."),
     ("calendar", "A calendar", "Upcoming events from an .ics feed: deadlines, chapter events."),
     ("repos", "Repo Radar", "Your local git repos with uncommitted or unpushed work."),
+    ("linear", "Linear", "Issues assigned to you that aren't done, with a personal API key."),
+    ("jira", "Jira", "Issues from a Jira search (yours, unresolved, unless you say otherwise), with an API token."),
 ]
 
 
@@ -48,6 +50,11 @@ GUIDE = {
     "repos": ("The folder your git repos are in (~/projects/GitHub, unless you choose another). It lists the ones "
               "with changes you haven't committed or commits you haven't pushed. It only runs on this computer.",
               "the side project you forgot to push"),
+    "linear": ("A personal API key: in Linear, Settings → Security & access → Personal API keys → New key. It's kept "
+               "{vault}.", "the issues assigned to you, newest changes first"),
+    "jira": ("Your Atlassian site (your-team.atlassian.net), the email you sign in with, and an API token from "
+             "id.atlassian.com → Security → API tokens, kept {vault}. A JQL search picks the issues.",
+             "yours, unresolved · a sprint's (sprint in openSprints()) · a project's bugs"),
 }
 
 
@@ -151,7 +158,32 @@ class LiveFolderDialog(QDialog):
         r.addRow("Repos folder", self.repos_root)
         r.addRow("", _hint("Each item opens the repo on GitHub."))
         self.pages.addWidget(repos)
-        for form in (f, g, a, pl, c, r):
+
+        # Linear
+        linear = QWidget()
+        li = QFormLayout(linear)
+        self.linear_token = QLineEdit()
+        self.linear_token.setEchoMode(QLineEdit.EchoMode.Password)
+        self.linear_token.setPlaceholderText("lin_api_…   (it goes straight to the Keychain)")
+        li.addRow("API key", self.linear_token)
+        li.addRow("", _hint("Linear → Settings → Security & access → Personal API keys."))
+        self.pages.addWidget(linear)
+
+        # Jira
+        jira = QWidget()
+        j = QFormLayout(jira)
+        self.jira_site = QLineEdit()
+        self.jira_site.setPlaceholderText("your-team.atlassian.net")
+        self.jira_email = QLineEdit()
+        self.jira_token = QLineEdit()
+        self.jira_token.setEchoMode(QLineEdit.EchoMode.Password)
+        self.jira_token.setPlaceholderText("From id.atlassian.com → Security → API tokens")
+        self.jira_jql = QLineEdit(JIRA_DEFAULT_JQL)
+        for label, widget in (("Site", self.jira_site), ("Email", self.jira_email), ("API token", self.jira_token),
+                              ("Search (JQL)", self.jira_jql)):
+            j.addRow(label, widget)
+        self.pages.addWidget(jira)
+        for form in (f, g, a, pl, c, r, li, j):
             form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
 
         settings = QFormLayout()
@@ -212,6 +244,10 @@ class LiveFolderDialog(QDialog):
             self.calendar_url.setText(preset.get("url", ""))
         elif kind == "repos":
             self.repos_root.setText(preset.get("root", "") or "~/projects/GitHub")
+        elif kind == "jira":
+            self.jira_site.setText(preset.get("site", ""))
+            self.jira_email.setText(preset.get("email", ""))
+            self.jira_jql.setText(preset.get("jql") or JIRA_DEFAULT_JQL)
 
     def values(self) -> dict:
         """What's filled in, as the native form sends it (live_from reads either)."""
@@ -222,7 +258,10 @@ class LiveFolderDialog(QDialog):
                 "json_auth": self.json_auth.currentData(), "json_header": self.json_header.text(),
                 "json_token": self.json_token.text(), "page_url": self.page_url.text(),
                 "page_selector": self.page_selector.text(), "calendar_url": self.calendar_url.text(),
-                "repos_root": self.repos_root.text(), "refresh": self.refresh.currentData(),
+                "repos_root": self.repos_root.text(), "linear_token": self.linear_token.text(),
+                "jira_site": self.jira_site.text(), "jira_email": self.jira_email.text(),
+                "jira_token": self.jira_token.text(), "jira_jql": self.jira_jql.text(),
+                "refresh": self.refresh.currentData(),
                 "limit": self.limit.currentData()}
 
     def result_live(self) -> tuple[dict, str, str | None] | None:
@@ -302,6 +341,18 @@ def _source_from(v: dict) -> tuple[dict, str, str | None] | None:
         return ({"kind": "calendar", "url": url}, name, None) if url.startswith(("http://", "https://")) else None
     if kind == "repos":
         return {"kind": "repos", "root": text("repos_root")}, name or "Repo Radar", None
+    if kind == "linear":
+        # (auth "token": the folder's menu has Set Token…, and deleting it takes the key out of the Keychain)
+        return {"kind": "linear", "url": "https://linear.app", "auth": "token"}, name or "Linear", \
+            text("linear_token") or None
+    if kind == "jira":
+        site, email = jira_site(text("jira_site")), text("jira_email")
+        if not site or "@" not in email:
+            return None
+        live = {"kind": "jira", "url": site, "site": site, "email": email, "auth": "token"}
+        if text("jira_jql") and text("jira_jql") != JIRA_DEFAULT_JQL:
+            live["jql"] = text("jira_jql")
+        return live, name or "Jira", text("jira_token") or None
     url, selector = text("page_url"), text("page_selector")
     if not url.startswith(("http://", "https://")) or not selector:
         return None
@@ -358,7 +409,21 @@ def live_sections(preset: dict | None = None) -> list[dict]:
             {"kind": "hint", "text": "The next 60 days, soonest first.", "shown_when": when("calendar")},
             {"id": "repos_root", "kind": "text", "label": "Repos folder",
              "value": given("repos", "root") or "~/projects/GitHub", "shown_when": when("repos")},
-            {"kind": "hint", "text": "Each item opens the repo on GitHub.", "shown_when": when("repos")}),
+            {"kind": "hint", "text": "Each item opens the repo on GitHub.", "shown_when": when("repos")},
+            {"id": "linear_token", "kind": "secret", "label": "API key", "shown_when": when("linear"),
+             "placeholder": "Kept in the Keychain" if kind == "linear" and p else "lin_api_…"},
+            {"kind": "hint", "shown_when": when("linear"),
+             "text": "Linear → Settings → Security & access → Personal API keys. Kept in the Keychain."},
+            {"id": "jira_site", "kind": "text", "label": "Site", "value": given("jira", "site"),
+             "placeholder": "your-team.atlassian.net", "shown_when": when("jira")},
+            {"id": "jira_email", "kind": "text", "label": "Email", "value": given("jira", "email"),
+             "shown_when": when("jira")},
+            {"id": "jira_token", "kind": "secret", "label": "API token", "shown_when": when("jira"),
+             "placeholder": "Kept in the Keychain" if kind == "jira" and p else "From id.atlassian.com"},
+            {"id": "jira_jql", "kind": "text", "label": "Search (JQL)", "value": given("jira", "jql", JIRA_DEFAULT_JQL),
+             "shown_when": when("jira")},
+            {"kind": "hint", "shown_when": when("jira"),
+             "text": "The token's from id.atlassian.com → Security → API tokens, kept in the Keychain."}),
         forms.section(
             {"id": "refresh", "kind": "menu", "label": "Refresh", "value": str(refresh_minutes(p)),
              "options": [{"value": str(m), "label": every(m)} for m in REFRESH_CHOICES]},
@@ -411,6 +476,8 @@ class LiveFoldersFeature(Feature):
         if result is None:
             return "Fill in the address (and a token, if you chose one)."  # (the form says so, and stays open)
         live, name, token = result
+        if live.get("kind") in ("linear", "jira") and not token:
+            return "Paste its API key or token: it's how it signs in."
         if name:
             live["named"] = True
         name = name or (feed_name(live["url"]) if live.get("url") else "Live Folder")
@@ -419,7 +486,8 @@ class LiveFoldersFeature(Feature):
 
     # What a Live Folder follows: changed, its items are some other feed's, and go (the rest it keeps: what you've
     # seen, when it last looked)
-    SOURCE_KEYS = ("kind", "url", "query", "items", "title", "link", "selector", "root", "auth", "header")
+    SOURCE_KEYS = ("kind", "url", "query", "items", "title", "link", "selector", "root", "auth", "header", "site",
+                   "email", "jql")
 
     def edit_live_folder(self, folder):
         """The folder's settings, in the New Live Folder form, filled in as they are; saved, it follows what's

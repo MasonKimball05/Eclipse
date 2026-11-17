@@ -324,8 +324,9 @@ class LittleWindow(QWidget):
         self.browser._on_fullscreen(request, view)
 
     def promote(self):
+        from .window import page_address
         view, self.view = self.view, None
-        if view is not None and not view.url().isEmpty():
+        if view is not None and page_address(view):  # (where it's going, if it hasn't got there yet)
             for link in self._links:
                 QObject.disconnect(link)
             self.browser.adopt_view(view)

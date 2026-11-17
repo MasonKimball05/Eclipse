@@ -142,6 +142,7 @@ EXTENSION_CALL = "\u2063pbx:"
 PASSWORD_CALL = "\u2063pbp:"
 PAINTED_CALL = "\u2063pb-painted"  # (a page's about to draw its first frame: see MainWindow._dark_until_painted)  # (the password script's messages: they can hold a password, so never logged)
 ADDRESS_CALL = "\u2063pba:"  # (the address script's: never logged either, they're about you)
+CARD_CALL = "\u2063pbc:"  # (the payment card script's: can hold a card number, so never logged)
 
 
 class WebPage(QWebEnginePage):
@@ -159,6 +160,8 @@ class WebPage(QWebEnginePage):
     password_messages = None
     # Set by addresses.py: receives ADDRESS_CALL messages (never shown in the console)
     address_messages = None
+    # Set by cards.py: receives CARD_CALL messages (never shown in the console)
+    card_messages = None
     # Set by the window: called when the page is about to draw its first frame (PAINTED_CALL)
     first_paint = None
     # Set by the window: url -> darken this page? (dark_pages.py), decided as each page starts loading
@@ -184,11 +187,23 @@ class WebPage(QWebEnginePage):
             return False
         if self.navigation_filter is not None and not self.navigation_filter(url, is_main_frame, nav_type):
             return False
-        if is_main_frame and not all(allow(self, url) for allow in list(WebPage.blockers)):
+        if is_main_frame and not self._blockers_allow(url):
             return False
         if is_main_frame and self.dark_rule is not None:
             self.settings().setAttribute(QWebEngineSettings.WebAttribute.ForceDarkMode, self.dark_rule(url))
         return super().acceptNavigationRequest(url, nav_type, is_main_frame)
+
+    def _blockers_allow(self, url) -> bool:
+        """Every feature's say over where a page goes, each asked on its own: one that fails (a window's that's gone,
+        say) lets it through, and the rest are still asked. Asked together, the first to fail let every page go
+        anywhere, past Space Rules and focus sessions alike."""
+        for allow in list(WebPage.blockers):
+            try:
+                if not allow(self, url):
+                    return False
+            except Exception:
+                traceback.print_exc()
+        return True
 
     def javaScriptConsoleMessage(self, level, message, line, source):
         if message == PAINTED_CALL:
@@ -199,6 +214,13 @@ class WebPage(QWebEnginePage):
             if self.password_messages is not None:
                 try:
                     self.password_messages(message)
+                except Exception:  # a page's message must never take the browser down
+                    traceback.print_exc()
+            return
+        if message.startswith(CARD_CALL):
+            if self.card_messages is not None:
+                try:
+                    self.card_messages(message)
                 except Exception:  # a page's message must never take the browser down
                     traceback.print_exc()
             return

@@ -174,3 +174,18 @@ def test_a_damaged_backup_says_so(data_dir, tmp_path):
         z.writestr("backup.json", json.dumps(["not", "an", "object"]))
     with pytest.raises(ValueError):
         backup.describe(odd)
+
+
+def test_passkeys_made_since_a_backup_stay_after_restoring_it(data_dir, tmp_path):
+    """Only the backup's list came back: passkeys made since (their keys still in this Mac's Keychain) were gone."""
+    _fill(data_dir, "Original")
+    (data_dir / "passkeys").mkdir()
+    (data_dir / "passkeys" / "passkeys.json").write_text(json.dumps({"passkeys": [{"id": "old", "rp_id": "a.example"}]}))
+    zip_path = tmp_path / "b.zip"
+    backup.create(zip_path)
+    (data_dir / "passkeys" / "passkeys.json").write_text(json.dumps({"passkeys": [
+        {"id": "old", "rp_id": "a.example", "last_used": 5}, {"id": "new", "rp_id": "b.example"}]}))
+    backup.stage(zip_path)
+    backup.apply_pending()
+    kept = json.loads((data_dir / "passkeys" / "passkeys.json").read_text())["passkeys"]
+    assert [p["id"] for p in kept] == ["old", "new"] and "last_used" not in kept[0]  # (the backup's own, then the new)

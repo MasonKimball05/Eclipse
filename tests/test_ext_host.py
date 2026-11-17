@@ -488,3 +488,16 @@ def test_a_page_cant_put_up_install_box_after_install_box_and_a_removed_userscri
     _, token = host.world(USERSCRIPT, "gone-script")
     host.world_call(page, _message(token, "gm.setValue", ["gone-script", "k", 1]))
     assert "turned off or removed" in _answer(page)["error"]
+
+
+def test_a_port_offered_to_a_page_that_moved_on_closes(store):
+    """A port opened to a page that navigated before answering stayed open for good, waiting for it."""
+    host = _host(store)
+    opener, receiver = (PageBridge(host, FakePage("pbext://demo/p.html")) for _ in range(2))
+    host.bridges += [opener, receiver]
+    told = []
+    opener.event.connect(lambda kind, payload: told.append(kind))
+    port_id = host._m_port_open(opener, "demo", "chat", None)
+    assert port_id in host._ports
+    host._forget_bridge(receiver)  # (its page went somewhere else before it accepted)
+    assert port_id not in host._ports and f"port.disconnect:{port_id}" in told
