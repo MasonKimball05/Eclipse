@@ -145,6 +145,13 @@ ADDRESS_CALL = "\u2063pba:"  # (the address script's: never logged either, they'
 CARD_CALL = "\u2063pbc:"  # (the payment card script's: can hold a card number, so never logged)
 
 
+def open_in(request, page):
+    """A page's new window (or pop-up), opened in `page`: marked as opened by a page, so what it does isn't taken as
+    the site's own (it can be steered by the page that opened it: window.open, then a new address)."""
+    page.opened_by_a_page = True
+    request.openIn(page)
+
+
 class WebPage(QWebEnginePage):
     # Pages report back to the browser through console messages (used by Boosts' Zap tool)
     console_message = pyqtSignal(str)
@@ -172,6 +179,9 @@ class WebPage(QWebEnginePage):
 
     def __init__(self, profile, parent=None):
         super().__init__(profile, parent)
+        # (dark pages are set as a page starts loading, for where it's going: one that never got there, a download, an
+        # empty answer, one stopped, left the page you're on in the other one's: set again for where it is)
+        self.loadFinished.connect(self._dark_again)
         # The profile refuses other apps' links outright; this page lets them through to
         # acceptNavigationRequest, which refuses them too, and asks you (only pages you see do this)
         self.settings().setUnknownUrlSchemePolicy(QWebEngineSettings.UnknownUrlSchemePolicy.AllowAllUnknownUrlSchemes)
@@ -192,6 +202,12 @@ class WebPage(QWebEnginePage):
         if is_main_frame and self.dark_rule is not None:
             self.settings().setAttribute(QWebEngineSettings.WebAttribute.ForceDarkMode, self.dark_rule(url))
         return super().acceptNavigationRequest(url, nav_type, is_main_frame)
+
+    def _dark_again(self, _ok=True):
+        if self.dark_rule is not None and self.url().scheme() in ("http", "https"):
+            want = self.dark_rule(self.url())
+            if self.settings().testAttribute(QWebEngineSettings.WebAttribute.ForceDarkMode) != want:
+                self.settings().setAttribute(QWebEngineSettings.WebAttribute.ForceDarkMode, want)
 
     def _blockers_allow(self, url) -> bool:
         """Every feature's say over where a page goes, each asked on its own: one that fails (a window's that's gone,

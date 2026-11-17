@@ -165,7 +165,8 @@ class NoteEditor(QTextEdit):
     def toggle_checklist(self):
         """⇧⌘L: the line becomes a checklist item; on one already, its box is ticked or unticked."""
         cursor = self.textCursor()
-        if cursor.block().blockFormat().marker() == Marker.NoMarker:
+        # (a line Backspace took out of its list keeps its box's mark, unseen: ticked and unticked, nothing showed)
+        if cursor.block().blockFormat().marker() == Marker.NoMarker or cursor.block().textList() is None:
             self.make_checklist(cursor)
         else:
             self.toggle_box(cursor.block())

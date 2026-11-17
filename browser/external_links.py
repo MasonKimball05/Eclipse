@@ -191,7 +191,9 @@ class ExternalLinks(QObject):
             return
         origin = origin_key(page.url())
         private = page.profile().isOffTheRecord()
-        own = main_frame and not redirect
+        # (a window a page opened isn't the site's own: the page that opened it can send it anywhere, an app's link
+        # included, and with the site's Always Allow that opened the app with no card: zoom.us opened, then its link)
+        own = main_frame and not redirect and not getattr(page, "opened_by_a_page", False)
         if own and not private and allowed(self.browser.store.settings, origin, scheme):
             if now - self._opened.get(id(view), -1e9) >= ALLOWED_GAP:
                 self._opened[id(view)] = now

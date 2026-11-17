@@ -201,6 +201,12 @@ def cite(answer: str, passages: list[dict]) -> str:
     sources = [p["url"] for p in passages]
     answer = re.sub(r"\[([^\]]*)\]\(([^)]*)\)",
                     lambda m: m.group(0) if m.group(2) in sources else m.group(1), answer)
+    # Nor any other way a link gets into Markdown: a definition for a reference-style one ("[x]: https://…"), an
+    # address in <…>, a bare address (turned into links by themselves), raw HTML. A page asking Claude to write one
+    # (with what else it was told in it) had a link for you to click
+    answer = re.sub(r"(?m)^\s{0,3}\[[^\]]+\]:\s*\S+.*$", "", answer)
+    answer = answer.replace("<", "&lt;")
+    answer = re.sub(r"(?<![(\w])(https?|www)(:/|\.)", lambda m: m.group(1) + "\u2060" + m.group(2), answer)
 
     def link(m):
         n = int(m.group(1))
@@ -244,7 +250,11 @@ class PageIndex(QObject):
         return self.settings.get(SETTING, True)
 
     def _connect(self):
-        return sqlite3.connect(str(self.path), timeout=5)
+        connection = sqlite3.connect(str(self.path), timeout=5)
+        # (a page taken out, or a site kept out, is overwritten on the disk, not just let go of: its text stayed in the
+        # file's free space, readable, till it happened to be used again)
+        connection.execute("PRAGMA secure_delete=ON")
+        return connection
 
     # --- Reading pages ----------------------------------------------------------------------------
 
@@ -253,16 +263,26 @@ class PageIndex(QObject):
         if not ok or not self.enabled or not indexable(tab.url, skipped_sites(self.settings)):
             return
         url = tab.url
-        QTimer.singleShot(SETTLE_MS, lambda: self._read_page(tab, url))
+        when = self._generation
+        QTimer.singleShot(SETTLE_MS, lambda: self._read_page(tab, url, when))
 
-    def _read_page(self, tab, url):
+    def _still_wanted(self, url, when) -> bool:
+        """Asked again as it's read and as it's kept: in the seconds since the page loaded, its site may have been
+        kept out, history cleared, or page search turned off (and the page was kept anyway, after them)."""
+        return when == self._generation and self.enabled and indexable(url, skipped_sites(self.settings))
+
+    def _read_page(self, tab, url, when=None):
         view = tab.view
         if not hasattr(view, "page") or view.url().toString() != url or view.page().profile().isOffTheRecord():
             return
-        view.page().runJavaScript(READ, WORLD, lambda text, t=tab, u=url: self._got(t, u, text))
+        if not self._still_wanted(url, self._generation if when is None else when):
+            return
+        when = self._generation if when is None else when
+        view.page().runJavaScript(READ, WORLD, lambda text, t=tab, u=url, w=when: self._got(t, u, text, w))
 
-    def _got(self, tab, url, text):
-        if isinstance(text, str) and len(text) > 200:
+    def _got(self, tab, url, text, when=None):
+        if isinstance(text, str) and len(text) > 200 and self._still_wanted(url, self._generation if when is None
+                                                                                    else when):
             self._writes.put(("add", url, tab.title or url, text))
 
     # --- Writing (on its own thread, so a big page never stalls the window) -------------------------
@@ -302,13 +322,17 @@ class PageIndex(QObject):
             except sqlite3.Error:
                 pass  # a locked or damaged index loses a page, never the browser
 
+    _generation = 0  # (one more each time what may be kept changes: pages read before that aren't)
+
     def clear(self):
+        self._generation += 1
         self._writes.put(("clear",))
 
     def forget_url(self, url):
         self._writes.put(("forget_url", url))
 
     def skip_site(self, host):
+        self._generation += 1
         host = host.lower().removeprefix("www.")
         skip = self.settings.setdefault(SKIP_SETTING, [])
         if host and host not in skip:

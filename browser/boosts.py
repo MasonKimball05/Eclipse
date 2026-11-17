@@ -45,7 +45,19 @@ def zap_script(token: str) -> str:
 
 
 def site_of(url: str) -> str:
-    return QUrl(url).host().lower().removeprefix("www.")
+    """The site a Boost is for, as a page's location.hostname has it: ASCII (punycode for a name in another script,
+    which never matched before) and an IPv6 address without its brackets."""
+    host = QUrl(url).host().lower()
+    if host and not host.isascii():
+        host = bytes(QUrl.toAce(host)).decode("ascii", errors="ignore") or host
+    return host.strip("[]").removeprefix("www.")
+
+
+def site_typed(text: str) -> str:
+    """What's typed in a Boost's Website field: "github.com", or a pasted address ("https://github.com/x": its site,
+    never "https", as prefixing it again made it)."""
+    text = text.strip()
+    return site_of(text if "://" in text else "https://" + text)
 
 
 @dataclass
@@ -177,7 +189,7 @@ class BoostManager(QObject):
             css += "\n" + ",\n".join(boost.zapped) + " { display: none !important; }"
         source = f"""
         (() => {{
-          const site = location.hostname.replace(/^www\\./, '');
+          const site = location.hostname.replace(/^\\[|\\]$/g, '').replace(/^www\\./, '');
           const target = {json.dumps(boost.site)};
           if (site !== target && !site.endsWith('.' + target)) return;
           const style = document.createElement('style');
@@ -213,7 +225,7 @@ class BoostManager(QObject):
         it is, not run with eval (new Function), which a site's Content Security Policy can forbid: GitHub's does."""
         source = f"""
         (() => {{
-          const site = location.hostname.replace(/^www\\./, '');
+          const site = location.hostname.replace(/^\\[|\\]$/g, '').replace(/^www\\./, '');
           const target = {json.dumps(boost.site)};
           if (site !== target && !site.endsWith('.' + target)) return;
           const run = () => {{
@@ -298,7 +310,7 @@ class BoostEditor(QDialog):
     def _save(self):
         b = self.boost
         b.name = self.name.text().strip()
-        b.site = site_of("https://" + self.site.text().strip()) or b.site
+        b.site = site_typed(self.site.text()) or b.site
         b.enabled = self.enabled.isChecked()
         b.css = self.css.toPlainText()
         b.js = self.js.toPlainText()
@@ -331,7 +343,7 @@ def boost_sections(boost: Boost) -> list[dict]:
 def apply_values(boost: Boost, values: dict):
     """The form's values into the Boost (as BoostEditor._save does)."""
     boost.name = str(values.get("name", "")).strip()
-    boost.site = site_of("https://" + str(values.get("site", "")).strip()) or boost.site
+    boost.site = site_typed(str(values.get("site", ""))) or boost.site
     boost.enabled = bool(values.get("enabled"))
     boost.css = str(values.get("css", ""))
     boost.js = str(values.get("js", ""))

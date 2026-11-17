@@ -255,3 +255,29 @@ def test_a_long_address_loses_whole_parts_from_the_front_not_its_site_name(qapp)
     assert site_labels("news.bbc.co.uk") == 3        # (→ bbc.co.uk)
     assert site_labels("127.0.0.1") == 4             # (an address isn't cut into parts)
     assert site_labels("localhost") == 1
+
+
+def test_a_cancel_knows_what_yt_dlp_was_writing():
+    """--print turned yt-dlp's quiet mode on, which kept back its "Destination:" lines: a cancel had nothing to clear
+    away, and the partial files stayed in your Downloads folder."""
+    assert "--no-quiet" in _args()
+
+
+def test_a_playlist_with_one_video_unavailable_is_done_with_the_rest(qapp, tmp_path):
+    """yt-dlp goes on past a private video and says so at the end: taken for a failure, the 2 downloaded couldn't be
+    shown or opened from the list."""
+    import stat
+    from browser.downloads import FILE_MARKER, YtDlpDownload
+    from tests.live.live_helpers import wait_until
+    files = [tmp_path / "one.mp4", tmp_path / "two.mp4"]
+    for f in files:
+        f.write_bytes(b"x")
+    fake = tmp_path / "yt-dlp"
+    fake.write_text("#!/bin/sh\n" + "".join(f"echo '{FILE_MARKER}{f}'\n" for f in files) +
+                    "echo 'ERROR: [youtube] abc: Private video' >&2\nexit 1\n")
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    item = YtDlpDownload(str(fake), {**DEFAULT_SETTINGS, "folder": str(tmp_path)}, "https://x", "List",
+                         playlist_count=3)
+    assert wait_until(lambda: item.state != "running", 5)
+    assert item.state == "done" and item.path == str(files[-1])
+    assert item.status == "Done · 2 of 3 · 1 couldn't be downloaded: Private video"

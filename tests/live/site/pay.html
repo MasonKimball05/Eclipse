@@ -18,4 +18,10 @@
   <input id="number2" name="cardnumber"><input id="exp2" name="exp-date" maxlength="7" placeholder="MM / YY">
   <input id="name2" autocomplete="cc-name"><button>Pay</button>
 </form>
+<form id="third" onsubmit="event.preventDefault()">
+  <input id="number3" autocomplete="cc-number">
+  <select id="month3" autocomplete="cc-exp-month"><option value="">MM</option><option value="4">April</option></select>
+  <select id="year3" autocomplete="cc-exp-year"><option value="">YY</option><option value="30">30</option>
+    <option value="31">31</option></select>
+</form>
 </body></html>

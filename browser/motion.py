@@ -5,6 +5,7 @@
 import subprocess
 import sys
 
+from PyQt6 import sip
 from PyQt6.QtCore import QEasingCurve, Qt, QVariantAnimation
 from PyQt6.QtWidgets import QGraphicsOpacityEffect
 
@@ -67,6 +68,10 @@ def animate(owner, start, end, on_value, ms=NORMAL, done=None, easing=QEasingCur
     previous = getattr(owner, "_pb_animation", None)
     if previous is not None:
         previous.stop()
+        # (gone, not kept: each one was a child of its owner for good, one more for every hover and slide, all session)
+        if not sip.isdeleted(previous):
+            previous.deleteLater()
+        owner._pb_animation = None
     if ms <= 0 or reduced():
         on_value(end)
         if done:

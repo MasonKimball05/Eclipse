@@ -63,7 +63,7 @@ from .settings import SettingsWindow
 from .sidebar import COMPACT_WIDTH, FOLDER_COLORS, FOLDER_ICONS, Sidebar
 from .icons import space_icon
 from .theme import PALETTE, PlainMenu, ThemedBackground, stylesheet, theme_for_space
-from .webview import DEFAULT_PROFILE, WebPage, WebView, build_profile
+from .webview import DEFAULT_PROFILE, WebPage, WebView, build_profile, open_in
 
 MAC = sys.platform == "darwin"
 # Qt maps "Ctrl" to ⌘ on macOS; the physical Control key is "Meta" there
@@ -98,9 +98,14 @@ SIDEBAR_GAP = 12     # between the sidebar's contents and the page: all of it is
 
 
 def _save_editor(view):
-    """A tab that isn't a web page (a note, an easel) keeps its work: saved before it goes."""
+    """A tab that isn't a web page (a note, an easel) keeps its work: saved before it goes. One that can't be saved
+    never stops the rest being (quitting saved each in turn, and stopped at the first that failed)."""
     if view is not None and not isinstance(view, QWebEngineView) and hasattr(view, "save"):
-        view.save()
+        try:
+            view.save()
+        except Exception:
+            import traceback
+            traceback.print_exc()
 
 
 def _delete(obj):
@@ -318,6 +323,7 @@ class MainWindow(FullScreen, SiteControls, PageActions, TabSleep, Backups, Space
 
     def apply_theme(self):
         self.theme = theme_for_space(self.store.active_space)
+        self.theme_space_id = self.store.active_space_id  # (which Space it was made for: sidebar_native.py)
         self.setStyleSheet(stylesheet(self.theme))
         if getattr(self, "features", None) is not None:
             self.emit("theme_changed")
@@ -524,6 +530,8 @@ class MainWindow(FullScreen, SiteControls, PageActions, TabSleep, Backups, Space
             macos.hide_title_text(self)  # otherwise the page title is drawn over the sidebar
             QTimer.singleShot(0, self.place_traffic_lights)  # (now that there are native buttons to place)
             self.sidebar.align_with_traffic_lights()
+        if getattr(self, "floating_sidebar", None) is not None:
+            self.floating_sidebar.resume()
 
     # Empty areas of the chrome drag the window, since there is no title bar
     def mousePressEvent(self, event):
@@ -948,7 +956,7 @@ class MainWindow(FullScreen, SiteControls, PageActions, TabSleep, Backups, Space
         tab.view = self.create_view(profile)
         self._wire(tab, tab.view)
         self.content.stack.addWidget(tab.view)
-        request.openIn(tab.view.page())
+        open_in(request, tab.view.page())
         if dest != Dest.InNewBackgroundTab:
             self.activate_tab(tab)
 
@@ -1222,7 +1230,9 @@ class MainWindow(FullScreen, SiteControls, PageActions, TabSleep, Backups, Space
             # Arc: closing a pinned tab or favorite just unloads it and resets it to its home URL
             if tab.home_url and tab.url != tab.home_url:
                 tab.url, tab.title = tab.home_url, ""
+            tab.unread = None  # (its page is gone: nothing tells its count any more, so it stayed, Dock's too)
             tab.changed.emit()
+            self.notifications.update_dock()
             self.store.schedule_save()
         if was_current:
             self._activate_fallback()

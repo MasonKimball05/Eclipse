@@ -330,7 +330,9 @@ class SpacePictures(QObject):
         regions, _mask = cover_layout(w)
         lanes = [space_rect(w, part) for part in sliding_parts(w)]
         rects = tuple((r.x(), r.y(), r.width(), r.height()) for r in regions + lanes)
-        return (w.width(), w.height(), w.sidebar.width(), rects, space.color, json.dumps(space.theme, sort_keys=True))
+        from .theme import system_is_dark  # (light or dark too: a picture from before macOS switched doesn't fit)
+        return (w.width(), w.height(), w.sidebar.width(), rects, space.color, json.dumps(space.theme, sort_keys=True),
+                system_is_dark())
 
     def neighbours(self) -> list:
         spaces, here = self.window.store.spaces, self.window.store.active_space

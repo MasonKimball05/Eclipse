@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (QApplication, QFrame, QGraphicsDropShadowEffect, QH
 
 from . import motion
 from .models import display_host
+from .webview import open_in
 
 RISE = 24  # points the card rises as it opens (and sinks as it closes)
 GROW_MS = 220  # growing out of the link (and back into it)
@@ -90,7 +91,7 @@ class PeekOverlay(QWidget):
         ]
         self.card_layout.addWidget(view, 1)
         if request is not None:
-            request.openIn(view.page())
+            open_in(request, view.page())
             self.host.setText("Peek  ·  " + display_host(request.requestedUrl().toString()))
         else:
             view.load(QUrl(url))

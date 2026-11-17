@@ -412,6 +412,11 @@ class EaselScene(QGraphicsScene):
         if self._resizing is not None or self._turning is not None:
             self._resizing = self._turning = None
             self.easel.save()
+        if self._drawing is not None:
+            # (a stroke or shape mid-draw: kept as drawn so far, rather than going on following the pointer, no
+            # button down, when you came back, ⌘Z refused all the while)
+            self._drawing = self._start = None
+            self.easel.save()
 
     def mouseMoveEvent(self, event):
         if (self._resizing is not None or self._turning is not None) and \
@@ -502,6 +507,7 @@ def _bearing(vector: QPointF) -> float:
 class EaselView(QWidget):
     """The whole easel tab: a floating toolbar over an endless canvas."""
     title_changed = pyqtSignal(str)
+    save_failed = pyqtSignal(str)
     open_link = pyqtSignal(str)
     export = pyqtSignal(str)  # "copy", "png" or "pdf": the window does it (it knows where files go)
 
@@ -837,7 +843,7 @@ class EaselView(QWidget):
             self.scene.clearSelection()
             item.setSelected(True)
         menu = QMenu(self)
-        if item.data(SOURCE):
+        if str(item.data(SOURCE) or "").startswith(("http://", "https://")):  # (as a double-click: a web page only)
             menu.addAction("Open Page", lambda: self.open_link.emit(item.data(SOURCE)))
             menu.addSeparator()
         menu.addAction("Duplicate", self.duplicate)
@@ -1033,10 +1039,15 @@ class EaselView(QWidget):
         state = json.dumps(self.to_dict())
         if self._history and state == self._history[-1]:
             return
+        try:  # (written first: kept in the history first, a failed write was taken as saved, and never tried again)
+            storage.write_json(self.folder / "easel.json", json.loads(state))
+        except OSError as error:
+            self.save_failed.emit(str(error))
+            self._save_timer.start()  # (tried again)
+            return
         self._history.append(state)
         del self._history[:-UNDO_LIMIT]
         self._future.clear()
-        storage.write_json(self.folder / "easel.json", json.loads(state))
 
     def undo(self):
         if self._editing_text() or self._dragging():
@@ -1061,7 +1072,10 @@ class EaselView(QWidget):
         # scene changes later) finds nothing new and leaves redo alone
         self._history[-1] = json.dumps(self.to_dict())
         QTimer.singleShot(0, self._save_timer.stop)
-        storage.write_json(self.folder / "easel.json", json.loads(state))
+        try:
+            storage.write_json(self.folder / "easel.json", json.loads(state))
+        except OSError as error:
+            self.save_failed.emit(str(error))
         self.title_changed.emit(self.title)
 
 
@@ -1138,6 +1152,7 @@ class EaselsFeature(Feature):
             return None
         view = EaselView(tab.url)
         view.open_link.connect(lambda url: self.window.open_url(url))
+        view.save_failed.connect(lambda error: self.window.toast(f"Couldn't save “{view.title}”: {error}"))
         view.export.connect(lambda kind: self.export(view, kind))
         return view
 

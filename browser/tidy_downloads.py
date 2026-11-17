@@ -38,8 +38,23 @@ def excerpt(path: Path) -> str:
     return ""
 
 
+def where_from(url: str) -> str:
+    """Where a download came from, as told to Claude: the site and path, not the query (a signed link's token) nor,
+    for a data: or blob: one, the address (the whole file, past the excerpt's cap)."""
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return ""
+    if parts.scheme not in ("http", "https"):
+        return ""
+    return f"{parts.scheme}://{parts.hostname or ''}{parts.path}"[:300]
+
+
 def build_prompt(name: str, source_url: str, page_title: str, text: str) -> str:
-    parts = [f"A file just finished downloading in a web browser.\nFile name: {name}\nDownloaded from: {source_url}"]
+    source = where_from(source_url)
+    parts = [f"A file just finished downloading in a web browser.\nFile name: {name}" +
+             (f"\nDownloaded from: {source}" if source else "")]
     if page_title:
         parts.append(f"From the page: {page_title}")
     if text.strip():
@@ -70,10 +85,19 @@ def clean_name(reply: str) -> str | None:
 def unique_path(folder: Path, stem: str, suffix: str, current: Path | None = None) -> Path:
     candidate = folder / f"{stem}{suffix}"
     n = 2
-    while candidate.exists() and candidate != current:
+    # (the file itself is no clash: renamed only in its capitals, on a Mac's disk, which doesn't tell them apart,
+    # it was "Name (2)")
+    while candidate.exists() and candidate != current and not (current is not None and _same_file(candidate, current)):
         candidate = folder / f"{stem} ({n}){suffix}"
         n += 1
     return candidate
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    try:
+        return a.samefile(b)
+    except OSError:
+        return False
 
 
 def full_suffix(path: Path) -> str:

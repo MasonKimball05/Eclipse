@@ -143,6 +143,8 @@ def build_arguments(opts: dict, url: str, playlist: bool) -> list[str]:
         "--yes-playlist" if playlist else "--no-playlist",
         "--newline", "--progress", "--progress-template", "download:" + PROGRESS_TEMPLATE,
         "--no-simulate", "--print", "after_move:" + FILE_MARKER + "%(filepath)s",
+        # (--print turns quiet on, which kept back the "Destination:" lines: a cancel never knew what it had left)
+        "--no-quiet",
         "--no-mtime",  # file date = when you downloaded it, so new downloads sort first in Finder
         "-P", opts["folder"], "-o", opts["template"],
     ]
@@ -385,10 +387,21 @@ class YtDlpDownload(DownloadItem):
         if self._cancelled:
             self.state, self.status = "cancelled", "Cancelled"
             for leftover in leftovers(self._destinations):  # (left, they sat in your Downloads folder)
-                leftover.unlink(missing_ok=True)
+                try:
+                    leftover.unlink(missing_ok=True)
+                except OSError:
+                    pass  # (still held open: ffmpeg, on Windows)
         elif code == 0:
             self.state, self.fraction = "done", 1.0
             self.status = f"Done · {self.files_done} files" if self.playlist_count else "Done"
+        elif self.files_done and self.playlist_count:
+            # Some of a playlist couldn't be had (one private video): yt-dlp goes on, and says so at the end. Taken
+            # for a failure, the rest, downloaded, couldn't be shown or opened from here
+            self.state, self.fraction = "done", 1.0
+            reason = _error_message(self._stderr)
+            failed = max(self.playlist_count - self.files_done, 1)
+            self.status = f"Done · {self.files_done} of {self.playlist_count} · {failed} couldn't be downloaded" + \
+                (f": {reason}" if reason else "")
         else:
             self.state = "failed"
             self.status = _error_message(self._stderr) or f"yt-dlp stopped (exit code {code})"

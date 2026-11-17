@@ -139,11 +139,14 @@ class NativeSidebarBody(QObject):
 
     def _theme(self, space):
         """The Space's own look (each page is drawn in its own Space's colors, so one sliding in looks as it will)."""
-        if space is self.browser.store.active_space:
+        # (the window's own only once it's been made for this Space: in the moment after a keyboard switch, before it
+        # had, the Space arriving was drawn in the one leaving's colors)
+        if space is self.browser.store.active_space and getattr(self.browser, "theme_space_id", None) == space.id:
             return self.browser.theme
-        from .theme import theme_for_space
+        from .theme import system_is_dark, theme_for_space
         import json
-        key = (space.color, json.dumps(space.theme, sort_keys=True))
+        # (and light or dark with it: macOS switching, the other Spaces kept the one before till you got to them)
+        key = (space.color, json.dumps(space.theme, sort_keys=True), system_is_dark())
         cached = self._themes.get(space.id)
         if cached is None or cached[0] != key:
             cached = self._themes[space.id] = (key, theme_for_space(space))

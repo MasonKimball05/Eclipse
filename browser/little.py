@@ -15,6 +15,7 @@ from . import clean_links, macos, motion, screens, storage
 from .command_bar import search_url, to_url
 from .content import RADIUS, Corner
 from .models import display_host
+from .webview import open_in
 from .sidebar import IconButton, _with_alpha
 from .theme import ThemedBackground, letter_icon, stylesheet
 
@@ -159,7 +160,7 @@ class LittleWindow(QWidget):
         self._place()
         self._update_header()
         if request is not None:
-            request.openIn(view.page())
+            open_in(request, view.page())
         elif url:
             view.load(QUrl(url))
         else:

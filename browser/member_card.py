@@ -165,7 +165,8 @@ def arc_card_for(settings: dict) -> dict | None:
         settings[ARC_SETTING] = kept
     if not (storage.data_dir() / ARC_FILE).exists():
         storage.write_json(storage.data_dir() / ARC_FILE, kept)
-    return {**new_card(random.Random(0)), **kept}
+    # (with no day the account was made, none: under new_card's own, "Joined Arc" said today, a new day each day)
+    return {**new_card(random.Random(0)), "since": "", **kept}
 
 
 def card_for(settings: dict) -> dict:
@@ -199,10 +200,13 @@ def read_arc_card(folder: Path | None = None) -> dict | None:
         return None
     if not isinstance(arc, dict) or not arc.get("title"):
         return None
+    # (each field as it should be, or the usual: a null palette or blob raised, as Eclipse opened, and it didn't)
+    palette = arc.get("paletteNumber")
+    blob = arc.get("backgroundBlobInfo")
     card = {"title": str(arc["title"])[:60].upper(), "origin": "arc",
-            "palette": int(arc.get("paletteNumber", 0)) % len(PALETTES),
+            "palette": int(palette) % len(PALETTES) if isinstance(palette, (int, float)) else 0,
             "shape": arc.get("shapeName") if arc.get("shapeName") in SHAPES else SHAPES[1],
-            "blob": [int(n) for n in arc.get("backgroundBlobInfo", []) if isinstance(n, (int, float))][:15]}
+            "blob": [int(n) for n in blob if isinstance(n, (int, float))][:15] if isinstance(blob, list) else []}
     try:  # (just the name and the day the account was made: nothing else in that file is looked at)
         user = json.loads((folder / "StorableAuthState.json").read_text())["session"]["user"]
         if user.get("name"):

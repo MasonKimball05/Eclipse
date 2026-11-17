@@ -57,6 +57,14 @@ SOURCE = r"""
     for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
       const style = getComputedStyle(node);
       if (style.visibility === 'hidden' || style.display === 'none' || parseFloat(style.opacity) < 0.1) return false;
+      if (style.clipPath && style.clipPath !== 'none' && node === el) return false;
+      // (nor cut off by what it's in: a box no taller than nothing that hides what overflows it)
+      if (node !== el && /(hidden|clip|scroll|auto)/.test(style.overflow + style.overflowX + style.overflowY)) {
+        const around = node.getBoundingClientRect();
+        const across = Math.min(box.right, around.right) - Math.max(box.left, around.left);
+        const down = Math.min(box.bottom, around.bottom) - Math.max(box.top, around.top);
+        if (across < 4 || down < 4) return false;
+      }
     }
     return true;
   };
@@ -102,7 +110,8 @@ SOURCE = r"""
       const wanted = String(value).toLowerCase().replace(/^0/, '');
       const option = [...el.options].find(o => [o.value, o.text.trim()].some(t => {
         const v = t.toLowerCase();
-        return v === wanted || v.replace(/^0/, '') === wanted || v === '20' + wanted || v.slice(-2) === wanted.slice(-2) && wanted.length === 2;
+        // (a month's "4" or "04"; a year's "2031", or "31" in a menu of two-digit years)
+        return v === wanted || v.replace(/^0/, '') === wanted || (wanted.length === 4 && v.length === 2 && v === wanted.slice(-2));
       }));
       if (!option) return false;
       el.value = option.value;
@@ -118,6 +127,7 @@ SOURCE = r"""
     if (kind === 'name') return card.name;
     if (kind === 'given') return card.name.split(' ')[0] || '';
     if (kind === 'family') return card.name.split(' ').slice(1).join(' ');
+    if ((kind === 'month' || kind === 'year' || kind === 'exp') && !(card.year && card.month)) return '';  // (not known)
     if (kind === 'month') return el.tagName === 'SELECT' ? String(card.month) : String(card.month).padStart(2, '0');
     if (kind === 'year') {
       const max = parseInt(el.getAttribute('maxlength') || '0', 10);
@@ -132,7 +142,10 @@ SOURCE = r"""
   };
   Object.defineProperty(window, '__eclipseCards', {value: (token, card) => {
     if (token !== TOKEN) return 0;
-    const where = scope || document;
+    // (the page's own document: only the form you clicked into, never every card field on it; a payment company's
+    // frame holds just its card fields, one of them each, as often as not)
+    const where = scope || (framed ? document : null);
+    if (!where) return 0;
     let filled = 0;
     for (const [el, kind] of fieldsOf(where)) {
       const value = valueFor(el, kind, card);
@@ -260,12 +273,14 @@ def save(fields: dict, card_id: str | None = None) -> dict:
         found = {"id": os.urandom(6).hex(), "created": time.time(), "used": 0}
         cards.append(found)
     try:
-        month = max(1, min(12, int(str(fields.get("month", "")).strip() or 0)))
+        month = int(str(fields.get("month", "")).strip() or 0)
     except ValueError:
-        month = 1
-    found.update(number=number, name=str(fields.get("name", "")).strip()[:100], month=month,
-                 year=normal_year(fields.get("year", "")), label=str(fields.get("label", "")).strip()[:60],
-                 changed=time.time())
+        month = 0
+    year = normal_year(fields.get("year", ""))
+    if not (1 <= month <= 12 and year):
+        month, year = 0, 0  # (not known: when it expires is left for you to type, never filled made up)
+    found.update(number=number, name=str(fields.get("name", "")).strip()[:100], month=month, year=year,
+                 label=str(fields.get("label", "")).strip()[:60], changed=time.time())
     _save(cards)
     return found
 
@@ -299,7 +314,7 @@ def summary(card: dict) -> str:
 
 
 def for_page(card: dict) -> dict:
-    return {"number": card["number"], "name": card.get("name", ""), "month": int(card.get("month") or 1),
+    return {"number": card["number"], "name": card.get("name", ""), "month": int(card.get("month") or 0),
             "year": int(card.get("year") or 0)}
 
 
@@ -462,10 +477,19 @@ class Cards(QObject):
         call = (f"window.__eclipseCards && window.__eclipseCards({json.dumps(self.token)}, "
                 f"{json.dumps(for_page(full))})")
         page_url = view.url()
-        # The page, and each of its frames whose fields may be filled (a payment company's: each field can be a
-        # frame of its own), looked at again now: the page may have moved on while you touched the sensor
+        asked_in = QUrl(card.frame) if card.frame else None
+        # Only where it was asked for: the page and the payment company's frames beside its form, or (asked from a
+        # payment company's frame) that company's frames alone, never the merchant's page, which a card from there
+        # is kept from. Looked at again now: the page may have moved on while you touched the sensor
         for frame in _frames(view.page().mainFrame()):
-            if frame.isMainFrame() or frame_allowed(page_url, frame.url()):
+            if frame.isMainFrame():
+                wanted = asked_in is None
+            elif asked_in is not None:
+                wanted = frame_allowed(page_url, frame.url()) and password_store.same_site(frame.url().host(),
+                                                                                           asked_in.host())
+            else:
+                wanted = frame_allowed(page_url, frame.url())
+            if wanted:
                 frame.runJavaScript(call, WORLD)
         if not view.page().profile().isOffTheRecord():
             mark_used(full["id"])
@@ -510,9 +534,9 @@ def _card_form(parent, browser, on_done, card=None):
               {"id": "name", "kind": "text", "label": "Name on card", "value": (card or {}).get("name", "")},
               {"id": "month", "kind": "menu", "label": "Expires",
                "value": str((card or {}).get("month", 1)),
-               "options": [{"value": str(m), "label": f"{m:02d}"} for m in range(1, 13)]},
+               "options": [{"value": "0", "label": "—"}] + [{"value": str(m), "label": f"{m:02d}"} for m in range(1, 13)]},
               {"id": "year", "kind": "menu", "label": "", "value": str((card or {}).get("year", this_year)),
-               "options": [{"value": str(y), "label": str(y)} for y in years]},
+               "options": [{"value": "0", "label": "—"}] + [{"value": str(y), "label": str(y)} for y in years if y]},
               {"id": "label", "kind": "text", "label": "Label", "value": (card or {}).get("label", ""),
                "placeholder": "Personal, Work…"}]
     form = forms.open_form(browser, "Edit Card" if card else "Add Card",

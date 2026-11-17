@@ -29,6 +29,17 @@ LINGER = 16       # points past its right edge the pointer can stray before it g
 HIDE_DELAY = 320  # ms out of bounds before it goes
 
 
+
+def dragging(sidebar) -> bool:
+    """A tab's being dragged from (or within) the sidebar, Qt's or the native one's: it stays out till the drop. Gone
+    from under the drag, the hidden sidebar took the tab being dragged with it, and nothing could bring it back (a
+    drag sends no mouse moves to the edge)."""
+    if getattr(sidebar, "drag_active", False):
+        return True
+    native = getattr(sidebar, "native", None)
+    timer = getattr(native, "_dragging", None)
+    return bool(timer is not None and timer.isActive())
+
 class Shadow(QWidget):
     """A soft shadow under the floating sidebar, painted once for each size (not a blur effect redrawing the whole
     sidebar on every frame of its slide; nor drawn again every time it comes out, the same size)."""
@@ -171,11 +182,18 @@ class FloatingSidebar:
             return
         self.window.traffic_lights.place(showing, self._out_x(), MARGIN)
 
+    def resume(self):
+        """The window's back: out (or on its way), it goes on watching the pointer."""
+        if self.state is not None and not self.timer.isActive():
+            self.timer.start()
+
     def _wanted(self) -> bool:
         if self.kept:
             return True  # (no tab open: nothing to hide it for)
         if QApplication.activePopupWidget() or QApplication.activeModalWidget():
             return True  # a menu from it (or a dialog) is open
+        if dragging(self.sidebar):
+            return True
         pos = self.window.centralWidget().mapFromGlobal(QCursor.pos())
         inside_window = -4 <= pos.y() <= self.window.centralWidget().height() + 4
         if self._right:
@@ -185,6 +203,9 @@ class FloatingSidebar:
     def _check(self):
         if self.state is None:
             self.timer.stop()
+            return
+        if not self.window.isVisible():
+            self.timer.stop()  # (a window closed while Eclipse runs on: 16 looks a second at nothing; resume() on show)
             return
         wanted = self._wanted()
         if self.state == "out":
@@ -421,7 +442,7 @@ class SpreadSidebar:
     def _wanted(self) -> bool:
         if QApplication.activePopupWidget() or QApplication.activeModalWidget():
             return True  # a menu from it (or a dialog) is open
-        if getattr(self.sidebar, "drag_active", False):
+        if dragging(self.sidebar):
             return True
         root = self.window.centralWidget()
         pos = root.mapFromGlobal(QCursor.pos())

@@ -198,8 +198,8 @@ def confirm_clear(browser, tab, host, profile):
     from . import prompts
     site = display_host(tab.url)
     prompts.confirm(browser, "Clear Cookies & Site Data",
-                    f"Sign out of {site} and clear what it keeps in this browser (cookies, stored data, its cache "
-                    f"of offline pages)?", lambda: clear_site_data(browser, tab, host, profile),
+                    f"Sign out of {site} and clear its cookies (its subdomains' too), and what this page of it keeps "
+                    f"for itself (stored data, offline pages)?", lambda: clear_site_data(browser, tab, host, profile),
                     action="Clear", destructive=True)
 
 

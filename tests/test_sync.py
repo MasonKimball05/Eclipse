@@ -223,3 +223,107 @@ def test_a_restored_backup_doesnt_delete_whats_been_made_since_everywhere(tmp_pa
     backup._forget_what_sync_knew(tmp_path)
     state = storage.read_json(tmp_path / "sync-state.json")
     assert state["device"] == "d1" and state["known"] == {} and state["deleted"] == {}
+
+
+def _apply_window(qapp, spaces):
+    """A Sync with a stand-in window holding `spaces`: what apply() changes, and the pages it closes."""
+    from types import SimpleNamespace
+    from PyQt6.QtCore import QObject
+    from browser.models import Space
+    closed = []
+    store = SimpleNamespace(spaces=spaces, favorites=[], active_space_id=spaces[0].id, _changed=lambda: None,
+                            remove_from_split=lambda tab: None)
+    store.space = lambda sid: next((s for s in store.spaces if s.id == sid), None)
+    store.active_space = spaces[0]
+    window = SimpleNamespace(current_tab=None, _remove_view=closed.append, apply_theme=lambda: None,
+                             _restore_space_tab=lambda: None, _activate_fallback=lambda: None)
+    syncer = sync.Sync.__new__(sync.Sync)
+    QObject.__init__(syncer)
+    syncer.store, syncer.window = store, window
+    return syncer, closed
+
+
+def test_another_macs_edit_keeps_a_live_folders_pages_and_folders_looks(qapp):
+    """A Space with a Live Folder, changed on another Mac: the folder's items were taken for gone, their pages closed
+    though still listed in it. And every folder came back with no color or icon, open."""
+    from browser.models import Folder, Space, Tab
+    item = Tab("https://github.com/o/r/pull/1", "PR", tab_id="t-pr")
+    live = Folder("Reviews", [item], "f-live", True, {"kind": "github", "query": "review"})
+    plain = Folder("Work", [Tab("https://docs.example/", "Docs", tab_id="t-docs")], "f-work", expanded=False,
+                   color="#3b82f6", icon="ph.star")
+    space = Space("Home", "#3366ff", "", "s1")
+    space.pinned = [live, plain]
+    syncer, closed = _apply_window(qapp, [space])
+    data = sync.snapshot(syncer.store)["space:s1"]
+    data = {**data, "name": "Home (renamed)"}
+    syncer.apply({"apply": {"space:s1": data}, "delete": []})
+    assert space.name == "Home (renamed)" and closed == []
+    live2, plain2 = space.pinned
+    assert live2.children == [item]
+    assert (plain2.color, plain2.icon, plain2.expanded) == ("#3b82f6", "ph.star", False)
+
+
+def test_a_deleted_space_isnt_brought_back_by_a_mac_whose_clock_runs_fast(tmp_path):
+    """Mac B's clock five minutes fast: its edit was stamped ahead, and A's deleting the Space after it, stamped now
+    (earlier), lost to it, so the Space came straight back."""
+    a, b = _two(tmp_path)
+    b.items["space:w"] = _space("Work (B)", "b.example")
+    b.look(400)  # (300 ahead)
+    a.look(150)
+    assert a.items["space:w"]["name"] == "Work (B)"
+    del a.items["space:w"]
+    a.items["order"] = []
+    a.look(160)
+    a.look(170)
+    assert "space:w" not in a.items
+    b.look(410)
+    assert "space:w" not in b.items
+
+
+def test_a_failed_backup_before_syncing_leaves_it_to_try_again(tmp_path, monkeypatch, qapp):
+    """merge() counted what came as done before the backup and apply: when the backup failed, the next look skipped
+    it, took this Mac's older copy for a change of its own, and sent it out over the newer one."""
+    from browser import storage
+    monkeypatch.setattr(storage, "data_dir", lambda: tmp_path)
+    folder = tmp_path / "icloud"
+    folder.mkdir()
+    a = Mac(folder, {"space:w": _space("Work", "mail.example"), FAVORITES: [], "order": ["w"]})
+    a.look(100)
+    syncer = sync.Sync.__new__(sync.Sync)
+    syncer.state = sync.new_state()
+    syncer.state["known"] = {"space:w": {"hash": "old", "modified": 50.0}}
+    monkeypatch.setattr(sync, "sync_folder", lambda: folder)
+    monkeypatch.setattr(syncer, "on", lambda: True, raising=False)
+    monkeypatch.setattr(syncer, "_write", lambda *_: None, raising=False)
+    monkeypatch.setattr(syncer, "_state_path", lambda: tmp_path / "state.json", raising=False)
+    monkeypatch.setattr(sync, "snapshot", lambda store: {"space:w": _space("Work (old)", "old.example")})
+    syncer.store, syncer.window = None, None
+
+    def fails():
+        raise OSError("disk full")
+    monkeypatch.setattr(syncer, "_back_up", fails, raising=False)
+    monkeypatch.setattr(syncer, "_still_downloading", lambda f: False, raising=False)
+    syncer.run()
+    # (still known as this Mac's copy from before: the other Mac's newer one is taken at the next look)
+    assert sync.merge(syncer.state, sync.read_remotes(folder, syncer.state["device"]))["apply"]
+
+
+def test_a_restored_backup_wins_over_the_other_macs_copies(tmp_path, monkeypatch):
+    """Restoring a "before-sync" backup to undo a bad sync: with sync's memory forgotten, the other Mac's copy (the
+    bad one) was taken over what was restored, whatever its time."""
+    from browser import backup, storage
+    storage.write_json(tmp_path / "session.json", {"spaces": [{"id": "w", "name": "Work"}]})
+    storage.write_json(tmp_path / "sync-state.json", {"device": "d1", "known": {"space:w": {"hash": "h",
+                                                     "modified": 5.0}}, "deleted": {}})
+    backup._forget_what_sync_knew(tmp_path)
+    state = storage.read_json(tmp_path / "sync-state.json")
+    assert set(state["claim"]) >= {"space:w", FAVORITES, "order"}
+    # And so: stamped as this Mac's change, the other Mac's older copy doesn't replace it
+    a, _b = _two(tmp_path / "x") if (tmp_path / "x").mkdir() is None else None
+    restored = Mac(tmp_path / "x", {"space:w": _space("Work (restored)", "good.example"), FAVORITES: [],
+                                    "order": ["w"]})
+    restored.state["device"], restored.state["claim"] = "d1", state["claim"]
+    remotes = sync.read_remotes(restored.folder, "d1")
+    elsewhere = {k for r in remotes for k in r.get("items") or {}} - set(state["claim"])
+    sync.note_local(restored.state, restored.items, 900, elsewhere)
+    assert not sync.merge(restored.state, remotes, set(restored.items))["apply"]

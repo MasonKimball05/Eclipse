@@ -46,8 +46,17 @@ def is_dev_url(url: str) -> bool:
     if q.scheme() not in ("http", "https"):
         return False
     host = q.host().lower()
-    return (host in ("localhost", "0.0.0.0", "::1") or host.startswith("127.")
-            or host.endswith((".localhost", ".test")))
+    return host in ("localhost", "0.0.0.0") or _loopback(host) or host.endswith((".localhost", ".test"))
+
+
+def _loopback(host: str) -> bool:
+    """127.0.0.1 or ::1 (any 127.x), as an address: not a name that starts with it, 127.example.com, a public site
+    that got the DEV chip, its whole address and the console drawer."""
+    import ipaddress
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
 
 
 def dev_label(url: str) -> str:
@@ -377,6 +386,7 @@ class DevMode(QObject):
                 watcher = self._watchers.pop(origin, None)
                 if watcher is not None:
                     watcher.stop()
+                    watcher.deleteLater()
 
     def toggle_watch(self):
         view = self.browser._current_view()
@@ -390,9 +400,11 @@ class DevMode(QObject):
         rules = self.settings.setdefault("dev_watch", {})
         if origin in rules:
             rules.pop(origin)
+            self._users.pop(origin, None)
             watcher = self._watchers.pop(origin, None)
             if watcher is not None:
                 watcher.stop()
+                watcher.deleteLater()
             self.browser.toast("Stopped reloading on save")
         else:
             folder = QFileDialog.getExistingDirectory(self.browser, "Reload this page when files in… change",
@@ -401,6 +413,12 @@ class DevMode(QObject):
                 return
             rules[origin] = folder
             self._ensure_watch(url, id(view))
+            # (and every tab open on it: it reloads them all, and closing the one it was turned on in stopped it for them)
+            for tab in self.browser.store.all_tabs():
+                other = tab.view
+                if other is not None and other is not view and hasattr(other, "url") and \
+                        origin_of(other.url().toString()) == origin:
+                    self._users.setdefault(origin, set()).add(id(other))
             self.browser.toast(f"Reloading on save: {Path(folder).name}")
         self.browser.store.schedule_save()
         self._refresh_drawer()

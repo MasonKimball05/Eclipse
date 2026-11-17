@@ -19,6 +19,7 @@ from .theme import plain_tip
 
 WORLD = 1  # the application world: the page's DOM, not its JavaScript
 POLL_MS = 1500
+STOPPED_MS = 30_000  # (a dismissed tab quiet this long has stopped: its card comes back when it plays again)
 
 # Remembers the last thing that played. Audio made with new Audio() never joins the document, so
 # the application world can't find it: a small hook in the page itself keeps hold of that one and
@@ -202,11 +203,17 @@ class NowPlaying(QObject):
     def audible_changed(self, tab):
         audible = self.browser.tab_audio(tab)[0]
         if tab is self.dismissed and not audible:
-            self.dismissed = None  # (it stopped: the next time it plays, the card's back)
+            # It stopped (the next time it plays, the card's back): stopped a while, not a quiet stretch between
+            # tracks, which brought the card you'd dismissed back at the next song
+            QTimer.singleShot(STOPPED_MS, lambda t=tab: self._forget_dismissed(t))
         if audible and self._eligible(tab) and tab is not self.dismissed:
             self._follow(tab)
         elif tab is self.tab:
             self.refresh()
+
+    def _forget_dismissed(self, tab):
+        if tab is self.dismissed and not (tab.view is not None and self.browser.tab_audio(tab)[0]):
+            self.dismissed = None
 
     def left_tab(self, tab):
         """You switched away from `tab`: if it's still playing (and the mini player didn't take it), show it."""

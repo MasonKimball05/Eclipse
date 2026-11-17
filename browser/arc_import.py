@@ -341,6 +341,7 @@ def _extension_names(folder: Path) -> list[str]:
 def apply(store, arc: ArcImport):
     """Merge an import into the store. Re-importing replaces the Spaces imported last time."""
     had = {id(t) for t in store.all_tabs()}  # (the tabs here before: they keep their ids, splits and all)
+    had_folders = {id(f) for s in store.spaces for f in walk_folders(s.pinned + s.today)}
     for page_url, image in arc.favicons.items():
         storage.save_favicon_png(page_url, image)
 
@@ -385,6 +386,16 @@ def apply(store, arc: ArcImport):
         if tab.id in seen:
             tab.id = new_id()
         seen.add(tab.id)
+    # (and Arc's folders: one moved to another Space, imported again, was two folders of one id, and a drop onto one
+    # in the sidebar went into the other)
+    folders = [f for s in store.spaces for f in walk_folders(s.pinned + s.today)]
+    seen = {f.id for f in folders if id(f) in had_folders}
+    for folder in folders:
+        if id(folder) in had_folders:
+            continue
+        if folder.id in seen:
+            folder.id = new_id()
+        seen.add(folder.id)
     store._changed()
 
 

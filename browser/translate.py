@@ -165,9 +165,11 @@ class Translator(QObject):
             return  # (stopped while its text was being read)
         self._collecting.discard(id(view))
         if found is None:
+            self._changed(view)  # (Reader's button said "Translating…" from then on)
             return  # (the page closed while it was being read: Qt answers with nothing)
         texts = (found or {}).get("texts") or []
         if not texts:
+            self._changed(view)
             self.browser.toast("There's no text on this page to translate")
             return
         job = _Job(view, chunks(texts), language)

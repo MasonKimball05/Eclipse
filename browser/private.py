@@ -18,7 +18,7 @@ from PyQt6.QtWebEngineCore import QWebEngineNewWindowRequest, QWebEngineProfile
 from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QStackedWidget,
                              QToolButton, QVBoxLayout, QWidget)
 
-from .webview import harden, look_like_chrome
+from .webview import harden, look_like_chrome, open_in
 from . import macos, screens, shortcuts, spelling
 from .command_bar import search_url, to_url
 from .content import RADIUS, Corner
@@ -223,7 +223,7 @@ class PrivateWindow(QWidget):
         self._place()
         if request is not None:
             view = self.new_tab(select=True, load=False)
-            request.openIn(view.page())
+            open_in(request, view.page())
         else:
             self.new_tab(url)
 
@@ -255,7 +255,7 @@ class PrivateWindow(QWidget):
         # Links and popups stay private: a new tab here, never the main window or a Little window
         background = request.destination() == QWebEngineNewWindowRequest.DestinationType.InNewBackgroundTab
         view = self.new_tab(select=not background, load=False)
-        request.openIn(view.page())
+        open_in(request, view.page())
 
     def select(self, view):
         if view is None:
@@ -432,7 +432,8 @@ class PrivateSession(QObject):
         self.browser = browser
         self.profile = None
         self.windows = []
-        self.downloads = set()  # downloads from private windows still in progress
+        self.downloads = {}  # downloads from private windows still in progress, each with the profile it's from
+        self._dying = []  # (sessions whose windows have all closed, kept only till their downloads finish)
 
     def new_window(self, url=None, request=None):
         if self.profile is None:
@@ -443,8 +444,10 @@ class PrivateSession(QObject):
             self.browser.passkeys.attach_profile(self.profile)  # (security keys work there too)
             self.browser.passwords.attach_profile(self.profile)  # (filling works; saving still asks)
             spelling.apply([self.profile], self.browser.store.settings)
+            # (and a notification that gets through anyway goes nowhere: Qt's own would go to Notification Center)
+            self.profile.setNotificationPresenter(lambda notification: notification.close())
             self.browser.apply_autoplay([self.profile])
-            self.profile.downloadRequested.connect(self._download_started)
+            self.profile.downloadRequested.connect(lambda d, p=self.profile: self._download_started(d, p))
             self.profile.downloadRequested.connect(self.browser._on_download)
         window = PrivateWindow(self, url=url, request=request)
         self.windows.append(window)
@@ -454,15 +457,14 @@ class PrivateSession(QObject):
         window.activateWindow()
         return window
 
-    def _download_started(self, download):
+    def _download_started(self, download, profile=None):
         # Kept until it finishes: the profile (which owns it) waits for these before it goes
-        self.downloads.add(download)
+        self.downloads[download] = profile or self.profile
         download.isFinishedChanged.connect(lambda d=download: d.isFinished() and self._download_done(d))
 
     def _download_done(self, download):
-        self.downloads.discard(download)
-        if not self.windows:
-            self._release()
+        self.downloads.pop(download, None)
+        self._reap()
 
     def is_private_download(self, download) -> bool:
         return download in self.downloads
@@ -474,11 +476,19 @@ class PrivateSession(QObject):
             self._release()
 
     def _release(self):
-        if self.downloads:
-            return  # a download is still running: the profile has to outlive it
+        """The last private window's closed: this session's over. Its profile is let go now, so the next private
+        window starts afresh, signed in nowhere (kept for a download still coming, it was the next window's too, its
+        cookies and logins with it); the profile itself goes once its downloads are done."""
         if self.profile is not None:
             profile, self.profile = self.profile, None
             self.browser.adblock.detach(profile)
+            self._dying.append(profile)
+        self._reap()
+
+    def _reap(self):
+        busy = {id(p) for p in self.downloads.values()}
+        for profile in [p for p in self._dying if id(p) not in busy]:
+            self._dying.remove(profile)
             # Once its pages are gone (deleteLater runs first), the profile and all it held go too
             QTimer.singleShot(0, profile.deleteLater)
 

@@ -76,3 +76,22 @@ def test_a_big_pdf_isnt_read_for_its_name(tmp_path, monkeypatch):
     loaded = []
     monkeypatch.setattr(tidy_downloads, "QPdfDocument", lambda parent: loaded.append(1))
     assert tidy_downloads.excerpt(big) == "" and not loaded
+
+
+def test_claude_isnt_sent_a_downloads_whole_data_address_or_a_signed_links_token():
+    """The address went as it was: a data: download's is the whole file (a bank's CSV export), past the excerpt's
+    cap, and a signed link's query carries its token."""
+    prompt = build_prompt("export.csv", "data:text/csv;base64," + "QUJD" * 5000, "Bank", "a,b")
+    assert "QUJD" not in prompt and "Downloaded from" not in prompt
+    prompt = build_prompt("r.pdf", "https://bucket.s3.example/r.pdf?X-Amz-Signature=secret#x", "", "")
+    assert "https://bucket.s3.example/r.pdf" in prompt and "secret" not in prompt
+
+
+def test_a_new_name_differing_only_in_capitals_isnt_a_clash(tmp_path):
+    """On a Mac's disk, which doesn't tell capitals apart, the file itself "existed" under its new name: renamed to
+    "Python Packaging Guide (2).pdf"."""
+    from browser.tidy_downloads import new_path
+    path = tmp_path / "python packaging guide.pdf"
+    path.write_bytes(b"%PDF")
+    target = new_path(path, "Python Packaging Guide")
+    assert target is not None and target.name == "Python Packaging Guide.pdf"

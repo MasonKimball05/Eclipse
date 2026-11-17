@@ -249,6 +249,11 @@ class PermissionManager(QObject):
             return
         origin = origin_key(permission.origin())
         private = view.page().profile().isOffTheRecord()
+        if private and kind == T.Notifications:
+            # (shown, a private site's notifications went to macOS' Notification Center, kept on disk, with its name
+            # and what it said, past Do Not Disturb: there's nowhere private for them to go)
+            permission.deny()
+            return
         if kind in REMEMBERED and origin and not private:  # (a private window asks afresh: as in Chrome's Incognito)
             rule = capture_rule(self.settings, origin, kind.name)
             if rule == "allow":

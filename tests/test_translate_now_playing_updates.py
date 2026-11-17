@@ -109,3 +109,49 @@ def test_relaunch_from_an_app_bundle(monkeypatch, tmp_path):
     monkeypatch.setattr(self_update.sys, "executable", str(exe))
     assert self_update.relaunch_command() == ["/usr/bin/open", "-n", str(tmp_path / "PythonBrowser.app")]
 
+
+
+def test_a_dismissed_now_playing_card_stays_away_through_a_quiet_stretch(qapp, monkeypatch):
+    """Between tracks the tab went quiet a moment: that was taken for stopping, and the card you'd dismissed came back
+    with the next song."""
+    from types import SimpleNamespace
+    from browser import now_playing
+    from tests.live.live_helpers import wait_until
+    monkeypatch.setattr(now_playing, "STOPPED_MS", 150)
+    sound = {"on": True}
+    tab = SimpleNamespace(view=object())
+    browser = SimpleNamespace(tab_audio=lambda t: (sound["on"], False))
+    player = now_playing.NowPlaying.__new__(now_playing.NowPlaying)
+    from PyQt6.QtCore import QObject
+    QObject.__init__(player)
+    player.browser, player.tab, player.dismissed = browser, None, tab
+    followed = []
+    player._eligible = lambda t: True
+    player._follow = followed.append
+    sound["on"] = False
+    player.audible_changed(tab)  # (between tracks)
+    sound["on"] = True
+    player.audible_changed(tab)  # (the next song, at once)
+    assert followed == [] and player.dismissed is tab
+    sound["on"] = False
+    player.audible_changed(tab)  # (stopped, and stays so)
+    assert wait_until(lambda: player.dismissed is None, 2)
+
+
+def test_reader_s_translate_button_comes_back_when_theres_nothing_to_translate(qapp):
+    """It said "Translating…" for good: the state went back, the button's label didn't."""
+    from types import SimpleNamespace
+    from browser import translate
+    view = object()
+    button = SimpleNamespace(text="", setText=lambda t: setattr(button, "text", t))
+    browser = SimpleNamespace(reader=SimpleNamespace(view=view, translate_btn=button), toast=lambda *a: None)
+    translator = translate.Translator.__new__(translate.Translator)
+    translator.browser, translator._jobs, translator._translated = browser, {}, set()
+    translator._watched, translator._collecting = set(), {id(view)}
+    translator._changed(view)
+    assert button.text == "Translating…"
+    translator._collected(view, {"texts": []}, "English")
+    assert button.text == "Translate"
+    translator._collecting.add(id(view))
+    translator._collected(view, None, "English")
+    assert button.text == "Translate"

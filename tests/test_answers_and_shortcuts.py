@@ -113,3 +113,13 @@ def test_a_windows_path_opens_as_a_file(monkeypatch):
     assert command_bar.to_url(r"C:\Users\me\site\index.html") is not None
     assert command_bar.to_url(r"\\server\share\notes.txt") is not None
     assert command_bar.to_url("site\\index.html") is None  # (not absolute: not taken for a file)
+
+
+def test_adding_a_percent_and_commas_in_a_function_come_out_right():
+    """"200 + 10%" was 200.1 (10% taken for 0.1), not 220 as everywhere else; and every comma was taken out, so
+    "round(3.14159,2)" was round(3.141592), 3."""
+    from browser.answers import calculate
+    assert calculate("200 + 10%").text == "220" and calculate("100 - 20%").text == "80"
+    assert calculate("10 - 5 + 10%") is None  # (what the percent's of isn't plain: no answer, not a wrong one)
+    assert calculate("round(3.14159,2)").text == "3.14"
+    assert calculate("1,000,000 * 2").text == "2,000,000" and calculate("20% * 50").text == "10"

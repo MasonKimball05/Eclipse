@@ -178,10 +178,18 @@ def _merge_passkeys(root, passkeys_now):
 
 def _forget_what_sync_knew(root):
     """A backup's Spaces are in now, but sync still knew the ones since: missing here, they'd have been sent as
-    deleted, from every Mac (ones made on other Macs too). Forgotten, the next look takes the other Macs' newer copies
-    of what's here, brings back what's only there, and sends what's only here (sync.note_local)."""
+    deleted, from every Mac (ones made on other Macs too). Forgotten, the next look brings back what's only there, and
+    sends what's here as it is now (sync.note_local)."""
     path = root / "sync-state.json"
     state = storage.read_json(path)
     if state:
         state["known"], state["deleted"] = {}, {}
+        # What the backup had is what you went back to: claimed as this Mac's change, made now. Taken as an old copy,
+        # the other Macs' current ones replaced it at once, and a restore couldn't undo a bad sync ("before-sync"
+        # backups are for just that)
+        from .models import FAVORITES
+        session = storage.read_json(root / "session.json") or {}
+        spaces = session.get("spaces") if isinstance(session, dict) else None
+        state["claim"] = [f"space:{s['id']}" for s in spaces or [] if isinstance(s, dict) and isinstance(s.get("id"), str)]
+        state["claim"] += [FAVORITES, "order"]  # (sync.ORDER)
         storage.write_json(path, state)

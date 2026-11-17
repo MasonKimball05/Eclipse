@@ -135,9 +135,16 @@ class NotificationCenter(QObject):
     def _closed(self):
         notification = self.sender()
         self._live = [n for n in self._live if n is not notification]
+        for banner in [b for b in self._banners if getattr(b, "notification", None) is notification]:
+            self.dismiss(banner)  # (the site took it back: a call answered elsewhere, say; its banner stayed up)
 
     def _tab_for(self, profile, notification):
         """The tab the notification came from, looked up now (the tab may have moved since)."""
+        exact = notification.exact_url() if hasattr(notification, "exact_url") else None
+        if exact is not None:
+            # (a Watched Page's: that page. By site, the banner went to another of its pages, and click() opened the
+            # watched one behind it)
+            return next((t for t in self.browser.store.all_tabs() if t.url == exact), None)
         host = display_host(notification.origin().toString())
         tabs = [t for t in self.browser.store.all_tabs()
                 if hasattr(t.view, "page") and t.view.page().profile() is profile and display_host(t.url) == host]

@@ -12,6 +12,7 @@
 # The merging is plain data (state, snapshots, plans) so it can be tested as two Macs; SyncFeature applies a
 # plan to the open window, keeping the pages of tabs that are still there.
 
+import copy
 import hashlib
 import json
 import os
@@ -151,7 +152,9 @@ def note_local(state: dict, items: dict, now: float, elsewhere=frozenset()) -> b
             state["deleted"].pop(key, None)
             changed = True
     for key in [k for k in state["known"] if k not in items]:
-        state["deleted"][key] = now
+        # (just after the change it replaces, as an edit is: stamped now, behind another Mac's fast clock, the Space
+        # came straight back)
+        state["deleted"][key] = max(now, state["known"][key].get("modified", now) + 0.001)
         del state["known"][key]
         changed = True
     return changed
@@ -280,7 +283,7 @@ def read_remotes(folder: Path, mine: str) -> list[dict]:
 
 # --- Applying to the open window ---------------------------------------------------------------------------
 
-def build_nodes(nodes: list, pool: dict, live_children: dict, avoid=frozenset()) -> list:
+def build_nodes(nodes: list, pool: dict, live_children: dict, avoid=frozenset(), looks=None) -> list:
     """Tabs and folders from synced data, reusing the tab objects (and so the open pages) already here. A new
     tab whose id a tab here already has (one of Today's) gets an id of its own."""
     out = []
@@ -292,8 +295,17 @@ def build_nodes(nodes: list, pool: dict, live_children: dict, avoid=frozenset())
                 folder = Folder(d["name"], old[0] if old else [], d["id"], True, old[1] if old else live)
                 if old:
                     folder.live = {**old[1], **d["live"]}
+                    # (its items, kept, are still here: left in the pool, they were taken for gone and their pages
+                    # closed, though still listed in it)
+                    for t in walk_tabs(old[0]):
+                        pool.pop(t.id, None)
             else:
-                folder = Folder(d["name"], build_nodes(d.get("children", []), pool, live_children, avoid), d["id"])
+                folder = Folder(d["name"], build_nodes(d.get("children", []), pool, live_children, avoid, looks), d["id"])
+            # (its color, icon and whether it's open are this Mac's: never sent, they went back to none, open, at each
+            # change from another Mac)
+            mine = looks.get(d["id"]) if looks else None
+            if mine is not None:
+                folder.color, folder.icon, folder.expanded = mine
             out.append(folder)
             continue
         tab = pool.pop(d["id"], None)
@@ -362,10 +374,19 @@ class Sync(QObject):
             return
         self.devices = [r["name"] for r in remotes if r.get("name")]
         here = set(snapshot(self.store))
+        before = copy.deepcopy(self.state)
         plan = merge(self.state, remotes, here)
         if plan["apply"] or plan["delete"]:
-            self._back_up()
-            self.apply(plan)
+            try:
+                self._back_up()
+                self.apply(plan)
+            except Exception:
+                # (merge counted it as done: the next look skipped it, took this Mac's older copy for a change of
+                # its own, and sent that out over the newer one everywhere)
+                self.state = before
+                import traceback
+                traceback.print_exc()  # (tried again at the next look)
+                return
             # What's here now is what came (with this Mac's own tabs a copy can't carry put back): the change it
             # came with, not one of ours, so it keeps that change's time. Stamped now, it went back to the Mac it
             # came from and undid that Mac's next edit
@@ -458,6 +479,7 @@ class Sync(QObject):
         before = {t.id: t for t in list(store.favorites) + [t for s in store.spaces for t in walk_tabs(s.pinned)]}
         live_children = {f.id: (f.children, f.live) for s in store.spaces
                          for f in _folders(s.pinned) if f.live}
+        looks = {f.id: (f.color, f.icon, f.expanded) for s in store.spaces for f in _folders(s.pinned)}
         pool = dict(before)
         avoid = {t.id for s in store.spaces for t in walk_tabs(s.today)}
         # (and tabs staying where they are, below: a tab moved there on another Mac, still where it was in a Space
@@ -476,7 +498,7 @@ class Sync(QObject):
         for key, data in plan["apply"].items():
             if key == FAVORITES:
                 kept = local_only(store.favorites)
-                store.favorites = put_back(build_nodes(data, pool, live_children, avoid), kept, pool)
+                store.favorites = put_back(build_nodes(data, pool, live_children, avoid, looks), kept, pool)
             elif key.startswith("space:"):
                 space_id = key.removeprefix("space:")
                 space = store.space(space_id)
@@ -486,7 +508,7 @@ class Sync(QObject):
                 space.name, space.color, space.icon = data["name"], data["color"], data["icon"]
                 space.theme = data.get("theme") or {}
                 kept = local_only(space.pinned)
-                space.pinned = put_back(build_nodes(data["pinned"], pool, live_children, avoid), kept, pool)
+                space.pinned = put_back(build_nodes(data["pinned"], pool, live_children, avoid, looks), kept, pool)
         # (after what came is in: so a Space can go even when it was the last one here, replaced)
         for key in plan["delete"]:
             space = store.space(key.removeprefix("space:")) if key.startswith("space:") else None

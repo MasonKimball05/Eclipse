@@ -3322,7 +3322,7 @@ def test_more_forms_are_native_sheets(window, monkeypatch):
     monkeypatch.setattr(tab, "url", "https://example.com/news")
     watch = window.feature("page_watch")
     added = []
-    monkeypatch.setattr(watch.watcher, "add", lambda url, title, interval: added.append(interval) or {})
+    monkeypatch.setattr(watch.watcher, "add", lambda url, title, interval, profile=None: added.append(interval) or {})
     form = watch.watch_tab(tab)
     form.fill({"every": str(page_watch.INTERVALS[-1])}, press="watch")
     closed(form)
@@ -3487,9 +3487,15 @@ def _ask_for_notifications(view):
     run_js(view, "Notification.requestPermission(); 1", 0)
 
 
+def _ask_for_camera(view):
+    """(The camera, asked and never granted here: a private window refuses notifications outright, and a page in the
+    background doesn't ask for your location till it's shown)"""
+    run_js(view, "navigator.mediaDevices.getUserMedia({video: true}).catch(() => {}); 1", 0)
+
+
 def test_a_private_windows_permission_card_stays_with_its_tab(window, site):
     """The private window never told the permissions its tab changed: a card stayed over the next tab, and a
-    background tab's request was never shown."""
+    background tab's request was never shown. (The camera: a private window refuses notifications outright)"""
     private = window.private.new_window(f"{site}/index.html")
     first = private.current
     assert loaded(first)
@@ -3497,12 +3503,12 @@ def test_a_private_windows_permission_card_stays_with_its_tab(window, site):
     second.load(QUrl(f"{site}/links.html"))
     assert loaded(second)
     manager = window.permissions
-    _ask_for_notifications(first)
+    _ask_for_camera(first)
     assert wait_until(lambda: (p := manager._prompts.get(id(first))) is not None and p.isVisible(), 5)
     private.select(second)
     pause(0.2)
     assert not manager._prompts[id(first)].isVisible(), "the first tab's card stayed over the second tab"
-    _ask_for_notifications(second)  # (asked from the background? no: this one's on screen now)
+    _ask_for_camera(second)  # (asked from the background? no: this one's on screen now)
     private.select(first)
     pause(0.2)
     assert manager._prompts[id(first)].isVisible()
@@ -3510,7 +3516,7 @@ def test_a_private_windows_permission_card_stays_with_its_tab(window, site):
     third = private.new_tab(select=False, load=False)
     third.load(QUrl(f"{site}/img.html"))
     assert loaded(third)
-    _ask_for_notifications(third)
+    _ask_for_camera(third)
     assert wait_until(lambda: manager._waiting.get(id(third)), 5)
     private.select(third)
     assert wait_until(lambda: (p := manager._prompts.get(id(third))) is not None and p.isVisible(), 3), \
@@ -5046,13 +5052,23 @@ def test_a_highlight_is_marked_kept_in_its_sites_note_and_back_after_a_reload(wi
         assert item["text"] == "quick brown fox" and item["prefix"].endswith("A ")
         marked = "Array.from(document.querySelectorAll('mark[data-eclipse-highlight]')).map(m => m.closest('p').id + ':' + m.textContent).join('|')"
         assert run_js(view, marked) == "two:quick brown|two: fox"
+        # Across two paragraphs (the selection's text as drawn differs from the page's): back after a reload too
+        run_js(view, """(() => { const a = document.querySelector('#three').firstChild, b = document.querySelector('#four').firstChild;
+          const r = document.createRange(); r.setStart(a, 11); r.setEnd(b, 15);
+          const s = getSelection(); s.removeAllRanges(); s.addRange(r); return 1; })()""")
+        both = []
+        feature.highlight_selection(view, done=both.append)
+        assert wait_until(lambda: both and both[0] is not None, 3)
         # In its site's note, linked to its page
         note = window.store.settings[highlights.NOTES_SETTING][highlights.site_of(tab.url)]
         assert "“quick brown fox” — [Highlight Me]" in _path(note).read_text()
         # Back after a reload, on the same words (not the first "quick brown fox" on the page)
         view.reload()
         assert loaded(view)
-        assert wait_until(lambda: run_js(view, marked) == "two:quick brown|two: fox", 3)
+        assert wait_until(lambda: run_js(view, marked).startswith("two:quick brown|two: fox"), 3)
+        across = "Array.from(document.querySelectorAll('mark[data-eclipse-highlight]')).filter(m => m.closest('#three, #four')).length"
+        assert wait_until(lambda: run_js(view, across) >= 2, 3)  # (both paragraphs' parts, found again)
+        feature.remove(both[0], view)
         # ⌘T finds it by what it says
         from types import SimpleNamespace
         bar = SimpleNamespace(mode="", _icon=lambda name: None, _open=lambda url: url)
@@ -5114,8 +5130,15 @@ def test_a_saved_card_fills_a_checkout_after_touch_id_and_a_new_one_is_offered_t
         run_js(tab.view, press % "number2", world=0)
         assert wait_until(lambda: isinstance(manager.card_for(tab.view), cards.FillCard), 5)
         _click_when_ready(manager.card_for(tab.view), "Mastercard ••••4444, expires 09/32")
+        assert run_js(tab.view, "document.getElementById('number3').value", world=0) == ""  # (only the form clicked)
         other = "['number2','exp2','name2'].map(i => document.getElementById(i).value)"
         assert wait_until(lambda: run_js(tab.view, other, world=0) == ["5555555555554444", "09 / 32", "Arkan Example"], 5)
+        # Two-digit years in a menu ("31")
+        run_js(tab.view, press % "number3", world=0)
+        assert wait_until(lambda: isinstance(manager.card_for(tab.view), cards.FillCard), 5)
+        _click_when_ready(manager.card_for(tab.view), "Personal · Visa ••••4242, expires 04/31")
+        third = "['number3','month3','year3'].map(i => document.getElementById(i).value)"
+        assert wait_until(lambda: run_js(tab.view, third, world=0) == ["4242424242424242", "4", "31"], 5)
     finally:
         for card in cards.all_cards():
             cards.delete(card["id"])
@@ -5152,13 +5175,14 @@ def test_a_focus_session_keeps_sites_away_counts_down_and_ends(window, site):
         # (what was decided, not what was drawn: with the screen locked, a hidden page's quiet page may not be drawn)
         assert not feature._allow_navigation(page, url)  # (kept away)
         assert wait_until(lambda: getattr(page, "eclipse_blocked", None) == url.toString(), 5)
-        assert tab.url.endswith("/index.html")  # (the tab keeps its address, not the quiet page's)
+        # (the tab keeps its address, not the quiet page's, once the quiet page's own address has come and gone)
+        assert wait_until(lambda: tab.url.endswith("/index.html") and not tab.view.page().isLoading(), 5), tab.url
         feature.open_anyway(page, url)  # (let through for a while)
         assert feature._allow_navigation(page, url)
         # The time's up: everything as it was, and said
         window.store.settings["focus_session"]["until"] = time.time() + 0.3
         feature.tick()
-        assert wait_until(lambda: feature.session is None and not feature.card.isVisible(), 3)
+        assert wait_until(lambda: feature.session is None and not feature.card.isVisible(), 5)
         assert "focus_session" not in window.store.settings
         feature.allowed.clear()
         assert feature._allow_navigation(page, QUrl(f"{site}/links.html"))  # (nothing kept away now)
@@ -5210,3 +5234,189 @@ def test_a_peek_or_little_window_opened_as_a_tab_at_once_isnt_blank(window, site
     tab = window.current_tab
     assert tab is not None and tab.url.endswith("/links.html")
     window.close_tab(tab)
+
+
+def test_a_private_session_ends_with_its_last_window_even_while_a_download_finishes(window, site):
+    """Closed with a download still coming, the private profile stayed, and the next private window had its cookies
+    and logins (signed in where you'd been)."""
+    session = window.private
+    first = session.new_window(f"{site}/index.html")
+    profile = session.profile
+    coming = object()
+    session.downloads[coming] = profile  # (a download still coming, from that session)
+    first.close()
+    assert wait_until(lambda: session.profile is None, 3) and profile in session._dying
+    second = session.new_window(f"{site}/index.html")
+    assert session.profile is not None and session.profile is not profile  # (afresh: signed in nowhere)
+    session._download_done(coming)
+    assert profile not in session._dying  # (and the old one goes once its download's done)
+    second.close()
+
+
+def test_private_windows_get_no_notifications(window, site, monkeypatch):
+    """Allowed, a private site's notifications went to macOS' Notification Center, kept on disk."""
+    from browser import permissions
+    from PyQt6.QtWebEngineCore import QWebEnginePermission
+    private = window.private.new_window(f"{site}/index.html")
+    view = private.current if hasattr(private, "current") else private.view
+    denied = []
+    fake = type("P", (), {"permissionType": lambda s: QWebEnginePermission.PermissionType.Notifications,
+                          "origin": lambda s: QUrl(site), "deny": lambda s: denied.append(1),
+                          "isValid": lambda s: True})()
+    monkeypatch.setattr(permissions, "QWebEnginePermission", lambda p: p)
+    monkeypatch.setattr(permissions.QWebEnginePermission, "PermissionType",
+                        QWebEnginePermission.PermissionType, raising=False)
+    window.permissions._requested(view, fake)
+    assert denied == [1]
+    private.close()
+
+
+def test_a_closed_pinned_tabs_unread_count_goes_with_its_page(window, site):
+    from browser.models import PINNED, Tab
+    tab = Tab(f"{site}/index.html", home_url=f"{site}/index.html")
+    window.store.add_tab(tab, PINNED, window.store.active_space)
+    window.activate_tab(tab)
+    assert loaded(tab.view)
+    tab.unread = "3"
+    window.close_tab(tab)
+    assert tab.unread is None
+    window.store.remove_tab(tab)
+
+
+def test_ending_a_focus_session_brings_back_the_pages_it_kept_away(window, site):
+    feature = window.feature("focus")
+    try:
+        feature.start(50, ["127.0.0.1"], window.store.active_space)
+        tab = open_page(window, f"{site}/index.html")
+        page = tab.view.page()
+        assert wait_until(lambda: getattr(page, "eclipse_blocked", None), 5)
+        feature.end(early=True)
+        assert wait_until(lambda: not getattr(page, "eclipse_blocked", None)
+                          and tab.view.url().toString().endswith("/index.html"), 5)
+        window.close_tab(tab)
+    finally:
+        window.store.settings.pop("focus_session", None)
+        feature.tick()
+
+
+def test_what_pages_youve_read_keeps_is_asked_again_and_wiped(window, site):
+    """A site kept out (or history cleared) within the seconds a page waits to be read: kept anyway."""
+    index = window.page_index
+    url = "https://news.example/story"
+    when = index._generation
+    assert index._still_wanted(url, when)
+    index.skip_site("news.example")
+    assert not index._still_wanted(url, when)  # (read now, it isn't kept)
+    connection = index._connect()
+    assert connection.execute("PRAGMA secure_delete").fetchone()[0] == 1  # (what's taken out is overwritten)
+    connection.close()
+    from browser.page_index import SKIP_SETTING
+    window.store.settings[SKIP_SETTING].remove("news.example")
+
+
+def test_tidy_titles_never_sends_a_kept_out_site_by_itself(window, monkeypatch):
+    from browser.models import Tab
+    feature = window.feature("claude")
+    asked = []
+    monkeypatch.setattr(type(feature.claude), "available", property(lambda self: True))
+    monkeypatch.setattr(feature.claude, "ask", lambda prompt, *a, **k: asked.append(prompt) or
+                        type("R", (), {"finished": type("S", (), {"connect": lambda s, f: None})(),
+                                       "failed": type("S", (), {"connect": lambda s, f: None})()})())
+    mail = Tab("https://mail.google.com/mail/u/0/?account=me#inbox/123", "Inbox (3) - me@example.com")
+    feature.tidy_title(mail)
+    assert asked == []  # (pinning it: nothing sent)
+    feature.tidy_title(mail, force=True)  # (asked for: the address without who you are, and no title)
+    assert asked and "me@example.com" not in asked[0] and "account=me" not in asked[0] and "inbox/123" not in asked[0]
+
+
+def test_a_recipe_link_that_would_ask_claude_asks_you_first(window, monkeypatch):
+    from browser import prompts, recipes
+    feature = window.feature("recipes")
+    recipe = {"name": "Morning", "urls": [], "ask": "What's new on my feeds?"}
+    monkeypatch.setattr(feature, "find", lambda name: recipe)
+    ran, asked = [], []
+    monkeypatch.setattr(feature, "run", lambda r: ran.append(r))
+    monkeypatch.setattr(prompts, "confirm", lambda parent, title, text, yes, **k: asked.append(text))
+    feature.app_link(QUrl(f"{recipes.OWN_SCHEME}://recipe?name=Morning"))
+    assert ran == [] and asked and "What's new on my feeds?" in asked[0]
+
+
+def test_the_web_panels_music_stops_with_the_window(window, site):
+    """Closed while Eclipse keeps running, the tabs' media paused, the web panel's played on, from nowhere."""
+    feature = window.feature("web_panel")
+    feature.panel.open(f"{site}/video.html")
+    site_view = feature.panel.current.view
+    assert loaded(site_view)
+    assert wait_until(lambda: run_js(site_view, "document.querySelector('video, audio') && "
+                                                "!document.querySelector('video, audio').paused"), 5)
+    feature.put_away()
+    assert wait_until(lambda: run_js(site_view, "document.querySelector('video, audio').paused"), 3)
+    feature.panel.close() if hasattr(feature.panel, "close") else None
+
+
+def test_a_window_a_page_opened_never_gets_the_sites_always_allow(window, site, monkeypatch):
+    """window.open a site you'd allowed an app's links on, then send it to the app's link: opened, with no card."""
+    from PyQt6.QtGui import QDesktopServices
+    from browser import external_links, macos
+    tab = open_page(window, f"{site}/index.html")
+    page = tab.view.page()
+    origin = external_links.origin_key(page.url()) if hasattr(external_links, "origin_key") else None
+    from browser.permissions import origin_key
+    origin = origin_key(page.url())
+    settings = window.store.settings
+    external_links.set_allowed(settings, origin, "eclipsetest", True)
+    opened = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
+    monkeypatch.setattr(macos, "app_for_url", lambda url: "Test App")
+    manager = window.external_links
+    try:
+        manager.requested(page, QUrl("eclipsetest://join/1"), True, False)  # (the site's own: allowed)
+        assert opened == ["eclipsetest://join/1"]
+        page.opened_by_a_page = True  # (as a page's window.open makes it)
+        manager._opened.clear()
+        manager.requested(page, QUrl("eclipsetest://join/2"), True, False)
+        assert opened == ["eclipsetest://join/1"]  # (asked, not opened)
+    finally:
+        external_links.set_allowed(settings, origin, "eclipsetest", False)
+        window.close_tab(tab)
+
+
+def test_dark_pages_follow_where_a_page_is_not_where_it_set_out_for(window, site):
+    from PyQt6.QtWebEngineCore import QWebEngineSettings
+    tab = open_page(window, f"{site}/index.html")
+    page = tab.view.page()
+    dark = QWebEngineSettings.WebAttribute.ForceDarkMode
+    page.settings().setAttribute(dark, True)  # (as if set for a page it set out for, and never got to)
+    rule, page.dark_rule = page.dark_rule, (lambda url: False)
+    try:
+        page._dark_again()
+        assert page.settings().testAttribute(dark) is False
+    finally:
+        page.dark_rule = rule
+        window.close_tab(tab)
+
+
+def test_a_highlight_added_to_an_open_note_keeps_its_undo(window, site):
+    feature = window.feature("highlights")
+    item = {"id": "undo1", "url": f"{site}/highlight.html", "title": "Highlight Me", "text": "quick brown fox",
+            "prefix": "", "suffix": ""}
+    note = feature._note_for("127.0.0.1", create=True)
+    from browser.models import TODAY, Tab
+    tab = Tab(note, "Highlights")
+    window.store.add_tab(tab, TODAY, window.store.active_space, 0)
+    window.activate_tab(tab)
+    editor = tab.view
+    editor.insertPlainText("my own words")  # (typed: something to undo)
+    feature.add_to_note(item)
+    assert "quick brown fox" in editor.toPlainText() and "my own words" in editor.toPlainText()
+    assert editor.document().isUndoAvailable()  # (reloaded whole, the note lost its undo)
+    window.close_tab(tab)
+
+
+def test_the_collapsed_strip_has_no_resize_edge(window):
+    window.toggle_compact_sidebar()
+    try:
+        window.sidebar_edge.place()
+        assert window.sidebar_edge.isHidden()
+    finally:
+        window.toggle_compact_sidebar()

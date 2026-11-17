@@ -265,8 +265,18 @@ class ClaudeFeature(Feature):
         """Arc's "Tidy Tab Titles": give a pinned tab a short, human name."""
         if not tab or not tab.url or not self.claude.available or (tab.custom_title and not force):
             return
+        from PyQt6.QtCore import QUrl
+        from .page_index import indexable, skipped_sites
+        url = QUrl(tab.url)
+        kept_out = url.scheme() in ("http", "https") and not indexable(tab.url, skipped_sites(self.window.store.settings))
+        if kept_out and not force:
+            return  # (mail, a bank: never sent by itself, as pinning it did, subject lines and account in its title)
+        title = "(none)" if kept_out else (tab.title or "(none)")
+        # (the address without its query or #: what it's of, not who you are there)
+        address = url.adjusted(QUrl.UrlFormattingOption.RemoveQuery | QUrl.UrlFormattingOption.RemoveFragment |
+                               QUrl.UrlFormattingOption.RemoveUserInfo).toString()
         request = self.claude.ask(
-            page_block(tab.title or "(none)", tab.url, "") +
+            page_block(title, address, "") +
             "\n\nRename this browser tab to a short, clean label of 1-4 words, the way a person would "
             "name a bookmark (for example 'GitHub Issues' or 'Q3 Budget'). Reply with the label only.")
         request.finished.connect(lambda name: self._apply_title(tab, name, force))

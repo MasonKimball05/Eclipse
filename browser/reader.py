@@ -260,8 +260,11 @@ class ReaderView(QFrame):
         self.page_url = view.url().adjusted(QUrl.UrlFormattingOption.RemoveFragment)  # (where it was read from)
         profile = view.page().profile()
         if self.view.page().profile() is not profile:
+            old = self.view.page()
             page = ReaderPage(self, profile, self.view)
             self.view.setPage(page)
+            if isinstance(old, ReaderPage):
+                old.deleteLater()  # (Qt keeps a page it didn't make: each Space's stayed, its article and profile too)
         page = self.view.page()
         for attribute, on in ((QWebEngineSettings.WebAttribute.JavascriptEnabled, False),
                               (QWebEngineSettings.WebAttribute.LocalStorageEnabled, False),

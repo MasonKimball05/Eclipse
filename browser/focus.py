@@ -164,6 +164,13 @@ class FocusFeature(Feature):
 
     def end(self, early=False):
         session = self.window.store.settings.pop(SETTING, None)
+        # Pages kept away come back (each still showed its quiet page, and reloading reloaded that)
+        for tab in self.window.store.all_tabs():
+            view = tab.view
+            page = view.page() if view is not None and hasattr(view, "page") else None
+            kept = getattr(page, "eclipse_blocked", None) if page is not None else None
+            if kept and session and blocked(session.get("blocked", []), QUrl(kept).host()):
+                page.load(QUrl(kept))
         self.window.store.schedule_save()
         self.allowed.clear()
         self.tick()

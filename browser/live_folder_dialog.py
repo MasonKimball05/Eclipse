@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QDialogButtonBox,
 from . import forms, keychain, prompts
 from .features import Feature
 from .live_folders import (DEFAULT_ROOT, GITHUB, JIRA_DEFAULT_JQL, LIMIT_CHOICES, MAX_ITEMS, REFRESH_CHOICES,
-                           LiveFolders, item_limit, jira_site, refresh_minutes, allow_here, allowed_here, feed_name,
+                           LiveFolders, item_limit, jira_site, reaches, refresh_minutes, allow_here, allowed_here, feed_name,
                            github_repo, mark_seen, token_account)
 from .models import walk_tabs
 from .theme import FittedLabel, stylesheet
@@ -518,6 +518,7 @@ class LiveFoldersFeature(Feature):
             return None  # (deleted while the form was open)
         values = dict(values)
         keep_token = had_token and values.get("json_auth") == "token" and not str(values.get("json_token") or "").strip()
+        # (Linear's and Jira's: left blank, the one in the Keychain stays, unless it now goes somewhere else: below)
         if keep_token:
             values["json_token"] = "kept"  # (the one in the Keychain stays: live_from only wants to see there's one)
         result = live_from(values)
@@ -527,6 +528,9 @@ class LiveFoldersFeature(Feature):
         if keep_token:
             token = None
         old = folder.live
+        if had_token and live.get("auth") == "token" and not token and reaches(old) != reaches(live):
+            # (another site, or another kind: the token kept was for where it went before, and was sent here)
+            return "It reaches another site now: paste its token for there too."
         same_source = all(source_value(old, k) == source_value(live, k) for k in self.SOURCE_KEYS)
         kept = {k: v for k, v in old.items() if k not in self.SOURCE_KEYS and k not in ("named", "refresh", "limit")} if same_source else {}
         folder.live = {**kept, **live}

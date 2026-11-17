@@ -8,6 +8,7 @@
 # the page's own scripts can't see or change it.
 
 import json
+import re
 import time
 
 from PyQt6.QtCore import QUrl
@@ -72,7 +73,9 @@ SELECTION = _TEXT + r"""
   const selection = window.getSelection();
   if (!selection || selection.isCollapsed || !document.body) return null;
   const range = selection.getRangeAt(0);
-  const text = selection.toString();
+  // (the range's own text, as the page's text nodes have it: the selection's is as drawn, its spaces and lines between
+  // paragraphs changed, so a highlight across two was never found again)
+  const text = range.toString();
   if (!text.trim()) return null;
   const before = document.createRange();
   before.setStart(document.body, 0);
@@ -177,11 +180,12 @@ class Store:
         self.save()
 
     def overlapping(self, url, selected: str) -> dict | None:
-        """The highlight on this page that the selected text is part of (or that's part of it)."""
+        """The highlight on this page the selected text is a real part of (a third of it at least: "the" selected
+        anywhere offered to take off a highlight with "the" in it). Selecting more than a highlight highlights."""
         selected = " ".join(selected.split())
         for item in self.for_page(url):
             text = " ".join(item["text"].split())
-            if selected and (selected in text or text in selected):
+            if selected and selected in text and len(selected) >= max(4, len(text) // 3):
                 return item
         return None
 
@@ -190,10 +194,40 @@ class Store:
         return [h for h in reversed(self.items) if words and all(w in h["text"].lower() for w in words)]
 
 
+_MARKDOWN = re.compile(r"([\\`*_\[\]<>#|~])")
+
+
+def _escaped(text: str) -> str:
+    """Page text as plain words in Markdown: its *, _, [, < and the rest don't become formatting or links."""
+    return _MARKDOWN.sub(r"\\\1", " ".join(text.split()))
+
+
 def quote_line(item) -> str:
-    text = " ".join(item["text"].split())
     title = item.get("title", "").replace("[", "(").replace("]", ")")
-    return f"- “{text}” — [{title}]({item['url']})"
+    return f"- “{_escaped(item['text'])}” — [{_escaped(title)}]({item['url']})"
+
+
+def without_quote(markdown: str, item) -> str:
+    """The note without `item`'s quote: found by its link and its first words, however the note's editor has
+    rewrapped or re-escaped it since (saved again, its lines were rewritten, and an exact line never matched)."""
+    lines = markdown.splitlines(keepends=True)
+    blocks, current = [], []
+    for line in lines:  # (a list item, with the lines it carries on onto)
+        if line.lstrip().startswith(("- ", "* ")) or not line.strip() or line.startswith("#"):
+            if current:
+                blocks.append(current)
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        blocks.append(current)
+    plain = lambda text: " ".join(re.sub(r"\\(.)", r"\1", text).split())  # noqa: E731
+    start = plain(item["text"])[:24]
+    for i, block in enumerate(blocks):
+        joined = plain("".join(block))
+        if item["url"] in joined and start in joined:
+            return "".join(line for j, b in enumerate(blocks) if j != i for line in b)
+    return markdown
 
 
 def _script(source: str, **values) -> str:
@@ -299,13 +333,30 @@ class HighlightsFeature(Feature):
 
     def add_to_note(self, item):
         note = self._note_for(site_of(item["url"]), create=True)
+        editor = self._editor_of(note)
+        if editor is not None:
+            # (open in a tab: added at its end, one step to undo; reloaded whole, its undo history and where you were
+            # typing went)
+            from PyQt6.QtGui import QTextCursor
+            cursor = QTextCursor(editor.document())
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            cursor.beginEditBlock()
+            if cursor.block().text().strip():
+                cursor.insertBlock()
+            cursor.insertMarkdown(quote_line(item))
+            cursor.endEditBlock()
+            editor.save()
+            return
         self._editing(note, lambda text: text.rstrip("\n") + "\n" + quote_line(item) + "\n")
+
+    def _editor_of(self, note_url):
+        return next((t.view for t in self.window.store.all_tabs() if t.url == note_url and t.view is not None
+                     and hasattr(t.view, "toMarkdown")), None)
 
     def take_from_note(self, item):
         note = self._note_for(site_of(item["url"]), create=False)
         if note is not None:
-            line = quote_line(item)
-            self._editing(note, lambda text: "".join(l for l in text.splitlines(keepends=True) if l.rstrip("\n") != line))
+            self._editing(note, lambda text: without_quote(text, item))
 
     # --- ⌘T ------------------------------------------------------------------------------------------------
 

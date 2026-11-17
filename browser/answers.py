@@ -69,7 +69,9 @@ def _number(value) -> str:
 
 
 def calculate(text: str) -> Answer | None:
-    q = text.strip().lower().replace("×", "*").replace("÷", "/").replace("^", "**").replace(",", "")
+    q = text.strip().lower().replace("×", "*").replace("÷", "/").replace("^", "**")
+    # (thousands' commas only: all of them taken out, "round(3.14159,2)" was round(3.141592), 3)
+    q = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", q)
     q = re.sub(r"^\s*=\s*", "", q)
     m = re.fullmatch(r"([\d.]+)\s*%\s*of\s*([\d.]+)", q)  # "15% of 80"
     if m:
@@ -78,6 +80,13 @@ def calculate(text: str) -> Answer | None:
     if re.fullmatch(r"\d{4}-\d{1,2}-\d{1,2}|(?:\d{3}-)?\d{3}-\d{4}|1-\d{3}-\d{3}-\d{4}|\d{5}-\d{4}|"
                     r"\d{1,2}/\d{1,2}/\d{2,4}|\d{1,2}-\d{1,2}-\d{2,4}|24/7", q):
         # a date (2024-10-26, 10/26/2024), a phone number (555-1234), a ZIP+4 or "24/7": not a sum. ("1/3" is a sum)
+        return None
+    # "200 + 10%" is 220, as everywhere else (and "100 - 20%" 80): taken for 10/100, it was 200.1. Only that alone,
+    # where it's plain what the percent is of; mixed into more ("10 - 5 + 10%"), no answer rather than a wrong one
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([+-])\s*(\d+(?:\.\d+)?)\s*%", q)
+    if m:
+        q = f"{m.group(1)}*(1{m.group(2)}{m.group(3)}/100)"
+    elif re.search(r"[\d)]\s*[+-]\s*\d+(?:\.\d+)?\s*%(?!\s*[\d(])", q):
         return None
     q = re.sub(r"(\d+(?:\.\d+)?)\s*%(?!\s*[\d(])", r"(\1/100)", q)  # "20% * 50" (but "10 % 3" is a remainder)
     # Worth answering only if there's arithmetic in it: "2024" or "pi" alone isn't a question

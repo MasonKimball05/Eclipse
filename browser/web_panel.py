@@ -128,6 +128,10 @@ class WebPanel(QFrame):
             site.view.urlChanged.connect(lambda _url: (self._named(site), self._save()))
             site.view.iconChanged.connect(lambda _icon: self._dress(site))
             site.view.installEventFilter(self)  # (its corners go where it's laid out)
+            page = site.view.page()
+            # (a link that opens a window, a sign-in pop-up: a tab, as from Peek and Little windows; it did nothing)
+            page.newWindowRequested.connect(
+                lambda request, p=page: self.browser.handle_new_window(None, request, p.profile()))
             self.pages.addWidget(site.view)
             site.view.load(QUrl(site.url))
 
@@ -143,6 +147,8 @@ class WebPanel(QFrame):
             change()
         self._place_corners()
         self._save()
+        if self.isVisible():
+            self.browser.permissions.flush(site.view)  # (asked while it was hidden: asked now it shows)
 
     def _dock(self):
         """Beside the page, on the far side from the sidebar (after anything else there, Ask About This Page): the
@@ -321,6 +327,12 @@ class WebPanelFeature(Feature):
     def sidebar_side_changed(self):
         if self.panel is not None and self.panel.isVisible():
             self.panel.place()
+
+    def put_away(self):
+        """The window closed while Eclipse keeps running: its music doesn't play on from a window you've closed."""
+        for site in self.panel.sites if self.panel is not None else []:
+            if site.view is not None and not sip.isdeleted(site.view):
+                site.view.page().runJavaScript("document.querySelectorAll('video, audio').forEach(m => m.pause())")
 
     def shutdown(self):
         # Its pages go before their profile does, as the tabs' do (MainWindow.shutdown)

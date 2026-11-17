@@ -32,7 +32,8 @@ class SidebarEdge(QWidget):
     def place(self):
         w = self.window_
         sidebar, page = w.sidebar, w.content
-        docked = (not sidebar.isHidden() and sidebar.property("floating") is not True
+        # (nor the collapsed strip's: it can't be resized, and the edge showed a resize pointer and bar that did nothing)
+        docked = (not sidebar.isHidden() and sidebar.property("floating") is not True and not sidebar.compact
                   and not getattr(w, "_fullscreen", False) and sidebar.parentWidget() is w.splitter)
         if not docked or not w.isVisible():
             self.hide()

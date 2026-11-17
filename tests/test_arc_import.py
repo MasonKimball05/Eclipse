@@ -267,3 +267,18 @@ def test_a_damaged_arc_database_still_imports_the_rest(tmp_path):
     work = tmp_path / "work"
     work.mkdir()
     assert arc_import._query(Path(bad), work, "SELECT url FROM urls") == []
+
+
+def test_importing_arc_again_never_makes_two_folders_with_one_id(fake_arc, store):
+    """Tabs were made unique, folders weren't: one moved to another Space was two folders of one id, and a drop onto
+    one in the sidebar went into the other."""
+    from browser.models import walk_folders
+    arc_import.apply(store, arc_import.read_arc())
+    home = store.spaces[0]
+    projects = next(n for n in home.pinned if isinstance(n, Folder))
+    home.pinned.remove(projects)
+    store.spaces[1].today.append(projects)  # (moved to the other Space)
+    kept = projects.id
+    arc_import.apply(store, arc_import.read_arc())
+    ids = [f.id for s in store.spaces for f in walk_folders(s.pinned + s.today)]
+    assert len(ids) == len(set(ids)) and projects.id == kept and store.find_node(kept) is projects

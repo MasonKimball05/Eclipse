@@ -83,6 +83,13 @@ class Theme:
             if contrast(color, self.panel) >= 4.5:
                 break
             color = color.lighter(112) if self.dark else color.darker(112)
+        # (a black Space, lightened, stays black: lighter() scales a value of 0 by any amount to 0. Mixed toward
+        # white (or black) instead, a little at a time, till it reads)
+        toward = QColor("white") if self.dark else QColor("black")
+        step = 0.0
+        while contrast(color, self.panel) < 4.5 and step < 1:
+            step = min(1.0, step + 0.1)
+            color = mix(QColor(self.accent), toward, step)
         return color
 
     def gradient(self, width: float, height: float, offset_x: float = 0, offset_y: float = 0) -> QLinearGradient:
@@ -109,13 +116,19 @@ def make_theme(color: str, dark: bool | None = None, colors=None, intensity=0.5,
     else:
         amount = 0.9 - 0.65 * intensity  # how much white shows through
         bases = (QColor("#ffffff"), QColor("#ffffff"))
-    if len(colors) == 1:
-        # One color: a gentle two-tone of it, lighter at the top
-        lift = 0.12
-        stops = (mix(colors[0], bases[0], min(amount + lift, 1)), mix(colors[0], bases[1], max(amount - lift, 0)))
-    else:
-        stops = tuple(mix(c, bases[0], amount) for c in colors)
+    def stops_for(amount):
+        if len(colors) == 1:
+            # One color: a gentle two-tone of it, lighter at the top
+            lift = 0.12
+            return (mix(colors[0], bases[0], min(amount + lift, 1)), mix(colors[0], bases[1], max(amount - lift, 0)))
+        return tuple(mix(c, bases[0], amount) for c in colors)
     text = QColor("#f2f2f4") if dark else QColor("#1d1d22")
+    stops = stops_for(amount)
+    # Readable, whatever the color: a black or navy Space in light mode (or a white or butter one in dark), at full
+    # intensity, put the sidebar's text on its own color (1:1). The base shows through a little more till it reads
+    while min(contrast(text, s) for s in stops) < 4.5 and amount < 1:
+        amount = min(1.0, amount + 0.05)
+        stops = stops_for(amount)
     return Theme(colors[0], stops, text, dark, grain)
 
 

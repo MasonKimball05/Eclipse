@@ -152,3 +152,78 @@ def test_a_late_answer_from_a_look_thats_over_is_ignored(qapp):
     _looked(watcher, watch["id"], {"error": "It took too long to load"})  # (timed out)
     watcher._result(watch["id"], {"text": "the page answering after all"})
     assert watcher.get(watch["id"])["text"] is None and watcher.get(watch["id"])["failures"] == 1
+
+
+class _FakePage:
+    """A QWebEnginePage stand-in: which profile it was made with, and loads the test drives."""
+    made = []
+
+    def __init__(self, profile, parent):
+        from PyQt6.QtCore import QObject, pyqtSignal
+
+        class Signals(QObject):
+            loadStarted = pyqtSignal()
+            loadFinished = pyqtSignal(bool)
+        self.signals = Signals()
+        self.loadStarted, self.loadFinished = self.signals.loadStarted, self.signals.loadFinished
+        self.profile = profile
+        _FakePage.made.append(self)
+
+    def setAudioMuted(self, muted):
+        pass
+
+    def load(self, url):
+        pass
+
+    def runJavaScript(self, script, world, callback):
+        callback({"text": "the page"})
+
+    def deleteLater(self):
+        pass
+
+
+def test_a_watch_loads_with_its_spaces_profile_and_a_first_load_given_up_isnt_a_failure(qapp, monkeypatch):
+    """Loaded in the default profile, a page you're only signed in to in another Space was read signed out. And a
+    first load given up for another (a sign-in's redirect) counted as a failure, backing off further each look."""
+    from PyQt6.QtCore import QTimer
+    from tests.live.live_helpers import wait_until
+    monkeypatch.setattr(page_watch, "QWebEnginePage", _FakePage)
+    monkeypatch.setattr(page_watch, "SETTLE_MS", 0)
+    monkeypatch.setattr(page_watch, "ABANDONED_MS", 100)
+    window = _Window()
+    window.profile = "default-profile"
+    window.profile_named = lambda name: f"profile:{name}"
+    watcher = Watcher(window, start=False)
+    watch = watcher.add("https://mail.example/inbox", "Inbox", profile="work")
+    watcher.check(watch)
+    page = _FakePage.made[-1]
+    assert page.profile == "profile:work"
+    page.loadFinished.emit(False)  # (given up for the redirect's load)
+    page.loadStarted.emit()
+    page.loadFinished.emit(True)
+    assert wait_until(lambda: watcher.busy is None, 2)
+    kept = watcher.get(watch["id"])
+    assert kept["failures"] == 0 and kept["text"] == "the page"
+    # A load that fails with nothing after it still counts
+    kept["due"] = 0
+    watcher.check(kept)
+    _FakePage.made[-1].loadFinished.emit(False)
+    assert wait_until(lambda: watcher.busy is None, 2) and watcher.get(watch["id"])["failures"] == 1
+    # Each look's timer goes with it
+    qapp.sendPostedEvents(None, 52)  # (QEvent.DeferredDelete)
+    assert len(watcher.findChildren(QTimer)) <= 1
+
+
+def test_a_watched_pages_notice_goes_to_that_page_not_another_on_its_site(qapp):
+    """Matched by site, the banner's tab was the shop's home page, and clicking it went there, with the watched page
+    opened behind it."""
+    from types import SimpleNamespace
+    from browser import notify
+    home = SimpleNamespace(url="https://shop.example/", view=None)
+    item = SimpleNamespace(url="https://shop.example/item/123", view=None)
+    store = SimpleNamespace(all_tabs=lambda: [home, item], visible_tabs=lambda: [home, item])
+    center = SimpleNamespace(browser=SimpleNamespace(store=store))
+    notice = page_watch._Notice(None, {"url": "https://shop.example/item/123", "title": "Item", "summary": ""})
+    assert notify.NotificationCenter._tab_for(center, None, notice) is item
+    store.all_tabs = lambda: [home]
+    assert notify.NotificationCenter._tab_for(center, None, notice) is None  # (click() opens it)

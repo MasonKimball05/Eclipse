@@ -39,6 +39,7 @@ MAX_DELAY = 24 * 3600
 MAX_TEXT = 50_000
 TICK_MS = 60_000           # how often it looks for a watch that's due
 LOAD_TIMEOUT_MS = 45_000
+ABANDONED_MS = 4000  # (a load that failed: how long another may start before it counts)
 SETTLE_MS = 3_000          # after loading, for apps that draw their page with scripts
 WORLD = QWebEngineScript.ScriptWorldId.ApplicationWorld
 
@@ -140,6 +141,8 @@ def clean_watch(data) -> dict | None:
         "before": _text(data.get("before"), MAX_TEXT) or "",
         "after": _text(data.get("after"), MAX_TEXT) or "",
         "summary": _text(data.get("summary"), 200) or "",
+        # (the profile of the Space it was watched from: its sign-ins. None for the default one)
+        "profile": _text(data.get("profile"), 80) or None,
     }
 
 
@@ -213,6 +216,10 @@ class _Notice(QObject):
     def origin(self):
         return QUrl(self.watch["url"])
 
+    def exact_url(self):
+        """The page itself, not any tab on its site (notify._tab_for): the banner's tab and click() agree on it."""
+        return self.watch["url"]
+
     def icon(self):
         return QImage()
 
@@ -261,13 +268,13 @@ class Watcher(QObject):
 
     # --- Changing them ------------------------------------------------------------------------------------
 
-    def add(self, url, title, selector=None, text=None, interval=DEFAULT_INTERVAL) -> dict | None:
+    def add(self, url, title, selector=None, text=None, interval=DEFAULT_INTERVAL, profile=None) -> dict | None:
         """Start watching (None if it's watched already, or isn't a web page). With `text` (a selection's), that's
         the baseline; otherwise the first look is."""
         if self.find(url, selector) is not None:
             return None
         watch = clean_watch({"url": url, "title": title, "selector": selector, "text": text, "interval": interval,
-                             "due": time.time()})
+                             "due": time.time(), "profile": profile})
         if watch is not None:
             self.watches.append(watch)
             self._save()
@@ -304,17 +311,27 @@ class Watcher(QObject):
     def check(self, watch):
         """Load the page out of sight (your default profile: its logins), let it settle, and read it."""
         self.busy = watch_id = watch["id"]
-        page = self.page = QWebEnginePage(self.window.profile, self)
+        # (the profile of the Space it was watched from: loaded signed out, a page you're only signed in to there
+        # "changed", or lost the part you watched)
+        profile = self.window.profile_named(watch["profile"]) if watch.get("profile") else self.window.profile
+        page = self.page = QWebEnginePage(profile, self)
         page.setAudioMuted(True)
         self._timeout = QTimer(self, singleShot=True, interval=LOAD_TIMEOUT_MS,
                                timeout=lambda: self._result(watch_id, {"error": "It took too long to load"}))
         self._timeout.start()
 
+        started = [0]
+        page.loadStarted.connect(lambda: started.__setitem__(0, started[0] + 1))
+
         def loaded(ok):
             if self.page is not page:
                 return
             if not ok:
-                self._result(watch_id, {"error": "Couldn't load it"})
+                # (a first load given up for another, a sign-in's redirect or an app's router: not a failure unless
+                # nothing more comes. Counted one, each look backed off further, toward a day)
+                loads = started[0]
+                QTimer.singleShot(ABANDONED_MS, lambda: self.page is page and started[0] == loads and
+                                  self._result(watch_id, {"error": "Couldn't load it"}))
                 return
             page.loadFinished.disconnect(loaded)
             QTimer.singleShot(SETTLE_MS, lambda: self.page is page and page.runJavaScript(
@@ -325,6 +342,7 @@ class Watcher(QObject):
     def _done_with_page(self):
         if self._timeout is not None:
             self._timeout.stop()
+            self._timeout.deleteLater()  # (one a look, kept all session)
             self._timeout = None
         if self.page is not None:
             self.page.deleteLater()
@@ -417,7 +435,7 @@ class PageWatchFeature(Feature):
         names = [every(m) for m in INTERVALS]
 
         def chosen(minutes):
-            watch = self.watcher.add(tab.url, tab.label, interval=minutes)
+            watch = self.watcher.add(tab.url, tab.label, interval=minutes, profile=self._profile_of(tab))
             window.toast(f"Watching {display_host(tab.url)} · you'll hear when it changes" if watch is not None
                          else "You're already watching this page")
             self._refresh_settings()
@@ -438,6 +456,13 @@ class PageWatchFeature(Feature):
             chosen(INTERVALS[names.index(picked)])
         return None
 
+    def _profile_of(self, tab):
+        """The profile of the Space `tab` is in (its sign-ins), or None for the default one."""
+        from .webview import DEFAULT_PROFILE
+        loc = self.window.store.locate(tab) if tab is not None else None
+        name = getattr(loc[1], "profile", None) if loc else None
+        return name if name and name != DEFAULT_PROFILE else None
+
     def watch_selection(self, view, tab):
         """"Watch This": the element around the selection, found again by its selector (or the text it had)."""
         window = self.window
@@ -448,7 +473,8 @@ class PageWatchFeature(Feature):
                 window.toast("Couldn't tell which part of the page that is: try Watch for Changes on the tab")
                 return
             watch = self.watcher.add(url, (tab.label if tab is not None else view.title()) or display_host(url),
-                                     found["selector"], found.get("text") or None)  # (nothing yet: not "")
+                                     found["selector"], found.get("text") or None,  # (nothing yet: not "")
+                                     profile=self._profile_of(tab))
             window.toast(f"Watching that part of {display_host(url)} · you'll hear when it changes"
                          if watch is not None else "You're already watching that")
             self._refresh_settings()

@@ -10,6 +10,7 @@
 # The worst a malicious page can do is make the answer text wrong.
 
 import json
+import re
 import os
 import shutil
 
@@ -47,8 +48,14 @@ def looks_like_question(text: str) -> bool:
     return (t.endswith("?") and len(t) > 3) or (len(words) >= 3 and words[0] in _QUESTION_WORDS)
 
 
+def untrusted(text) -> str:
+    """A page's words inside a <page> or <tabs> block: they can't end the block and go on as if they were ours."""
+    return re.sub(r"</?\s*(page|tabs)\s*>", "[\\1]", str(text), flags=re.IGNORECASE)
+
+
 def page_block(title, url, text) -> str:
-    return f"<page>\nTitle: {title}\nURL: {url}\n\n{text[:PAGE_TEXT_LIMIT]}\n</page>"
+    return (f"<page>\nTitle: {untrusted(title)}\nURL: {untrusted(url)}\n\n"
+            f"{untrusted(text[:PAGE_TEXT_LIMIT])}\n</page>")
 
 
 class Request(QObject):

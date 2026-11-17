@@ -19,25 +19,51 @@ def _is_domain(text: str) -> bool:
     return "." in text and set(text) <= _DOMAIN_CHARS and not text.startswith(".")
 
 
+# The second part of a two-part public ending (.co.uk, .com.au, .ac.jp): "docs.google" in docs.google.co.uk
+_SECOND_LEVEL = {"co", "com", "org", "net", "ac", "gov", "edu", "ne", "or", "go", "gob", "nic", "mil"}
+
+
+def _ending(after: list[str]) -> bool:
+    """`after` is a public ending (com, de, co.uk), not the rest of another site's name (ru.com, pl.ua, evil.io)."""
+    if len(after) == 1:  # (the old endings and countries' own: not .xyz or .app, where google.xyz is anyone's)
+        return after[0] in ("com", "net", "org") or len(after[0]) == 2
+    return len(after) == 2 and after[0] in _SECOND_LEVEL and len(after[1]) == 2
+
+
+def _host_matches(want: list[str], host: str) -> bool:
+    host_labels = host.lower().split(".")
+    # A pattern that ends in a site's own ending (google.com, yandex.ru) is that whole site: nothing more after it
+    whole = want[-1] in _TOP_LEVEL or len(want[-1]) == 2
+    for i in range(len(host_labels) - len(want) + 1):
+        if host_labels[i:i + len(want)] != want:
+            continue
+        after = host_labels[i + len(want):]
+        if not after:
+            return True  # (the site itself, or one of its subdomains)
+        # ("docs.google" in docs.google.com or .co.uk: a public ending after it, never another site's name: yandex.ru
+        # in yandex.ru.com, allegro.pl in allegro.pl.ua, both anyone's to register)
+        if not whole and _ending(after):
+            return True
+    return False
+
+
 def rule_matches(pattern: str, url: str) -> bool:
     pattern = pattern.strip().lower()
     if not pattern:
         return False
-    if _is_domain(pattern):
-        # Whole labels of the host, anywhere in it: "zoom.us" covers us02web.zoom.us (not notzoom.us),
-        # and "docs.google" covers docs.google.com
-        host_labels = (urlsplit(url).hostname or "").lower().split(".")
-        want = pattern.split(".")
-        for i in range(len(host_labels) - len(want) + 1):
-            if host_labels[i:i + len(want)] != want:
-                continue
-            after = host_labels[i + len(want):]
-            if not after:
-                return True  # (the site itself, or one of its subdomains)
-            # ("docs.google" in docs.google.com or .co.uk: a short ending after it, never another site's name)
-            if want[-1] not in _TOP_LEVEL and len(after) <= 2 and all(len(label) <= 3 for label in after):
-                return True
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+    except ValueError:  # (a malformed address from another app: matches nothing, and still opens the usual way)
         return False
+    site, slash, path = pattern.partition("/")
+    if _is_domain(site):
+        # Whole labels of the host, anywhere in it: "zoom.us" covers us02web.zoom.us (not notzoom.us), "docs.google"
+        # covers docs.google.com; with a path ("github.com/myorg"), the page's path starts with it (not anywhere in
+        # the address: evil.io/?r=github.com/myorg was routed too)
+        if not _host_matches(site.split("."), host):
+            return False
+        return not slash or (parts.path.lower().strip("/") + "/").startswith(path.strip("/") + "/")
     return pattern in url.lower()
 
 

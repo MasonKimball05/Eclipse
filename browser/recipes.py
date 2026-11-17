@@ -152,8 +152,17 @@ class RecipesFeature(Feature):
         query = parse_qs(url.query(QUrl.ComponentFormattingOption.FullyEncoded))
         name = (query.get("name") or [""])[-1]
         self.window.bring_to_front()
-        if self.run_named(name) is None:
+        recipe = self.find(name)
+        if recipe is None:
             self.window.toast(f"There's no recipe called “{name}”")
+        elif recipe.get("ask"):
+            # (a link from anywhere, a web page or an email as well as Shortcuts: one that would ask Claude, on your
+            # plan, with a question of yours, asks you first; opening its tabs alone just opens them)
+            prompts.confirm(self.window, "Run Recipe", f"Run “{recipe['name']}”? It opens its tabs and asks "
+                            f"{self.window.assistant_name(self.window.assistant()) or 'Claude'}: “{recipe['ask'][:120]}”",
+                            lambda: self.run(recipe), action="Run")
+        else:
+            self.run(recipe)
         return True
 
     def edit(self, recipe):

@@ -157,7 +157,10 @@ _icons: dict[str, QIcon | None] = {}
 
 def _host_key(url: str) -> str:
     host = QUrl(url).host().lower()
-    return host.removeprefix("www.")
+    # (as ASCII, its punycode: a name in another script was turned into underscores for its file, so bücher.de and
+    # bächer.de, or any two six-letter .рф names, shared one icon, a lookalike's shown for the real site)
+    ace = bytes(QUrl.toAce(host)).decode("ascii", errors="ignore") if host and not host.isascii() else host
+    return (ace or host).removeprefix("www.")
 
 
 def _section_key(url: str) -> str:

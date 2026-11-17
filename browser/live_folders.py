@@ -530,7 +530,7 @@ class LiveFolders(QObject):
         def got(data, status):
             try:
                 done(parse_linear(data))
-            except ValueError as error:
+            except (ValueError, AttributeError, KeyError, TypeError) as error:
                 done([], error="Linear didn't take the API key: make a new one (Linear → Settings → Security & "
                                "access → Personal API keys) and set it from the folder's menu" if status in (400, 401)
                      and "auth" in str(error).lower() else str(error))
@@ -560,8 +560,8 @@ class LiveFolders(QObject):
         def got(data, _final):
             try:
                 done(parse_jira(data, site))
-            except ValueError as error:
-                done([], error=str(error))
+            except Exception as error:  # (any answer shaped otherwise: said, never the folder stuck refreshing)
+                done([], error=str(error) or "Jira's answer wasn't what was expected")
         self._get(url.toString(QUrl.ComponentFormattingOption.FullyEncoded), got,
                   lambda message: done([], error="Jira didn't take the email and token: check them, then set the "
                                                  "token again from the folder's menu" if "authentication" in
@@ -1078,7 +1078,8 @@ def parse_jira(data: bytes, site: str) -> list[tuple[str, str]]:
     for issue in issues:
         key = str(issue.get("key", "")) if isinstance(issue, dict) else ""
         if re.fullmatch(r"[A-Z][A-Z0-9_]+-\d+", key):  # (a key, never a path a page could make up)
-            summary = str((issue.get("fields") or {}).get("summary", ""))
+            fields = issue.get("fields")
+            summary = str(fields.get("summary", "")) if isinstance(fields, dict) else ""
             found.append((f"{key} · {summary}".strip(" ·"), f"{site}/browse/{key}"))
     return found
 
