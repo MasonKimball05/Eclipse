@@ -263,6 +263,7 @@ def test_a_cancel_knows_what_yt_dlp_was_writing():
     assert "--no-quiet" in _args()
 
 
+@pytest.mark.mac  # (a /bin/sh stand-in for yt-dlp)
 def test_a_playlist_with_one_video_unavailable_is_done_with_the_rest(qapp, tmp_path):
     """yt-dlp goes on past a private video and says so at the end: taken for a failure, the 2 downloaded couldn't be
     shown or opened from the list."""
